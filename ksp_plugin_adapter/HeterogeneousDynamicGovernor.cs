@@ -16,6 +16,10 @@ public static class HeterogeneousDynamicGovernor {
   public static float RenderTimeRedlineMs = 13.0f; // Render time redline (16.6ms - 3.6ms margin for 60fps)
   public const int BatchGpuThreshold = 32;         // Minimum workload size to justify GPU dispatch overhead
 
+  // Stage 3 Decoupling Configuration (Phase 1)
+  public static bool EnableStagedHarvesting = true;            // Sever Early (-99) blocking wait by harvesting at BetterLateThanNever (+8008)
+  public static bool EnableZeroCopyTrajectoryPipeline = true;   // Bypass 4-tier CPU mesh copy and O(N) AABB loops
+
   // Smoothed telemetry metrics
   private static float smoothed_gpu_render_time_ms_ = 8.0f;
   private static float smoothed_gpu_compute_time_ms_ = 0.5f;
@@ -24,9 +28,19 @@ public static class HeterogeneousDynamicGovernor {
   // Telemetry counters
   public static long GpuDispatchCount { get; private set; }
   public static long CpuDispatchCount { get; private set; }
+  public static long StagedHarvestCount { get; private set; }
+  public static long ZeroCopyDirectCount { get; private set; }
   public static float SmoothedRenderTimeMs => smoothed_gpu_render_time_ms_;
   public static float SmoothedComputeTimeMs => smoothed_gpu_compute_time_ms_;
   public static bool IsBackpressureActive => is_backpressure_active_;
+
+  public static void RecordStagedHarvest() {
+    StagedHarvestCount++;
+  }
+
+  public static void RecordZeroCopyTransfer() {
+    ZeroCopyDirectCount++;
+  }
 
   public static void UpdateFrameMetrics(float render_time_ms, float compute_time_ms) {
     // Exponential moving average (alpha = 0.1)

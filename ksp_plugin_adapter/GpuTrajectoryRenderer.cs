@@ -31,6 +31,7 @@ public static class GpuTrajectoryRenderer {
     indirect_args_buffer_ = null;
     vertex_output_buffer_?.Release();
     vertex_output_buffer_ = null;
+    NativeZeroCopyTrajectoryPipeline.Dispose();
   }
 
   public static void RenderProcedural(Material material, Camera camera) {

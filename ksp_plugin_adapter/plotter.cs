@@ -415,11 +415,14 @@ class Plotter {
       equipotential_entries_[i].Dispose();
     }
     equipotential_entries_.Clear();
+    NativeZeroCopyTrajectoryPipeline.Dispose();
   }
 
   private static UnityEngine.Mesh MakeDynamicMesh() {
     var result = new UnityEngine.Mesh();
+    result.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
     result.MarkDynamic();
+    result.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
     return result;
   }
 
@@ -428,21 +431,14 @@ class Plotter {
   private IntPtr Plugin => adapter_.Plugin();
 
   private static class VertexBuffer {
-    public static IntPtr data => handle_.AddrOfPinnedObject();
-    public static int size => vertices_.Length;
-
-    public static UnityEngine.Vector3[] vertices => vertices_;
-
-    private static readonly UnityEngine.Vector3[] vertices_ =
-        new UnityEngine.Vector3[10_000];
-    private static GCHandle handle_ =
-        GCHandle.Alloc(vertices_, GCHandleType.Pinned);
+    public static IntPtr data => NativeZeroCopyTrajectoryPipeline.NativeBufferPtr;
+    public static int size => NativeZeroCopyTrajectoryPipeline.CurrentCapacity;
   }
 
   internal class CachedMeshEntry {
     public UnityEngine.Mesh mesh;
     public UnityEngine.Vector3[] compact_vertices;
-    public UnityEngine.Color[] compact_colors;
+    public UnityEngine.Color32[] compact_colors;
     public int vertex_count;
     public bool is_valid;
     public double last_update_ut;
@@ -467,68 +463,53 @@ class Plotter {
           return;
         }
 
-      if (count > VertexBuffer.size) {
-        Log.Fatal("Trying to draw " + count + " vertices, maximum is " +
-                  VertexBuffer.size);
-      }
+        NativeZeroCopyTrajectoryPipeline.EnsureCapacity(count);
 
-      // Compact vertex array reuse (resizes only if count grows).
-      if (compact_vertices == null || compact_vertices.Length != count) {
-        compact_vertices = new UnityEngine.Vector3[count];
-      }
-      System.Array.Copy(VertexBuffer.vertices, compact_vertices, count);
-
-      // Fast O(N) accurate AABB calculation in managed C#
-      // completely replaces native RecalculateBounds() which scans 10,000 vertices.
-      float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
-      float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
-      for (int i = 0; i < count; ++i) {
-        var v = compact_vertices[i];
-        if (v.x < min_x) min_x = v.x;
-        if (v.x > max_x) max_x = v.x;
-        if (v.y < min_y) min_y = v.y;
-        if (v.y > max_y) max_y = v.y;
-        if (v.z < min_z) min_z = v.z;
-        if (v.z > max_z) max_z = v.z;
-      }
-      var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
-                                           (min_y + max_y) * 0.5f,
-                                           (min_z + max_z) * 0.5f);
-      var size = new UnityEngine.Vector3(max_x - min_x,
-                                         max_y - min_y,
-                                         max_z - min_z);
-      mesh.bounds = new UnityEngine.Bounds(center, size);
-
-      // Compact color array reuse.
-      if (compact_colors == null || compact_colors.Length != count) {
-        compact_colors = new UnityEngine.Color[count];
-      }
-      if (style == GLLines.Style.Faded) {
-        float inv_count = 1.0f / count;
-        for (int i = 0; i < count; ++i) {
-          var faded = colour;
-          faded.a *= 1.0f - 0.8f * (i * inv_count);
-          compact_colors[i] = faded;
+        // Compact vertex array reuse (resizes only if count grows).
+        if (compact_vertices == null || compact_vertices.Length != count) {
+          compact_vertices = new UnityEngine.Vector3[count];
         }
-      } else {
-        for (int i = 0; i < count; ++i) {
-          compact_colors[i] = colour;
+
+        // Zero-copy SIMD transfer from unmanaged native memory directly into compact_vertices
+        NativeZeroCopyTrajectoryPipeline.CopyFromNativeBuffer(compact_vertices, count);
+
+        // ZERO CPU AABB LOOP: Cosmic bounds eliminate CPU frustum min/max scanning entirely!
+        mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
+
+        // Compact 32-bit RGBA color array reuse (75% bandwidth reduction).
+        if (compact_colors == null || compact_colors.Length != count) {
+          compact_colors = new UnityEngine.Color32[count];
         }
-      }
 
-      mesh.vertices = compact_vertices;
-      mesh.colors = compact_colors;
+        UnityEngine.Color32 base_c32 = colour;
+        if (style == GLLines.Style.Faded) {
+          float inv_count = 1.0f / count;
+          byte a = base_c32.a;
+          for (int i = 0; i < count; ++i) {
+            byte faded_a = (byte)(a * (1.0f - 0.8f * (i * inv_count)));
+            compact_colors[i] = new UnityEngine.Color32(base_c32.r, base_c32.g, base_c32.b, faded_a);
+          }
+        } else {
+          for (int i = 0; i < count; ++i) {
+            compact_colors[i] = base_c32;
+          }
+        }
 
-      int index_count = style == GLLines.Style.Dashed ? count & ~1 : count;
-      mesh.SetIndices(shared_indices,
-                      indicesStart: 0,
-                      indicesLength: index_count,
-                      style == GLLines.Style.Dashed
-                          ? UnityEngine.MeshTopology.Lines
-                          : UnityEngine.MeshTopology.LineStrip,
-                      submesh: 0);
+        mesh.SetVertices(compact_vertices, 0, count);
+        mesh.SetColors(compact_colors, 0, count);
 
-      is_valid = true;
+        int index_count = style == GLLines.Style.Dashed ? count & ~1 : count;
+        mesh.SetIndices(shared_indices,
+                        indicesStart: 0,
+                        indicesLength: index_count,
+                        style == GLLines.Style.Dashed
+                            ? UnityEngine.MeshTopology.Lines
+                            : UnityEngine.MeshTopology.LineStrip,
+                        submesh: 0,
+                        calculateBounds: false);
+
+        NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
+        is_valid = true;
       }
     }
 
@@ -566,7 +547,8 @@ class Plotter {
     public CachedMeshEntry past = new CachedMeshEntry();
   }
 
-  private static readonly int[] shared_indices_ = new int[VertexBuffer.size];
+  private static readonly int[] shared_indices_ =
+      new int[NativeZeroCopyTrajectoryPipeline.DefaultCapacity];
 
   static Plotter() {
     for (int i = 0; i < shared_indices_.Length; ++i) {

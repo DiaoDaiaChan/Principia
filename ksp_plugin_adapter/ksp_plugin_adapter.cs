@@ -2048,11 +2048,24 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private void Early() {
-    if (PluginRunning()) {
-      // Wait for all the asynchronous integrations to complete and kill the
-      // vessels that collided with a celestial.  Note that a given vessel may
-      // be returned by several calls to FutureWaitForVesselToCatchUp because
-      // what we integrate are really pile-ups.
+    if (!PluginRunning()) {
+      return;
+    }
+    // Stage 3 Decoupling (Phase 1):
+    // If staged harvesting is enabled, do NOT block the main thread at -99.
+    // Allow the C++ worker thread pool to continue concurrent integration through
+    // aerodynamics and PhysX (~8-15 ms window). Futures are harvested at BetterLateThanNever (+8008).
+    if (HeterogeneousDynamicGovernor.EnableStagedHarvesting) {
+      return;
+    }
+    HarvestVesselsAndApplyOnRails();
+  }
+
+  private void HarvestVesselsAndApplyOnRails() {
+    if (!PluginRunning() || vessel_futures_.Count == 0) {
+      return;
+    }
+    using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
       collided_vessels_cache_.Clear();
       foreach (var f in vessel_futures_) {
         var future = f;
@@ -2075,6 +2088,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       }
       collided_vessels_cache_.Clear();
       ApplyToVesselsOnRails(Planetarium.GetUniversalTime());
+      HeterogeneousDynamicGovernor.RecordStagedHarvest();
     }
   }
 
@@ -2269,6 +2283,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
   private void BetterLateThanNever() {
     if (PluginRunning()) {
+      HarvestVesselsAndApplyOnRails();
       part_id_to_degrees_of_freedom_.Clear();
       var manageable_vessels = FlightGlobals.Vessels;
       for (int i = 0; i < manageable_vessels.Count; ++i) {
@@ -3115,6 +3130,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private void Cleanup() {
+    HarvestVesselsAndApplyOnRails();
     UnityEngine.Object.Destroy(map_renderer_);
     map_renderer_ = null;
     map_node_pool_.Clear();

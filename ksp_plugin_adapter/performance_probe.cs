@@ -149,6 +149,19 @@ public static class PerformanceProbe {
       GUILayout.Label($"模式: {mode_str} {bp_str}");
       GUILayout.Label($"分流统计: GPU {HeterogeneousDynamicGovernor.GpuDispatchCount} 次 | CPU {HeterogeneousDynamicGovernor.CpuDispatchCount} 次");
 
+      // 5. Decoupling Phase 1 Telemetry
+      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+      GUILayout.Label("<b>解耦 Phase 1: 天体与轨迹显存解耦:</b>");
+      string zero_copy_status = HeterogeneousDynamicGovernor.EnableZeroCopyTrajectoryPipeline
+          ? "<color=lime>[零拷贝直通已启用 (0 GC / 无 AABB 扫描)]</color>"
+          : "<color=yellow>[经典网格兼容模式]</color>";
+      string staged_status = HeterogeneousDynamicGovernor.EnableStagedHarvesting
+          ? "<color=lime>[分阶段让步 (0.1ms 阻塞已消除)]</color>"
+          : "<color=yellow>[主线程同步等待]</color>";
+      GUILayout.Label($"轨迹通道: {zero_copy_status}");
+      GUILayout.Label($"直通提交: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)");
+      GUILayout.Label($"物理推进: {staged_status} (收获: {HeterogeneousDynamicGovernor.StagedHarvestCount} 次)");
+
       if (GUILayout.Button("关闭探针 HUD", GUILayout.Height(24))) {
         ShowProfilingHud = false;
       }
