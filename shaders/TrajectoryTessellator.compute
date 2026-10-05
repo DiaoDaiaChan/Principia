@@ -1,0 +1,64 @@
+// TrajectoryTessellator.compute - Screen-Adaptive Trajectory Geometry Subdivision
+// Tessellates trajectory polylines in screen space and populates IndirectDraw arguments.
+
+#pragma kernel TessellateTrajectoryScreenAdaptive
+
+#define GROUP_SIZE 128
+
+struct TrajectoryNode {
+    float3 position_scaled;
+    float time;
+};
+
+struct OutputVertex {
+    float3 position;
+    float4 color;
+};
+
+cbuffer TessellationConfig : register(b0) {
+    float4x4 _WorldToCameraMatrix;
+    float4x4 _CameraToScreenMatrix;
+    float4 _BaseColor;
+    float4 _FadeColor;
+    uint _NodeCount;
+    float _CurvatureTolerancePixels;
+    float _CameraDistanceFactor;
+    uint _MaxOutputVertices;
+};
+
+StructuredBuffer<TrajectoryNode> _InputNodes : register(t0);
+RWStructuredBuffer<OutputVertex> _OutputVertices : register(u0);
+RWStructuredBuffer<uint> _IndirectArgs : register(u1); // [vertex_count, instance_count, start_vertex, start_instance]
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void TessellateTrajectoryScreenAdaptive(uint3 id : SV_DispatchThreadID) {
+    uint index = id.x;
+    if (index >= _NodeCount - 1) return;
+
+    TrajectoryNode n0 = _InputNodes[index];
+    TrajectoryNode n1 = _InputNodes[index + 1];
+
+    // Project points to screen coordinates
+    float4 clip0 = mul(_CameraToScreenMatrix, mul(_WorldToCameraMatrix, float4(n0.position_scaled, 1.0f)));
+    float4 clip1 = mul(_CameraToScreenMatrix, mul(_WorldToCameraMatrix, float4(n1.position_scaled, 1.0f)));
+
+    // Atomic allocate output vertices
+    uint out_idx;
+    InterlockedAdd(_IndirectArgs[0], 2, out_idx);
+
+    if (out_idx + 1 < _MaxOutputVertices) {
+        float t0 = float(index) / float(_NodeCount);
+        float t1 = float(index + 1) / float(_NodeCount);
+
+        OutputVertex v0;
+        v0.position = n0.position_scaled;
+        v0.color = lerp(_BaseColor, _FadeColor, t0);
+
+        OutputVertex v1;
+        v1.position = n1.position_scaled;
+        v1.color = lerp(_BaseColor, _FadeColor, t1);
+
+        _OutputVertices[out_idx] = v0;
+        _OutputVertices[out_idx + 1] = v1;
+    }
+}

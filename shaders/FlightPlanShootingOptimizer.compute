@@ -1,0 +1,191 @@
+// FlightPlanShootingOptimizer.compute - Massively Parallel GPGPU Flight Plan Shooting Optimizer
+// Dispatches 16,384 candidate maneuvers concurrently to evaluate trajectories and extract global minimum cost solution.
+
+#pragma kernel GenerateCandidateGrid
+#pragma kernel EvaluateTrajectoryBundle
+#pragma kernel ParallelReduceOptimalBurn
+
+#include "DoubleSingle.hlsl"
+
+#define GROUP_SIZE 256
+#define TOTAL_CANDIDATES 16384
+
+struct CandidateBurnParameters {
+    float delta_t;
+    float delta_v_tangent;
+    float delta_v_normal;
+    float delta_v_binormal;
+};
+
+struct CandidateBurnEvaluation {
+    uint candidate_index;
+    float periapsis_distance;
+    float target_relative_speed;
+    float cost_metric;
+    float delta_t;
+    float delta_v_tangent;
+    float delta_v_normal;
+    float delta_v_binormal;
+};
+
+struct CelestialBodyState {
+    float3 position;
+    float gravitational_parameter; // GM
+    float3 velocity;
+    float padding;
+};
+
+cbuffer OptimizerConfig : register(b0) {
+    float4 _BaseBurnTimes;          // x: base_t0, y: span_t, z: vessel_mass, w: thrust
+    float4 _BaseDeltaV;             // x: base_dv_t, y: base_dv_n, z: base_dv_b, w: isp
+    float4 _SpanDeltaV;             // x: span_dv_t, y: span_dv_n, z: span_dv_b, w: target_periapsis
+    float4 _OptimizationWeights;    // x: w_dist, y: w_speed, z: w_delta_v, w: w_inclination
+    float4 _InitialVesselPos;       // xyz: pos_m, w: initial_time
+    float4 _InitialVesselVel;       // xyz: vel_m_s, w: step_size_s
+    uint _CelestialCount;
+    uint _StepCount;
+    uint _TargetCelestialIndex;
+    uint _ReductionItemCount;
+};
+
+StructuredBuffer<CelestialBodyState> _CelestialBodies : register(t0);
+RWStructuredBuffer<CandidateBurnParameters> _CandidateGrid : register(u0);
+RWStructuredBuffer<CandidateBurnEvaluation> _Evaluations : register(u1);
+RWStructuredBuffer<CandidateBurnEvaluation> _ReducedResults : register(u2);
+
+groupshared CandidateBurnEvaluation s_shared_evals[GROUP_SIZE];
+
+// Kernel 1: Generate 16,384-node 4D parameter grid around base maneuver
+[numthreads(GROUP_SIZE, 1, 1)]
+void GenerateCandidateGrid(uint3 id : SV_DispatchThreadID) {
+    uint index = id.x;
+    if (index >= TOTAL_CANDIDATES) return;
+
+    // Decompose index into 4D parameter space: 16 x 16 x 8 x 8 = 16384
+    uint idx_t  = (index >> 10) & 0x0F; // 16 subdivisions for delta_t
+    uint idx_vt = (index >> 6)  & 0x0F; // 16 subdivisions for dv_tangent
+    uint idx_vn = (index >> 3)  & 0x07; // 8 subdivisions for dv_normal
+    uint idx_vb =  index        & 0x07; // 8 subdivisions for dv_binormal
+
+    // Map [0, N-1] to [-1.0, 1.0]
+    float norm_t  = (float(idx_t)  / 15.0f) * 2.0f - 1.0f;
+    float norm_vt = (float(idx_vt) / 15.0f) * 2.0f - 1.0f;
+    float norm_vn = (float(idx_vn) / 7.0f)  * 2.0f - 1.0f;
+    float norm_vb = (float(idx_vb) / 7.0f)  * 2.0f - 1.0f;
+
+    CandidateBurnParameters params;
+    params.delta_t            = norm_t  * _BaseBurnTimes.y;
+    params.delta_v_tangent    = _BaseDeltaV.x + norm_vt * _SpanDeltaV.x;
+    params.delta_v_normal     = _BaseDeltaV.y + norm_vn * _SpanDeltaV.y;
+    params.delta_v_binormal   = _BaseDeltaV.z + norm_vb * _SpanDeltaV.z;
+
+    _CandidateGrid[index] = params;
+}
+
+// Kernel 2: Evaluate trajectory forward propagation for all 16,384 candidates
+[numthreads(GROUP_SIZE, 1, 1)]
+void EvaluateTrajectoryBundle(uint3 id : SV_DispatchThreadID) {
+    uint index = id.x;
+    if (index >= TOTAL_CANDIDATES) return;
+
+    CandidateBurnParameters params = _CandidateGrid[index];
+
+    // Compute delta-v magnitude penalty
+    float dv_sqr = params.delta_v_tangent * params.delta_v_tangent +
+                   params.delta_v_normal * params.delta_v_normal +
+                   params.delta_v_binormal * params.delta_v_binormal;
+    float delta_v_mag = sqrt(dv_sqr);
+
+    // Initial state setup with candidate perturbation
+    float3 pos = _InitialVesselPos.xyz;
+    float3 vel = _InitialVesselVel.xyz;
+
+    // Apply impulsive burn delta-v
+    vel += float3(params.delta_v_tangent, params.delta_v_normal, params.delta_v_binormal);
+
+    float min_periapsis_dist = 1e30f;
+    float min_periapsis_speed = 1e30f;
+    float dt = _InitialVesselVel.w; // step size in seconds
+
+    // Forward propagation using symplectic Velocity-Verlet
+    [loop]
+    for (uint step = 0; step < _StepCount; ++step) {
+        // Compute total gravitational acceleration from all massive celestial bodies
+        float3 accel = float3(0.0f, 0.0f, 0.0f);
+        [loop]
+        for (uint b = 0; b < _CelestialCount; ++b) {
+            CelestialBodyState body = _CelestialBodies[b];
+            float3 r = body.position - pos;
+            float r2 = dot(r, r) + 1.0f; // Softening to prevent singularity
+            float inv_r = rsqrt(r2);
+            float inv_r3 = inv_r * inv_r * inv_r;
+            accel += r * (body.gravitational_parameter * inv_r3);
+
+            // Track distance to target celestial body
+            if (b == _TargetCelestialIndex) {
+                float dist = sqrt(r2);
+                if (dist < min_periapsis_dist) {
+                    min_periapsis_dist = dist;
+                    float3 rel_vel = vel - body.velocity;
+                    min_periapsis_speed = length(rel_vel);
+                }
+            }
+        }
+
+        // Symplectic step
+        vel += accel * dt;
+        pos += vel * dt;
+    }
+
+    // Cost metric calculation
+    float target_r = _SpanDeltaV.w;
+    float dist_diff = abs(min_periapsis_dist - target_r);
+    float cost = _OptimizationWeights.x * dist_diff +
+                 _OptimizationWeights.y * min_periapsis_speed +
+                 _OptimizationWeights.z * delta_v_mag;
+
+    CandidateBurnEvaluation eval_result;
+    eval_result.candidate_index        = index;
+    eval_result.periapsis_distance     = min_periapsis_dist;
+    eval_result.target_relative_speed  = min_periapsis_speed;
+    eval_result.cost_metric            = cost;
+    eval_result.delta_t                = params.delta_t;
+    eval_result.delta_v_tangent        = params.delta_v_tangent;
+    eval_result.delta_v_normal         = params.delta_v_normal;
+    eval_result.delta_v_binormal       = params.delta_v_binormal;
+
+    _Evaluations[index] = eval_result;
+}
+
+// Kernel 3: Parallel Reduction in shared memory to extract global minimum
+[numthreads(GROUP_SIZE, 1, 1)]
+void ParallelReduceOptimalBurn(
+    uint3 group_thread_id : SV_GroupThreadID,
+    uint3 group_id : SV_GroupID,
+    uint3 dispatch_thread_id : SV_DispatchThreadID) {
+    uint tid = group_thread_id.x;
+    uint global_idx = dispatch_thread_id.x;
+
+    if (global_idx < _ReductionItemCount) {
+        s_shared_evals[tid] = _Evaluations[global_idx];
+    } else {
+        CandidateBurnEvaluation inf_eval;
+        inf_eval.cost_metric = 1e38f;
+        s_shared_evals[tid] = inf_eval;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // In-place reduction in shared memory
+    for (uint stride = GROUP_SIZE / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            if (s_shared_evals[tid + stride].cost_metric < s_shared_evals[tid].cost_metric) {
+                s_shared_evals[tid] = s_shared_evals[tid + stride];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0) {
+        _ReducedResults[group_id.x] = s_shared_evals[0];
+    }
+}

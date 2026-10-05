@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -362,7 +362,9 @@ class BurnEditor : ScalingRenderer {
           string vessel_guid = vessel_.id.ToString();
           int optimized_index =
               plugin.FlightPlanOptimizationDriverInProgress(vessel_guid);
-          if (optimized_index == index) {
+          if (GpuFlightPlanOptimizer.IsOptimizing) {
+            UnityEngine.GUILayout.Label("[GPU 16K Shooting...]");
+          } else if (optimized_index == index) {
             UnityEngine.GUILayout.Label(
                 L10N.CacheFormat("#Principia_BurnEditor_OptimizingThis"));
           } else if (optimized_index != -1) {
@@ -370,7 +372,28 @@ class BurnEditor : ScalingRenderer {
                 L10N.CacheFormat("#Principia_BurnEditor_OptimizingOther"));
           } else if (UnityEngine.GUILayout.Button(
                          L10N.CacheFormat("#Principia_BurnEditor_Optimize"))) {
-            plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+            if (HeterogeneousDynamicGovernor.ShouldDispatchToGpu(16384)) {
+              UnityEngine.Vector3 base_dv = new UnityEngine.Vector3(
+                  (float)Δv_tangent_.value,
+                  (float)Δv_normal_.value,
+                  (float)Δv_binormal_.value);
+              bool dispatched = GpuFlightPlanOptimizer.TryDispatchGpuOptimization(
+                  base_delta_v: base_dv,
+                  initial_time: (float)initial_time_,
+                  span_t: 300.0f,
+                  span_dv: new UnityEngine.Vector3(50.0f, 50.0f, 50.0f),
+                  on_success: result => {
+                    Δv_tangent_.value = result.delta_v_tangent;
+                    Δv_normal_.value = result.delta_v_normal;
+                    Δv_binormal_.value = result.delta_v_binormal;
+                    ReformatΔv();
+                  });
+              if (!dispatched) {
+                plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+              }
+            } else {
+              plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+            }
           }
         }
       }

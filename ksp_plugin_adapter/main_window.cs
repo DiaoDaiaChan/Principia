@@ -221,6 +221,36 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
             horizon_text,
             style: Style.Info(UnityEngine.GUI.skin.label));
       }
+
+      // GPGPU Heterogeneous Telemetry and Governor Controls.
+      string gpu_mode_str;
+      switch (HeterogeneousDynamicGovernor.Affinity) {
+        case HeterogeneousAffinity.CpuDominant:
+          gpu_mode_str = "CPU-Dominant";
+          break;
+        case HeterogeneousAffinity.GpuDominant:
+          gpu_mode_str = "GPU-Dominant";
+          break;
+        default:
+          gpu_mode_str = "Auto (Dynamic)";
+          break;
+      }
+      string backpressure_tag = HeterogeneousDynamicGovernor.IsBackpressureActive
+          ? "[Backpressure: Throttled]"
+          : "[Load: Normal]";
+      UnityEngine.GUILayout.Label(
+          $"GPGPU: {PrincipiaGPGPUContext.GpuDeviceName} | Mode: {gpu_mode_str} {backpressure_tag}",
+          style: Style.Info(UnityEngine.GUI.skin.label));
+
+      using (new UnityEngine.GUILayout.HorizontalScope()) {
+        UnityEngine.GUILayout.Label(
+            $"Render: {HeterogeneousDynamicGovernor.SmoothedRenderTimeMs:F1}ms | Budget: {HeterogeneousDynamicGovernor.GpuComputeBudgetMs:F1}ms",
+            style: Style.Info(UnityEngine.GUI.skin.label));
+        if (UnityEngine.GUILayout.Button("Switch Mode", GUILayoutWidth(4))) {
+          HeterogeneousDynamicGovernor.Affinity = (HeterogeneousAffinity)(
+              ((int)HeterogeneousDynamicGovernor.Affinity + 1) % 3);
+        }
+      }
       history_length_.Render(enabled : true);
       if (FlightGlobals.ActiveVessel?.orbitTargeter != null &&
           (MapView.MapIsEnabled ||

@@ -924,6 +924,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
     // While we're here, we might as well log.
     Log.Info("principia.ksp_plugin_adapter.PrincipiaPluginAdapter.OnAwake()");
+    PrincipiaGPGPUContext.Initialize();
 
     LoadTextureIfExists(out compass_navball_texture_, "navball_compass.png");
     LoadTextureOrDie(out inertial_navball_texture_, "navball_inertial.png");
@@ -1291,6 +1292,10 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                                 sun_world_position);
       }
     }
+    float frame_ms = UnityEngine.Time.unscaledDeltaTime * 1000.0f;
+    HeterogeneousDynamicGovernor.UpdateFrameMetrics(
+        render_time_ms: frame_ms,
+        compute_time_ms: GpuFlightPlanOptimizer.LastOptimizationDurationMs);
   }
 
   private void RenderNavballAndAccessories() {
@@ -3112,6 +3117,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     previous_display_mode_ = null;
     navball_changed_ = true;
     plotter_?.Dispose();
+    GpuFlightPlanOptimizer.ReleaseBuffers();
+    GpuTrajectoryRenderer.ReleaseBuffers();
+    PrincipiaGPGPUContext.Dispose();
     rolling_ephemeris_driver_?.Reset();
     rolling_ephemeris_driver_ = null;
 

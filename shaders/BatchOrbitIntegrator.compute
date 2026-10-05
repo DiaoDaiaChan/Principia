@@ -1,0 +1,97 @@
+// BatchOrbitIntegrator.compute - High-Throughput Symplectic Batch Orbit Integrator
+// Propagates thousands of non-interacting vessels, debris, and satellites in double-single precision.
+
+#pragma kernel IntegrateVesselsVerlet
+
+#include "DoubleSingle.hlsl"
+
+#define GROUP_SIZE 128
+
+struct OrbitalState64 {
+    ds_vec3 position;
+    ds_vec3 velocity;
+};
+
+struct CelestialData {
+    ds_vec3 position;
+    ds_real gravitational_parameter; // GM
+    ds_vec3 velocity;
+    float radius;
+    float padding;
+};
+
+cbuffer BatchIntegratorConfig : register(b0) {
+    uint _VesselCount;
+    uint _CelestialCount;
+    float _TimeStepSeconds;
+    uint _SubSteps;
+};
+
+StructuredBuffer<CelestialData> _CelestialBodies : register(t0);
+RWStructuredBuffer<OrbitalState64> _VesselStates : register(u0);
+
+[numthreads(GROUP_SIZE, 1, 1)]
+void IntegrateVesselsVerlet(uint3 id : SV_DispatchThreadID) {
+    uint index = id.x;
+    if (index >= _VesselCount) return;
+
+    OrbitalState64 state = _VesselStates[index];
+    ds_vec3 pos = state.position;
+    ds_vec3 vel = state.velocity;
+    ds_real dt = ds_make(_TimeStepSeconds);
+    ds_real half_dt = ds_make(_TimeStepSeconds * 0.5f);
+
+    for (uint substep = 0; substep < _SubSteps; ++substep) {
+        // Step 1: Compute gravitational acceleration at current position
+        ds_vec3 accel;
+        accel.x = ds_make(0.0f);
+        accel.y = ds_make(0.0f);
+        accel.z = ds_make(0.0f);
+
+        for (uint b = 0; b < _CelestialCount; ++b) {
+            CelestialData body = _CelestialBodies[b];
+            ds_vec3 r = ds_vec3_sub(body.position, pos);
+            ds_real r2 = ds_vec3_length_sqr(r);
+            ds_real r_len = ds_sqrt(r2);
+            ds_real r3 = ds_mul(r2, r_len);
+
+            ds_real inv_r3 = ds_div(ds_make(1.0f), r3);
+            ds_real factor = ds_mul(body.gravitational_parameter, inv_r3);
+            ds_vec3 body_accel = ds_vec3_scale(r, factor);
+            accel = ds_vec3_add(accel, body_accel);
+        }
+
+        // Velocity-Verlet step
+        // v(t + dt/2) = v(t) + a(t) * dt/2
+        vel = ds_vec3_add(vel, ds_vec3_scale(accel, half_dt));
+
+        // x(t + dt) = x(t) + v(t + dt/2) * dt
+        pos = ds_vec3_add(pos, ds_vec3_scale(vel, dt));
+
+        // a(t + dt)
+        ds_vec3 next_accel;
+        next_accel.x = ds_make(0.0f);
+        next_accel.y = ds_make(0.0f);
+        next_accel.z = ds_make(0.0f);
+
+        for (uint b2 = 0; b2 < _CelestialCount; ++b2) {
+            CelestialData body = _CelestialBodies[b2];
+            ds_vec3 r = ds_vec3_sub(body.position, pos);
+            ds_real r2 = ds_vec3_length_sqr(r);
+            ds_real r_len = ds_sqrt(r2);
+            ds_real r3 = ds_mul(r2, r_len);
+
+            ds_real inv_r3 = ds_div(ds_make(1.0f), r3);
+            ds_real factor = ds_mul(body.gravitational_parameter, inv_r3);
+            ds_vec3 body_accel = ds_vec3_scale(r, factor);
+            next_accel = ds_vec3_add(next_accel, body_accel);
+        }
+
+        // v(t + dt) = v(t + dt/2) + a(t + dt) * dt/2
+        vel = ds_vec3_add(vel, ds_vec3_scale(next_accel, half_dt));
+    }
+
+    state.position = pos;
+    state.velocity = vel;
+    _VesselStates[index] = state;
+}

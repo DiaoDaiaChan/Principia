@@ -88,6 +88,10 @@
       <HintPath>$(KSPManaged)\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
+    <Reference Include="UnityEngine.AssetBundleModule">
+      <HintPath>$(KSPManaged)\UnityEngine.AssetBundleModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
     <Reference Include="UnityEngine.ImageConversionModule">
       <HintPath>$(KSPManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>False</Private>
@@ -152,6 +156,10 @@
     <Compile Include="reference_frame_selector.cs" />
     <Compile Include="sidecar_storage.cs" />
     <Compile Include="rolling_ephemeris_driver.cs" />
+    <Compile Include="PrincipiaGPGPUContext.cs" />
+    <Compile Include="HeterogeneousDynamicGovernor.cs" />
+    <Compile Include="GpuFlightPlanOptimizer.cs" />
+    <Compile Include="GpuTrajectoryRenderer.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />
     <Compile Include="mono_marshaler.cs" />
