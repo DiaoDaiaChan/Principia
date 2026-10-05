@@ -73,9 +73,10 @@ public static class PerformanceProbe {
     }
   }
 
+  private static int frame_vertices_accumulator_ = 0;
   public static void RecordCacheHit() => CacheHits++;
   public static void RecordCacheMiss() => CacheMisses++;
-  public static void RecordVertices(int count) => TotalVerticesRendered = count;
+  public static void RecordVertices(int count) => frame_vertices_accumulator_ += count;
 
   public static float GetSmoothedMs(ProbeCategory category) => smoothed_ms_[(int)category];
   public static float GetPeakMs(ProbeCategory category) => peak_ms_[(int)category];
@@ -84,6 +85,9 @@ public static class PerformanceProbe {
     float dt = Time.unscaledDeltaTime;
     CurrentFps = dt > 0.0001f ? Mathf.Lerp(CurrentFps, 1.0f / dt, 0.1f) : 60.0f;
     FrameTimeMs = dt * 1000.0f;
+
+    TotalVerticesRendered = frame_vertices_accumulator_;
+    frame_vertices_accumulator_ = 0;
 
     // Track GC memory allocations
     long current_mem = GC.GetTotalMemory(forceFullCollection: false);
