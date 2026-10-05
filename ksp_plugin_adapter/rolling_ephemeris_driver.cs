@@ -25,12 +25,18 @@ internal class RollingEphemerisDriver {
   public double current_horizon_seconds =>
       Math.Max(0.0, target_extended_time_ - Planetarium.GetUniversalTime());
   public double current_horizon_years => current_horizon_seconds / JulianYear;
+  public double lookahead_horizon_years => lookahead_horizon / JulianYear;
+  public double refresh_threshold_years => refresh_threshold / JulianYear;
+  public double target_extended_time => target_extended_time_;
   public string carrier_vessel_name { get; private set; } = "None";
   public bool is_active => !string.IsNullOrEmpty(carrier_vessel_guid_);
+
+  public static RollingEphemerisDriver Instance { get; private set; }
 
   public RollingEphemerisDriver(IntPtr plugin, PrincipiaPluginAdapter adapter) {
     plugin_ = plugin;
     adapter_ = adapter;
+    Instance = this;
   }
 
   public static bool ShouldSuppressPlot(string vessel_guid) {
@@ -60,6 +66,9 @@ internal class RollingEphemerisDriver {
     suppress_plot_on_active_ = false;
     target_extended_time_ = -1.0;
     carrier_vessel_name = "None";
+    if (Instance == this) {
+      Instance = null;
+    }
   }
 
   public void OnTimeWarpRateChanged() {

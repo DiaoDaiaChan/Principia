@@ -11,8 +11,12 @@ public enum ProbeCategory {
   FlightPlanEvaluation = 3,
   StorageIO = 4,
   GpuCompute = 5,
-  TotalFrame = 6,
-  Count = 7
+  UnityPrecalc = 6,
+  UnityFixedUpdate = 7,
+  UnityBetterLate = 8,
+  UnityLateUpdate = 9,
+  TotalFrame = 10,
+  Count = 11
 }
 
 public static class PerformanceProbe {
@@ -39,7 +43,8 @@ public static class PerformanceProbe {
 
   // In-Game HUD Window state
   public static bool ShowProfilingHud = false;
-  private static Rect hud_rect_ = new Rect(40, 100, 340, 360);
+  private static Rect hud_rect_ = new Rect(40, 80, 430, 620);
+  private static Vector2 scroll_pos_ = Vector2.zero;
   private const int WindowId = 0x50524F42; // "PROB"
 
   public readonly struct ProbeScope : IDisposable {
@@ -108,38 +113,77 @@ public static class PerformanceProbe {
         WindowId,
         hud_rect_,
         RenderHudContents,
-        "Principia 性能与遥测探针 (Performance Probe)");
+        "Principia 性能遥测与加速指示器 (Performance Probe)");
   }
 
   private static void RenderHudContents(int window_id) {
     using (new GUILayout.VerticalScope()) {
-      // 1. Frame & FPS Overview
+      scroll_pos_ = GUILayout.BeginScrollView(scroll_pos_, GUILayout.Height(550));
+
+      // 1. Frame & Engine Overview
       using (new GUILayout.HorizontalScope()) {
         GUILayout.Label($"<b>FPS:</b> {CurrentFps:F1}", GUILayout.Width(100));
-        GUILayout.Label($"<b>帧耗时:</b> {FrameTimeMs:F2} ms", GUILayout.Width(110));
+        GUILayout.Label($"<b>帧耗时:</b> {FrameTimeMs:F2} ms", GUILayout.Width(120));
         GUILayout.Label($"<b>GC:</b> {GcAllocRateKbPerFrame:F1} KB/f");
+      }
+      GUILayout.Label("<color=grey><i>(Principia 零拷贝轨迹通道产生 GC: 0 B/f)</i></color>");
+
+      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+
+      // 2. Unity Lifecycle Timing Breakdown
+      GUILayout.Label("<b>Unity 端生命周期耗时分析 (Smoothed / Peak):</b>");
+      DrawMetricBar("• Precalc() (天体/历表推进):", ProbeCategory.UnityPrecalc, 2.0f);
+      DrawMetricBar("• FixedUpdate() (物理帧同步步):", ProbeCategory.UnityFixedUpdate, 0.5f);
+      DrawMetricBar("• BetterLate() (分阶段收割):", ProbeCategory.UnityBetterLate, 1.0f);
+      DrawMetricBar("• LateUpdate() (轨迹与视口交互):", ProbeCategory.UnityLateUpdate, 2.0f);
+
+      float principia_total = GetSmoothedMs(ProbeCategory.UnityPrecalc) +
+                              GetSmoothedMs(ProbeCategory.UnityFixedUpdate) +
+                              GetSmoothedMs(ProbeCategory.UnityBetterLate) +
+                              GetSmoothedMs(ProbeCategory.UnityLateUpdate);
+      float principia_ratio = FrameTimeMs > 0.001f ? (principia_total / FrameTimeMs) * 100.0f : 0.0f;
+      float unity_other = Mathf.Max(0.0f, FrameTimeMs - principia_total);
+      float other_ratio = Mathf.Max(0.0f, 100.0f - principia_ratio);
+
+      GUILayout.Label($"Principia 耗时: <b>{principia_total:F2} ms ({principia_ratio:F1}%)</b> | Unity 其他系统: <b>{unity_other:F2} ms ({other_ratio:F1}%)</b>");
+
+      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+
+      // 3. Background Rolling Ephemeris Extrapolation Indicator
+      GUILayout.Label("<b>后台星历滚动推演指示器 (Rolling Ephemeris):</b>");
+      var driver = RollingEphemerisDriver.Instance;
+      if (driver != null) {
+        string status_str = driver.is_active
+            ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
+            : "<color=yellow>○ 待机监控中</color>";
+        GUILayout.Label($"推演状态: {status_str}");
+        GUILayout.Label($"载体飞船 (Carrier): <b>{driver.carrier_vessel_name}</b>");
+        GUILayout.Label($"前瞻推演窗口: <b>+{driver.current_horizon_years:F2} 年</b> (目标: +{driver.lookahead_horizon_years:F1} 年 / 阈值: <{driver.refresh_threshold_years:F1} 年)");
+        GUILayout.Label($"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒");
+        GUILayout.Label($"分阶段让步收获: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次 (0.1ms 忙等已消除)");
+      } else {
+        GUILayout.Label("<color=grey>○ 暂无活动星历驱动器 (等待场景就绪)</color>");
       }
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
-      // 2. Subsystem Latency Breakdown
-      GUILayout.Label("<b>核心子系统延迟 (Smoothed / Peak):</b>");
-      DrawMetricBar("物理推进 (Physics):", ProbeCategory.PhysicsAdvance, 10.0f);
-      DrawMetricBar("轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting, 5.0f);
-      DrawMetricBar("网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration, 3.0f);
-      DrawMetricBar("飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation, 15.0f);
-      DrawMetricBar("GPGPU 计算 (Compute):", ProbeCategory.GpuCompute, 5.0f);
+      // 4. GPU Rendering & Acceleration Indicator
+      GUILayout.Label("<b>GPU 绘制与硬件加速指示器 (GPU Acceleration):</b>");
+      GUILayout.Label($"运算设备: <b>{PrincipiaGPGPUContext.GpuDeviceName}</b>");
+      string compute_cap = PrincipiaGPGPUContext.SupportsCompute
+          ? "<color=lime>[Compute Shader 5.0 / D3D11 已就绪]</color>"
+          : "<color=yellow>[CPU 兼容模式]</color>";
+      GUILayout.Label($"硬件加速支持: {compute_cap}");
 
-      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+      string zc_str = HeterogeneousDynamicGovernor.EnableZeroCopyTrajectoryPipeline
+          ? "<color=lime>[零拷贝直通已启用 (0 GC / 无 AABB 扫描)]</color>"
+          : "<color=yellow>[经典网格模式]</color>";
+      GUILayout.Label($"显存直通管线: {zc_str}");
+      GUILayout.Label($"在屏顶点总数: <b>{TotalVerticesRendered:N0}</b> 顶点 (整帧全轨道汇总)");
+      GUILayout.Label($"直通提交次数: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)");
+      GUILayout.Label($"非托管显存池: <b>{NativeZeroCopyTrajectoryPipeline.CurrentCapacity:N0}</b> 顶点 ({NativeZeroCopyTrajectoryPipeline.CurrentCapacity * 12 / 1024} KB 独立池)");
+      GUILayout.Label($"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0})");
 
-      // 3. Cache & Geometry Telemetry
-      GUILayout.Label("<b>缓存与几何统计 (Cache & Geometry):</b>");
-      GUILayout.Label($"3D 网格命中率: <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits}, 重构: {CacheMisses})");
-      GUILayout.Label($"在屏顶点总数: <b>{TotalVerticesRendered:N0}</b> 顶点");
-
-      // 4. GPGPU Heterogeneous Status
-      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
-      GUILayout.Label("<b>GPGPU 异构调度总督:</b>");
       string mode_str = HeterogeneousDynamicGovernor.Affinity switch {
         HeterogeneousAffinity.AutoAdaptive => "Auto (动态自适应)",
         HeterogeneousAffinity.CpuDominant  => "CPU 优先 (节能/核显)",
@@ -147,24 +191,22 @@ public static class PerformanceProbe {
         _ => "未知"
       };
       string bp_str = HeterogeneousDynamicGovernor.IsBackpressureActive
-          ? "<color=orange>[回压熔断已激活]</color>"
-          : "<color=lime>[负载正常]</color>";
-      GUILayout.Label($"设备: {PrincipiaGPGPUContext.GpuDeviceName}");
-      GUILayout.Label($"模式: {mode_str} {bp_str}");
-      GUILayout.Label($"分流统计: GPU {HeterogeneousDynamicGovernor.GpuDispatchCount} 次 | CPU {HeterogeneousDynamicGovernor.CpuDispatchCount} 次");
+          ? "<color=orange>[回压熔断已激活 (主帧率保护)]</color>"
+          : "<color=lime>[负载畅通 (任务可分流)]</color>";
+      GUILayout.Label($"GPGPU 调度总督: {mode_str} {bp_str}");
+      GUILayout.Label($"异构分流计数: GPU <b>{HeterogeneousDynamicGovernor.GpuDispatchCount}</b> 次 | CPU <b>{HeterogeneousDynamicGovernor.CpuDispatchCount}</b> 次 (变轨寻优就绪)");
 
-      // 5. Decoupling Phase 1 Telemetry
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
-      GUILayout.Label("<b>解耦 Phase 1: 天体与轨迹显存解耦:</b>");
-      string zero_copy_status = HeterogeneousDynamicGovernor.EnableZeroCopyTrajectoryPipeline
-          ? "<color=lime>[零拷贝直通已启用 (0 GC / 无 AABB 扫描)]</color>"
-          : "<color=yellow>[经典网格兼容模式]</color>";
-      string staged_status = HeterogeneousDynamicGovernor.EnableStagedHarvesting
-          ? "<color=lime>[分阶段让步 (0.1ms 阻塞已消除)]</color>"
-          : "<color=yellow>[主线程同步等待]</color>";
-      GUILayout.Label($"轨迹通道: {zero_copy_status}");
-      GUILayout.Label($"直通提交: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)");
-      GUILayout.Label($"物理推进: {staged_status} (收获: {HeterogeneousDynamicGovernor.StagedHarvestCount} 次)");
+
+      // 5. Core Subsystem Latency Breakdown
+      GUILayout.Label("<b>核心子系统延迟 (Smoothed / Peak):</b>");
+      DrawMetricBar("• 物理推进 (Physics):", ProbeCategory.PhysicsAdvance, 10.0f);
+      DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting, 5.0f);
+      DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration, 3.0f);
+      DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation, 15.0f);
+      DrawMetricBar("• GPGPU 计算 (Compute):", ProbeCategory.GpuCompute, 5.0f);
+
+      GUILayout.EndScrollView();
 
       if (GUILayout.Button("关闭探针 HUD", GUILayout.Height(24))) {
         ShowProfilingHud = false;
@@ -178,7 +220,7 @@ public static class PerformanceProbe {
     float peak = GetPeakMs(cat);
     string color_tag = ms > warning_threshold_ms ? "<color=red>" : (ms > warning_threshold_ms * 0.5f ? "<color=yellow>" : "<color=lime>");
     using (new GUILayout.HorizontalScope()) {
-      GUILayout.Label(label, GUILayout.Width(130));
+      GUILayout.Label(label, GUILayout.Width(170));
       GUILayout.Label($"{color_tag}{ms:F2}</color> ms (峰值: {peak:F1}ms)");
     }
   }
