@@ -283,7 +283,102 @@ public static void RequestOptimizationResult(
 
 ---
 
-## 五、实施阶段与演进路线图
+## 五、CPU-GPU 动态自适应协同调度与反向回压防御体系 (Dynamic Heterogeneous Balancing & Backpressure Architecture)
+
+### 1. 核心设计原则：绝对拒绝一刀切接管
+GPU 在架构中定位为**“高通量加速器（Throughput Accelerator）”**而非“全盘替代者”。架构必须根据任务特征、规模阈值与硬件实时负荷，实施**毫秒级自适应动态分流**：
+
+```mermaid
+flowchart TD
+    TaskIn[新轨道/物理计算任务请求] --> ProfileCheck{硬件能力与系统状态检测}
+    
+    ProfileCheck -->|未检测到独立 GPU / 电池节能模式| ForceCPU[严格路由给 CPU 线程池<br/>安全保底 / 零 GPU 唤醒]
+    ProfileCheck -->|独立 GPU 就绪| ScaleCheck{任务规模与并发粒度评估}
+    
+    ScaleCheck -->|N <= 32 极小规模任务<br/>玩家活动船单步推进 / 局部机动微调| CPU_Direct[CPU AVX2/AVX-512 原生执行<br/>0 总线开销 / 0 调度延迟]
+    ScaleCheck -->|N > 32 高并发数据流<br/>群星座推进 / 16K打靶 / 3D等势面| BackpressureGuard{GPU 渲染回压健康检查<br/>T_render < 预算阈值?}
+    
+    BackpressureGuard -->|正常: GPU 算力裕量充足| GPU_Dispatch[派发 GPGPU Compute Shader<br/>Double-Single / 原生 FP64 并发加速]
+    BackpressureGuard -->|超载: 玩家高画质 4K / 复杂场景掉帧| AdaptiveFallback[自适应动态熔断回落<br/>缩减粒子并发数或切回 CPU 异步流<br/>保住游戏 60/120 FPS 渲染平稳]
+```
+
+### 2. 三大动态分流决策机制
+
+#### 决策一：任务粒度与流水线启动延迟阈值 (Task Granularity Threshold, $N_{\text{threshold}}$)
+* **物理事实**：向 GPU 提交 Compute Shader `Dispatch` 存在约 $5 \sim 20\ \mu\text{s}$ 的指令构建与驱动通信开销，随后异步回读存在管线延迟。
+* **分流阈值策略**：
+  * **单船连续性推进（$N = 1$）与微量机动调整（$N \le 32$）**：由 CPU 物理线程（C++ SIMD）就地以 $O(1)$ 纳秒级完成积分。此时派发 GPU 纯属总线浪费；
+  * **多目标/大规模并发（$N > 32$，如 100~10,000 艘碎片群、16,384 组全局打靶、4,096 个蒙特卡洛粒子）**：GPU 的 SIMT 核心展开能带来 $10\times \sim 100\times$ 级吞吐加速，动态路由至 GPU 执行。
+
+#### 决策二：渲染帧时间反向回压与熔断保护 (Render Frame-Time Backpressure Guard)
+* **核心底线**：**GPU 的首要天职是光栅化渲染，保证游戏不卡顿掉帧；物理计算绝不可反客为主挤占渲染带宽！**
+* **动态调节算法**：
+  * 调度器每帧采集 GPU 渲染耗时 $T_{\text{render}}$ 与 GPU 计算耗时 $T_{\text{compute}}$；
+  * 设定**物理计算时间预算（Compute Budget）**：默认为每帧 $1.5\text{ ms} \sim 2.0\text{ ms}$；
+  * **回压联动**：
+    * 当玩家视角进入重度画质场景（如 4K 分辨率、高反走样 MSAA、复杂地表散射或体积云着色器导致 $T_{\text{render}} > 13.0\text{ ms}$）时，系统自动**触发回压节流（Throttling）**；
+    * 节流机制将打靶寻优任务分帧切片执行，或将部分后台碎片积分无缝回退至 CPU 低优先级线程池，**确保主渲染管线稳锁 60 / 120 FPS**。
+
+#### 决策三：非对称双轮驱动（Asymmetric Concurrent Co-processing）
+CPU 与 GPU **不是二选一的互斥关系，而是同步工作的“双引擎”**：
+* **CPU 专心做高精度低延迟业务**：毫秒不差地守恒推进玩家当前活动飞船的质量、推力、RCS 及天体星历；
+* **GPU 同步在后台吞吐海量背景数据**：在显存中以 60 FPS 异步演化背景卫星群、计算全局变轨最优解、更新 WSB 概率管道；
+* 两者互不等待，通过无锁数据结构同步。
+
+---
+
+### 3. C# 动态调度总督管理器 (`HeterogeneousDynamicGovernor.cs`)
+
+```csharp
+namespace principia.ksp_plugin_adapter {
+
+public enum HeterogeneousAffinity {
+  AutoAdaptive = 0,    // 智能自适应动态均衡 (推荐)
+  CpuDominant  = 1,    // 优先 CPU (适合核显或轻薄本)
+  GpuDominant  = 2     // 优先 GPU (适合高端独显)
+}
+
+public static class HeterogeneousDynamicGovernor {
+  // 调度策略与预算配置
+  public static HeterogeneousAffinity Affinity = HeterogeneousAffinity.AutoAdaptive;
+  public static float GpuComputeBudgetMs = 1.5f; // 每帧 GPU 计算预算上限
+  public const int BatchGpuThreshold = 32;       // 触发 GPU 并发派发的数量门槛
+
+  // 运行时实时指标滑动均值
+  private static float smoothed_gpu_render_time_ms_ = 8.0f;
+  private static float smoothed_gpu_compute_time_ms_ = 0.5f;
+
+  public static void UpdateFrameMetrics(float render_time_ms, float compute_time_ms) {
+    smoothed_gpu_render_time_ms_ = Mathf.Lerp(smoothed_gpu_render_time_ms_, render_time_ms, 0.1f);
+    smoothed_gpu_compute_time_ms_ = Mathf.Lerp(smoothed_gpu_compute_time_ms_, compute_time_ms, 0.1f);
+  }
+
+  // 动态分流决策器
+  public static bool ShouldDispatchToGpu(int task_item_count) {
+    if (Affinity == HeterogeneousAffinity.CpuDominant) return false;
+    if (!PrincipiaGPGPUContext.SupportsCompute) return false;
+    if (Affinity == HeterogeneousAffinity.GpuDominant) return task_item_count > 4;
+
+    // 自适应逻辑 (AutoAdaptive):
+    // 1. 规模必须大于门槛 (避免流水线启动开销)
+    if (task_item_count < BatchGpuThreshold) return false;
+
+    // 2. 渲染回压检查 (防止 GPU 渲染卡顿)
+    // 60FPS 帧预算为 16.6ms，若渲染已超过 13ms 或 GPU Compute 已经超标，则熔断回落给 CPU
+    if (smoothed_gpu_render_time_ms_ > 13.0f || smoothed_gpu_compute_time_ms_ > GpuComputeBudgetMs) {
+      return false; // 触发回压回落
+    }
+
+    return true;
+  }
+}
+
+}
+```
+
+---
+
+## 六、实施阶段与演进路线图
 
 ```mermaid
 gantt
@@ -300,3 +395,4 @@ gantt
     16384 组飞行计划并行打靶法全局寻优     :2027-06, 2027-07
     万级在轨载具与小行星双精度批推进       :2027-07, 2027-09
 ```
+
