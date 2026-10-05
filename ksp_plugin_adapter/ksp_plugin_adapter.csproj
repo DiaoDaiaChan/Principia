@@ -161,6 +161,7 @@
     <Compile Include="GpuFlightPlanOptimizer.cs" />
     <Compile Include="GpuTrajectoryRenderer.cs" />
     <Compile Include="NativeZeroCopyTrajectoryPipeline.cs" />
+    <Compile Include="NativeStateSnapshotChannel.cs" />
     <Compile Include="performance_probe.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />

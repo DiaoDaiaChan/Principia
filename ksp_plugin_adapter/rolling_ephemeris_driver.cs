@@ -22,14 +22,23 @@ internal class RollingEphemerisDriver {
   private double target_extended_time_ = -1.0;
   private double last_update_realtime_ = 0.0;
 
+  // Live status telemetry
   public double current_horizon_seconds =>
       Math.Max(0.0, target_extended_time_ - Planetarium.GetUniversalTime());
   public double current_horizon_years => current_horizon_seconds / JulianYear;
   public double lookahead_horizon_years => lookahead_horizon / JulianYear;
   public double refresh_threshold_years => refresh_threshold / JulianYear;
   public double target_extended_time => target_extended_time_;
+  public double progress_ratio =>
+      lookahead_horizon > 0.0 ? Math.Min(1.0, Math.Max(0.0, current_horizon_seconds / lookahead_horizon)) : 0.0;
   public string carrier_vessel_name { get; private set; } = "None";
   public bool is_active => !string.IsNullOrEmpty(carrier_vessel_guid_);
+  public bool is_paused { get; set; } = false;
+  public bool is_prolonging { get; private set; } = false;
+
+  // Console log buffer
+  public readonly List<string> ConsoleLogs = new List<string>();
+  public const int MaxConsoleLogs = 30;
 
   public static RollingEphemerisDriver Instance { get; private set; }
 
@@ -37,6 +46,42 @@ internal class RollingEphemerisDriver {
     plugin_ = plugin;
     adapter_ = adapter;
     Instance = this;
+    AddLog("星历自动推演驱动器已初始化");
+  }
+
+  public void AddLog(string msg) {
+    string time_str = DateTime.Now.ToString("HH:mm:ss");
+    lock (ConsoleLogs) {
+      if (ConsoleLogs.Count >= MaxConsoleLogs) {
+        ConsoleLogs.RemoveAt(0);
+      }
+      ConsoleLogs.Add($"[{time_str}] {msg}");
+    }
+  }
+
+  public void TogglePause() {
+    is_paused = !is_paused;
+    AddLog(is_paused ? "推演已暂停 (挂起后台推进)" : "推演已恢复 (继续自动延展)");
+  }
+
+  public void ForceProlong() {
+    AddLog("手动触发立即延展...");
+    EnsureHorizon(Planetarium.GetUniversalTime(), force: true);
+  }
+
+  public void AdjustHorizon(double delta_years) {
+    lookahead_horizon = Math.Max(0.5 * JulianYear, Math.Min(20.0 * JulianYear, lookahead_horizon + delta_years * JulianYear));
+    refresh_threshold = Math.Max(0.2 * JulianYear, lookahead_horizon * 0.333);
+    AddLog($"前瞻目标视界已调整为 +{lookahead_horizon_years:F1} 年 (刷新阈值: <{refresh_threshold_years:F1} 年)");
+    EnsureHorizon(Planetarium.GetUniversalTime(), force: true);
+  }
+
+  public void ReselectCarrier() {
+    if (!string.IsNullOrEmpty(carrier_vessel_guid_)) {
+      ReleaseCarrier(carrier_vessel_guid_);
+    }
+    AddLog("重新扫描并优选最佳载体...");
+    EnsureHorizon(Planetarium.GetUniversalTime(), force: true);
   }
 
   public static bool ShouldSuppressPlot(string vessel_guid) {
@@ -58,6 +103,7 @@ internal class RollingEphemerisDriver {
       Log.Info($"[RollingEphemeris] Releasing carrier {carrier_vessel_guid_} for user flight planning");
       carrier_vessel_guid_ = null;
       suppress_plot_on_active_ = false;
+      Instance?.AddLog("已释放当前载体飞船");
     }
   }
 
@@ -66,13 +112,14 @@ internal class RollingEphemerisDriver {
     suppress_plot_on_active_ = false;
     target_extended_time_ = -1.0;
     carrier_vessel_name = "None";
+    is_prolonging = false;
     if (Instance == this) {
       Instance = null;
     }
   }
 
   public void OnTimeWarpRateChanged() {
-    if (plugin_ == IntPtr.Zero || !adapter_.PluginRunning()) {
+    if (plugin_ == IntPtr.Zero || !adapter_.PluginRunning() || is_paused) {
       return;
     }
     double current_ut = Planetarium.GetUniversalTime();
@@ -83,7 +130,7 @@ internal class RollingEphemerisDriver {
   }
 
   public void Update() {
-    if (plugin_ == IntPtr.Zero || !adapter_.PluginRunning()) {
+    if (plugin_ == IntPtr.Zero || !adapter_.PluginRunning() || is_paused) {
       return;
     }
 
@@ -106,7 +153,11 @@ internal class RollingEphemerisDriver {
     EnsureHorizon(current_ut);
   }
 
-  private void EnsureHorizon(double current_ut) {
+  private void EnsureHorizon(double current_ut, bool force = false) {
+    if (is_paused && !force) {
+      return;
+    }
+
     // 1. Verify existing carrier validity.
     if (!string.IsNullOrEmpty(carrier_vessel_guid_)) {
       if (!plugin_.HasVessel(carrier_vessel_guid_)) {
@@ -120,6 +171,9 @@ internal class RollingEphemerisDriver {
       if (carrier != null) {
         carrier_vessel_guid_ = carrier.id.ToString();
         carrier_vessel_name = carrier.vesselName;
+        AddLog($"选定推演载体: '{carrier_vessel_name}' ({carrier.vesselType})");
+      } else {
+        AddLog("未找到可用载体飞船 (待机中)");
       }
     }
 
@@ -128,6 +182,7 @@ internal class RollingEphemerisDriver {
     }
 
     // 3. Request background prolongation via carrier flight plan.
+    is_prolonging = true;
     double new_target = current_ut + lookahead_horizon;
     try {
       if (!plugin_.FlightPlanExists(carrier_vessel_guid_)) {
@@ -138,15 +193,22 @@ internal class RollingEphemerisDriver {
         }
         plugin_.FlightPlanCreate(carrier_vessel_guid_, new_target, mass);
         Log.Info($"[RollingEphemeris] Created background rolling ephemeris carrier on '{carrier_vessel_name}' (target: +{lookahead_horizon / JulianYear:F1} yr)");
+        AddLog($"创建新背景飞行计划 (目标: +{lookahead_horizon / JulianYear:F1} 年)");
       } else {
         var status = plugin_.FlightPlanSetDesiredFinalTime(carrier_vessel_guid_, new_target);
         if (!status.ok()) {
           Log.Warning($"[RollingEphemeris] FlightPlanSetDesiredFinalTime status: {status.error}");
+          AddLog($"更新推演终点异常: {status.error}");
+        } else {
+          AddLog($"星历成功延展至 UT {new_target:F0}s (+{lookahead_horizon / JulianYear:F1} 年)");
         }
       }
       target_extended_time_ = new_target;
     } catch (Exception e) {
       Log.Warning($"[RollingEphemeris] Failed to prolong ephemeris horizon: {e}");
+      AddLog($"延展异常: {e.Message}");
+    } finally {
+      is_prolonging = false;
     }
   }
 

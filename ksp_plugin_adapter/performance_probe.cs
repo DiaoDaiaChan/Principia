@@ -43,8 +43,9 @@ public static class PerformanceProbe {
 
   // In-Game HUD Window state
   public static bool ShowProfilingHud = false;
-  private static Rect hud_rect_ = new Rect(40, 80, 430, 620);
+  private static Rect hud_rect_ = new Rect(40, 80, 440, 640);
   private static Vector2 scroll_pos_ = Vector2.zero;
+  private static bool show_ephemeris_console_ = false;
   private const int WindowId = 0x50524F42; // "PROB"
 
   public readonly struct ProbeScope : IDisposable {
@@ -113,12 +114,12 @@ public static class PerformanceProbe {
         WindowId,
         hud_rect_,
         RenderHudContents,
-        "Principia 性能遥测与加速指示器 (Performance Probe)");
+        "Principia 性能遥测、星历控制台与解耦总督");
   }
 
   private static void RenderHudContents(int window_id) {
     using (new GUILayout.VerticalScope()) {
-      scroll_pos_ = GUILayout.BeginScrollView(scroll_pos_, GUILayout.Height(550));
+      scroll_pos_ = GUILayout.BeginScrollView(scroll_pos_, GUILayout.Height(570));
 
       // 1. Frame & Engine Overview
       using (new GUILayout.HorizontalScope()) {
@@ -149,25 +150,85 @@ public static class PerformanceProbe {
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
-      // 3. Background Rolling Ephemeris Extrapolation Indicator
-      GUILayout.Label("<b>后台星历滚动推演指示器 (Rolling Ephemeris):</b>");
+      // 3. Background Rolling Ephemeris Extrapolation Console & Progress Bar
+      GUILayout.Label("<b>后台星历滚动推演控制台 (Rolling Ephemeris Console):</b>");
       var driver = RollingEphemerisDriver.Instance;
       if (driver != null) {
-        string status_str = driver.is_active
-            ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
-            : "<color=yellow>○ 待机监控中</color>";
+        string status_str = driver.is_paused
+            ? "<color=yellow>⏸ 已暂停 (待机中)</color>"
+            : (driver.is_prolonging
+                ? "<color=cyan>⏳ 正在向 C++ 申请延展...</color>"
+                : (driver.is_active
+                    ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
+                    : "<color=yellow>○ 待机寻找载体中</color>"));
         GUILayout.Label($"推演状态: {status_str}");
         GUILayout.Label($"载体飞船 (Carrier): <b>{driver.carrier_vessel_name}</b>");
-        GUILayout.Label($"前瞻推演窗口: <b>+{driver.current_horizon_years:F2} 年</b> (目标: +{driver.lookahead_horizon_years:F1} 年 / 阈值: <{driver.refresh_threshold_years:F1} 年)");
-        GUILayout.Label($"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒");
-        GUILayout.Label($"分阶段让步收获: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次 (0.1ms 忙等已消除)");
+
+        // Graphical Visual Progress Bar
+        float progress = (float)driver.progress_ratio;
+        string bar_str = FormatProgressBar(progress, 20);
+        string bar_color = driver.is_paused
+            ? "<color=grey>"
+            : (progress < 0.33f
+                ? "<color=yellow>"
+                : (driver.is_prolonging ? "<color=cyan>" : "<color=lime>"));
+        GUILayout.Label($"<b>前瞻余量进度:</b> {bar_color}{bar_str}</color> (+{driver.current_horizon_years:F2}Y / 目标: {driver.lookahead_horizon_years:F1}Y)");
+
+        GUILayout.Label($"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{driver.refresh_threshold_years:F1} 年)");
+
+        // Interactive Console Buttons
+        using (new GUILayout.HorizontalScope()) {
+          if (GUILayout.Button(driver.is_paused ? "▶ 恢复" : "⏸ 暂停", GUILayout.Width(70))) {
+            driver.TogglePause();
+          }
+          if (GUILayout.Button("⚡ 立即延展", GUILayout.Width(85))) {
+            driver.ForceProlong();
+          }
+          if (GUILayout.Button("🔄 优选载体", GUILayout.Width(85))) {
+            driver.ReselectCarrier();
+          }
+          if (GUILayout.Button("+1年", GUILayout.Width(45))) {
+            driver.AdjustHorizon(1.0);
+          }
+          if (GUILayout.Button("-1年", GUILayout.Width(45))) {
+            driver.AdjustHorizon(-1.0);
+          }
+        }
+
+        // Live Event Console Log Feed
+        show_ephemeris_console_ = GUILayout.Toggle(show_ephemeris_console_, $"▼ 控制台实时日志 ({driver.ConsoleLogs.Count} 条)");
+        if (show_ephemeris_console_) {
+          using (new GUILayout.VerticalScope(GUI.skin.box)) {
+            lock (driver.ConsoleLogs) {
+              if (driver.ConsoleLogs.Count == 0) {
+                GUILayout.Label("<color=grey><i>(暂无日志记录)</i></color>");
+              } else {
+                int start = Math.Max(0, driver.ConsoleLogs.Count - 6);
+                for (int i = start; i < driver.ConsoleLogs.Count; ++i) {
+                  GUILayout.Label($"<size=10><color=#a0ffa0>{driver.ConsoleLogs[i]}</color></size>");
+                }
+              }
+            }
+          }
+        }
       } else {
         GUILayout.Label("<color=grey>○ 暂无活动星历驱动器 (等待场景就绪)</color>");
       }
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
-      // 4. GPU Rendering & Acceleration Indicator
+      // 4. Decoupling Phase 2: Autonomous Physics & Lock-Free Triple-Buffering State Channel
+      GUILayout.Label("<b>解耦 Phase 2: 自治物理与无锁三缓冲状态总线:</b>");
+      string decouple_status = HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling
+          ? "<color=lime>[自治无锁三缓冲状态流转已激活 (0ms 阻塞)]</color>"
+          : "<color=yellow>[主线程同步锁步模式]</color>";
+      GUILayout.Label($"时钟解耦: {decouple_status}");
+      GUILayout.Label($"无锁快照消费: <b>{NativeStateSnapshotChannel.SnapshotsConsumed:N0}</b> 次 (跟踪实体: {NativeStateSnapshotChannel.TrackedEntityCount} 个)");
+      GUILayout.Label($"分阶段让步收获: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次 (0.1ms 阻塞已消除)");
+
+      GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
+
+      // 5. GPU Rendering & Acceleration Indicator
       GUILayout.Label("<b>GPU 绘制与硬件加速指示器 (GPU Acceleration):</b>");
       GUILayout.Label($"运算设备: <b>{PrincipiaGPGPUContext.GpuDeviceName}</b>");
       string compute_cap = PrincipiaGPGPUContext.SupportsCompute
@@ -198,7 +259,7 @@ public static class PerformanceProbe {
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
-      // 5. Core Subsystem Latency Breakdown
+      // 6. Core Subsystem Latency Breakdown
       GUILayout.Label("<b>核心子系统延迟 (Smoothed / Peak):</b>");
       DrawMetricBar("• 物理推进 (Physics):", ProbeCategory.PhysicsAdvance, 10.0f);
       DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting, 5.0f);
@@ -213,6 +274,12 @@ public static class PerformanceProbe {
       }
     }
     GUI.DragWindow();
+  }
+
+  private static string FormatProgressBar(float fraction, int total_blocks = 20) {
+    int filled = Mathf.Clamp(Mathf.RoundToInt(fraction * total_blocks), 0, total_blocks);
+    int empty = total_blocks - filled;
+    return "[" + new string('█', filled) + new string('░', empty) + $"] {fraction * 100.0f:F1}%";
   }
 
   private static void DrawMetricBar(string label, ProbeCategory cat, float warning_threshold_ms) {

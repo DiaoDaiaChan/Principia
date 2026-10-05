@@ -616,6 +616,17 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                                           vel : (Vector3d)from_parent.p,
                                           refBody : vessel.orbit.referenceBody,
                                           UT : universal_time);
+      if (HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling) {
+        NativeStateSnapshotChannel.PublishSnapshot(
+            vessel_guid,
+            new MotionSnapshot{
+                time_ut = universal_time,
+                position = (Vector3d)from_parent.q,
+                velocity = (Vector3d)from_parent.p,
+                rotation = vessel.transform.rotation,
+                angular_velocity = Vector3d.zero
+            });
+      }
       if (vessel.loaded) {
         Part root_part = vessel.rootPart;
         UnityEngine.Rigidbody root_part_rb = root_part.rb;
@@ -3150,6 +3161,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     GpuFlightPlanOptimizer.ReleaseBuffers();
     GpuTrajectoryRenderer.ReleaseBuffers();
     PrincipiaGPGPUContext.Dispose();
+    NativeStateSnapshotChannel.Clear();
     rolling_ephemeris_driver_?.Reset();
     rolling_ephemeris_driver_ = null;
 
