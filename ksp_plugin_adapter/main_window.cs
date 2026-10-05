@@ -251,6 +251,13 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
               ((int)HeterogeneousDynamicGovernor.Affinity + 1) % 3);
         }
       }
+
+      using (new UnityEngine.GUILayout.HorizontalScope()) {
+        PerformanceProbe.ShowProfilingHud = UnityEngine.GUILayout.Toggle(
+            PerformanceProbe.ShowProfilingHud,
+            PerformanceProbe.ShowProfilingHud ? "隐藏性能数据探针 (HUD)" : "打开实时数据探针 (HUD)",
+            UnityEngine.GUILayout.ExpandWidth(true));
+      }
       history_length_.Render(enabled : true);
       if (FlightGlobals.ActiveVessel?.orbitTargeter != null &&
           (MapView.MapIsEnabled ||

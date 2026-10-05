@@ -458,12 +458,14 @@ class Plotter {
                            UnityEngine.Color colour,
                            GLLines.Style style,
                            int[] shared_indices) {
-      vertex_count = count;
-      if (count <= 0) {
-        mesh.Clear();
-        is_valid = true;
-        return;
-      }
+      using (PerformanceProbe.Measure(ProbeCategory.MeshGeneration)) {
+        PerformanceProbe.RecordCacheMiss();
+        vertex_count = count;
+        if (count <= 0) {
+          mesh.Clear();
+          is_valid = true;
+          return;
+        }
 
       if (count > VertexBuffer.size) {
         Log.Fatal("Trying to draw " + count + " vertices, maximum is " +
@@ -527,10 +529,13 @@ class Plotter {
                       submesh: 0);
 
       is_valid = true;
+      }
     }
 
     public void Draw() {
       if (is_valid && vertex_count > 0 && mesh != null) {
+        PerformanceProbe.RecordCacheHit();
+        PerformanceProbe.RecordVertices(vertex_count);
         UnityEngine.Graphics.DrawMesh(
             mesh,
             UnityEngine.Vector3.zero,

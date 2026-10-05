@@ -1206,6 +1206,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
 
     apocalypse_dialog_.RenderWindow();
+    PerformanceProbe.DrawProfilingHud();
 
     if (KSP.UI.Screens.ApplicationLauncher.Ready && toolbar_button_ == null) {
       LoadTextureOrDie(out UnityEngine.Texture toolbar_button_texture,
@@ -1253,7 +1254,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       map_renderer_ = PlanetariumCamera.Camera.gameObject.
           AddComponent<RenderingActions>();
       map_renderer_.pre_cull = () => {
-        RenderTrajectories();
+        using (PerformanceProbe.Measure(ProbeCategory.TrajectoryPlotting)) {
+          RenderTrajectories();
+        }
         RenderManœuvreMarkers();
       };
     }
@@ -1296,6 +1299,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     HeterogeneousDynamicGovernor.UpdateFrameMetrics(
         render_time_ms: frame_ms,
         compute_time_ms: GpuFlightPlanOptimizer.LastOptimizationDurationMs);
+    PerformanceProbe.UpdateFrameMetrics();
   }
 
   private void RenderNavballAndAccessories() {
@@ -1997,7 +2001,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       double universal_time = Planetarium.GetUniversalTime();
       time_is_advancing_ = time_is_advancing(universal_time);
       if (time_is_advancing_) {
-        plugin_.AdvanceTime(universal_time, Planetarium.InverseRotAngle);
+        using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
+          plugin_.AdvanceTime(universal_time, Planetarium.InverseRotAngle);
+        }
         if (!apocalypse_dialog_.Shown()) {
           if (plugin_.HasEncounteredApocalypse(out string revelation)) {
             apocalypse_dialog_.message = revelation;

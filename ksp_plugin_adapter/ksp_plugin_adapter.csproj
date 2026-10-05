@@ -160,6 +160,7 @@
     <Compile Include="HeterogeneousDynamicGovernor.cs" />
     <Compile Include="GpuFlightPlanOptimizer.cs" />
     <Compile Include="GpuTrajectoryRenderer.cs" />
+    <Compile Include="performance_probe.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />
     <Compile Include="mono_marshaler.cs" />
