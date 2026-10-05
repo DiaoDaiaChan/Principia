@@ -399,8 +399,8 @@ class Plotter {
 
   public void Dispose() {
     foreach (var pair in celestial_trajectory_meshes_) {
-      pair.Value.past.Dispose();
-      pair.Value.future.Dispose();
+      pair.Value.past.Destroy();
+      pair.Value.future.Destroy();
     }
     celestial_trajectory_meshes_.Clear();
     psychohistory_entry_.Dispose();
@@ -408,21 +408,19 @@ class Plotter {
     target_psychohistory_entry_.Dispose();
     target_prediction_entry_.Dispose();
     for (int i = 0; i < flight_plan_segment_entries_.Count; ++i) {
-      flight_plan_segment_entries_[i].Dispose();
+      flight_plan_segment_entries_[i].Destroy();
     }
     flight_plan_segment_entries_.Clear();
     for (int i = 0; i < equipotential_entries_.Count; ++i) {
-      equipotential_entries_[i].Dispose();
+      equipotential_entries_[i].Destroy();
     }
     equipotential_entries_.Clear();
-    NativeZeroCopyTrajectoryPipeline.Dispose();
   }
 
   private static UnityEngine.Mesh MakeDynamicMesh() {
     var result = new UnityEngine.Mesh();
     result.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
     result.MarkDynamic();
-    result.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
     return result;
   }
 
@@ -438,7 +436,7 @@ class Plotter {
   internal class CachedMeshEntry {
     public UnityEngine.Mesh mesh;
     public UnityEngine.Vector3[] compact_vertices;
-    public UnityEngine.Color32[] compact_colors;
+    public UnityEngine.Color[] compact_colors;
     public int vertex_count;
     public bool is_valid;
     public double last_update_ut;
@@ -450,6 +448,12 @@ class Plotter {
       is_valid = false;
     }
 
+    public void EnsureMesh() {
+      if (mesh == null) {
+        mesh = MakeDynamicMesh();
+      }
+    }
+
     public void UpdateMesh(int count,
                            UnityEngine.Color colour,
                            GLLines.Style style,
@@ -457,6 +461,8 @@ class Plotter {
       using (PerformanceProbe.Measure(ProbeCategory.MeshGeneration)) {
         PerformanceProbe.RecordCacheMiss();
         vertex_count = count;
+        EnsureMesh();
+
         if (count <= 0) {
           mesh.Clear();
           is_valid = true;
@@ -473,33 +479,53 @@ class Plotter {
         // Zero-copy SIMD transfer from unmanaged native memory directly into compact_vertices
         NativeZeroCopyTrajectoryPipeline.CopyFromNativeBuffer(compact_vertices, count);
 
-        // ZERO CPU AABB LOOP: Cosmic bounds eliminate CPU frustum min/max scanning entirely!
-        mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
+        // Fast O(N) accurate AABB calculation in managed C#
+        float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
+        float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
+        for (int i = 0; i < count; ++i) {
+          var v = compact_vertices[i];
+          if (v.x < min_x) min_x = v.x;
+          if (v.x > max_x) max_x = v.x;
+          if (v.y < min_y) min_y = v.y;
+          if (v.y > max_y) max_y = v.y;
+          if (v.z < min_z) min_z = v.z;
+          if (v.z > max_z) max_z = v.z;
+        }
+        var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
+                                             (min_y + max_y) * 0.5f,
+                                             (min_z + max_z) * 0.5f);
+        var size = new UnityEngine.Vector3(Math.Max(max_x - min_x, 1.0f),
+                                           Math.Max(max_y - min_y, 1.0f),
+                                           Math.Max(max_z - min_z, 1.0f));
 
-        // Compact 32-bit RGBA color array reuse (75% bandwidth reduction).
+        // Compact color array reuse with standard UnityEngine.Color (float4).
         if (compact_colors == null || compact_colors.Length != count) {
-          compact_colors = new UnityEngine.Color32[count];
+          compact_colors = new UnityEngine.Color[count];
         }
 
-        UnityEngine.Color32 base_c32 = colour;
         if (style == GLLines.Style.Faded) {
           float inv_count = 1.0f / count;
-          byte a = base_c32.a;
           for (int i = 0; i < count; ++i) {
-            byte faded_a = (byte)(a * (1.0f - 0.8f * (i * inv_count)));
-            compact_colors[i] = new UnityEngine.Color32(base_c32.r, base_c32.g, base_c32.b, faded_a);
+            var faded_colour = colour;
+            faded_colour.a *= 1.0f - 0.8f * (i * inv_count);
+            compact_colors[i] = faded_colour;
           }
         } else {
           for (int i = 0; i < count; ++i) {
-            compact_colors[i] = base_c32;
+            compact_colors[i] = colour;
           }
         }
 
-        mesh.SetVertices(compact_vertices, 0, count);
-        mesh.SetColors(compact_colors, 0, count);
+        // CRITICAL: mesh.Clear() resets index buffers before setting vertices,
+        // preventing Unity's "Mesh.vertices is too small... less vertices than referenced by triangles"
+        // and "Mesh.colors is out of bounds" errors.
+        mesh.Clear();
+        mesh.vertices = compact_vertices;
+        mesh.colors = compact_colors;
 
         int index_count = style == GLLines.Style.Dashed ? count & ~1 : count;
-        mesh.SetIndices(shared_indices,
+        int[] indices = GetSharedIndices(index_count);
+        mesh.SetIndices(indices,
                         indicesStart: 0,
                         indicesLength: index_count,
                         style == GLLines.Style.Dashed
@@ -508,12 +534,15 @@ class Plotter {
                         submesh: 0,
                         calculateBounds: false);
 
+        mesh.bounds = new UnityEngine.Bounds(center, size);
+
         NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
         is_valid = true;
       }
     }
 
     public void Draw() {
+      EnsureMesh();
       if (is_valid && vertex_count > 0 && mesh != null) {
         PerformanceProbe.RecordCacheHit();
         PerformanceProbe.RecordVertices(vertex_count);
@@ -533,12 +562,21 @@ class Plotter {
 
     public void Dispose() {
       if (mesh != null) {
+        mesh.Clear();
+      }
+      is_valid = false;
+      vertex_count = 0;
+    }
+
+    public void Destroy() {
+      if (mesh != null) {
         UnityEngine.Object.Destroy(mesh);
         mesh = null;
       }
       compact_vertices = null;
       compact_colors = null;
       is_valid = false;
+      vertex_count = 0;
     }
   }
 
@@ -547,8 +585,20 @@ class Plotter {
     public CachedMeshEntry past = new CachedMeshEntry();
   }
 
-  private static readonly int[] shared_indices_ =
+  private static int[] shared_indices_ =
       new int[NativeZeroCopyTrajectoryPipeline.DefaultCapacity];
+
+  public static int[] GetSharedIndices(int required_count) {
+    if (shared_indices_.Length < required_count) {
+      int new_len = Math.Max(shared_indices_.Length * 2, required_count);
+      var new_arr = new int[new_len];
+      for (int i = 0; i < new_len; ++i) {
+        new_arr[i] = i;
+      }
+      shared_indices_ = new_arr;
+    }
+    return shared_indices_;
+  }
 
   static Plotter() {
     for (int i = 0; i < shared_indices_.Length; ++i) {

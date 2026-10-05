@@ -91,6 +91,7 @@ public static class NativeZeroCopyTrajectoryPipeline {
     if (count <= 0 || destination == null) return;
 
     EnsureAllocated();
+    if (native_buffer_ptr_ == IntPtr.Zero) return;
     int clamped = Math.Min(count, destination.Length);
     long bytes_to_copy = clamped * (long)sizeof(Vector3);
 
