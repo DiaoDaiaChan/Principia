@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 
 namespace principia {
 namespace ksp_plugin_adapter {
@@ -35,8 +35,10 @@ internal static class GLLines {
     }
   }
 
-  public static DisposablePlanetarium NewPlanetarium(IntPtr plugin,
-                                                     XYZ sun_world_position) {
+  public static DisposablePlanetarium NewPlanetarium(
+      IntPtr plugin,
+      XYZ sun_world_position,
+      double angular_resolution_multiplier = 1.0) {
     UnityEngine.Camera camera = PlanetariumCamera.Camera;
     UnityEngine.Vector3 opengl_camera_x_in_world =
         camera.cameraToWorldMatrix.MultiplyVector(
@@ -66,6 +68,7 @@ internal static class GLLines {
     double m11 = camera.projectionMatrix[1, 1];
     double field_of_view = Math.Atan2(Math.Sqrt(m00 * m00 + m11 * m11),
                                       m00 * m11);
+    double resolution = 2 * Math.PI / (360 * 60) * Math.Max(0.2, angular_resolution_multiplier);
     return plugin.PlanetariumCreate(sun_world_position,
                                     (XYZ)(Vector3d)opengl_camera_x_in_world,
                                     (XYZ)(Vector3d)opengl_camera_y_in_world,
@@ -74,7 +77,7 @@ internal static class GLLines {
                                     focal: 1,
                                     field_of_view,
                                     ScaledSpace.InverseScaleFactor,
-                                    2 * Math.PI / (360 * 60) /*1 arc minute*/,
+                                    resolution,
                                     scaled_space_origin: (XYZ)ScaledSpace.
                                         ScaledToLocalSpace(Vector3d.zero));
   }

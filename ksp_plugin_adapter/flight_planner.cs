@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -65,6 +65,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
       return;
     }
     var status = plugin.FlightPlanReplace(vessel_guid, burn, i);
+    adapter_.flight_plan_dirty = true;
     UpdateStatus(status, i);
     ResetOptimizer(vessel_guid);
     if (burn_editors_?.Count > i && burn_editors_[i] is BurnEditor editor) {
@@ -99,8 +100,11 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
 
     using (new UnityEngine.GUILayout.HorizontalScope()) {
       int flight_plans = plugin.FlightPlanCount(vessel_guid);
+      bool is_carrier_only =
+          RollingEphemerisDriver.IsCarrier(vessel_guid) && (flight_plans == 1);
+      int user_flight_plans = is_carrier_only ? 0 : flight_plans;
       int selected_flight_plan = plugin.FlightPlanSelected(vessel_guid);
-      for (int i = 0; i < flight_plans; ++i) {
+      for (int i = 0; i < user_flight_plans; ++i) {
         var id = new string(L10N.CacheFormat("#Principia_AlphabeticList")[i],
                             1);
         if (UnityEngine.GUILayout.Toggle(i == selected_flight_plan,
@@ -109,6 +113,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
                                          GUILayoutWidth(1)) &&
             i != selected_flight_plan) {
           plugin.FlightPlanSelect(vessel_guid, i);
+          adapter_.flight_plan_dirty = true;
           final_time_.value_if_different =
               plugin.FlightPlanGetDesiredFinalTime(vessel_guid);
           ClearBurnEditors();
@@ -116,7 +121,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
         }
       }
       bool must_create_flight_plan = false;
-      if (flight_plans == 0) {
+      if (user_flight_plans == 0) {
         must_create_flight_plan = UnityEngine.GUILayout.Button(
             L10N.CacheFormat("#Principia_FlightPlan_Create"));
       } else if (flight_plans < max_flight_plans) {
@@ -124,9 +129,16 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             UnityEngine.GUILayout.Button("+", GUILayoutWidth(1));
       }
       if (must_create_flight_plan) {
-        plugin.FlightPlanCreate(vessel_guid,
-                                plugin.CurrentTime() + 3600,
-                                predicted_vessel.GetTotalMass());
+        if (is_carrier_only) {
+          RollingEphemerisDriver.ReleaseCarrier(vessel_guid);
+          plugin.FlightPlanSetDesiredFinalTime(vessel_guid,
+                                              plugin.CurrentTime() + 3600);
+        } else {
+          plugin.FlightPlanCreate(vessel_guid,
+                                  plugin.CurrentTime() + 3600,
+                                  predicted_vessel.GetTotalMass());
+        }
+        adapter_.flight_plan_dirty = true;
         final_time_.value_if_different =
             plugin.FlightPlanGetDesiredFinalTime(vessel_guid);
         ClearBurnEditors();
@@ -135,7 +147,9 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
       }
     }
 
-    if (plugin.FlightPlanExists(vessel_guid)) {
+    if (plugin.FlightPlanExists(vessel_guid) &&
+        !(RollingEphemerisDriver.IsCarrier(vessel_guid) &&
+          plugin.FlightPlanCount(vessel_guid) == 1)) {
       RenderFlightPlan(vessel_guid);
     }
     UnityEngine.GUI.DragWindow();
@@ -374,6 +388,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
         final_trajectory_analyser_ =
             new PlannedOrbitAnalyser(adapter_, predicted_vessel_);
         plugin.FlightPlanDelete(vessel_guid);
+        adapter_.flight_plan_dirty = true;
         ResetStatus();
         ScheduleShrink();
         // The state change will happen the next time we go through OnGUI.
@@ -384,6 +399,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             var status = plugin.FlightPlanRebase(
                 vessel_guid,
                 predicted_vessel.GetTotalMass());
+            adapter_.flight_plan_dirty = true;
             UpdateStatus(status, null);
             ResetOptimizer(vessel_guid);
             if (status.ok()) {
@@ -400,6 +416,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
               UnityEngine.GUILayout.Button(
                   L10N.CacheFormat("#Principia_FlightPlan_Duplicate"))) {
             plugin.FlightPlanDuplicate(vessel_guid);
+            adapter_.flight_plan_dirty = true;
           }
         }
 
@@ -537,6 +554,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
                       orbital_period  : orbital_period)) {
             case BurnEditor.Event.Deleted: {
               var status = plugin.FlightPlanRemove(vessel_guid, i);
+              adapter_.flight_plan_dirty = true;
               UpdateStatus(status, null);
               ResetOptimizer(vessel_guid);
               burn_editors_[i].Close();
@@ -693,6 +711,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
         var status = plugin.FlightPlanInsert(vessel_guid,
                                              candidate_burn,
                                              index);
+        adapter_.flight_plan_dirty = true;
         ResetOptimizer(vessel_guid);
 
         // The previous call did not necessarily create a manœuvre.  Check if

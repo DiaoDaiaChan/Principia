@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using KSP.Localization;
 
@@ -212,6 +212,15 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
                                   platform,
                                   style: Style.Info(
                                       UnityEngine.GUI.skin.label));
+      if (adapter_.rolling_ephemeris_driver != null) {
+        var driver = adapter_.rolling_ephemeris_driver;
+        string horizon_text = driver.is_active
+            ? $"Rolling Horizon: +{driver.current_horizon_years:F2} a [{driver.carrier_vessel_name}]"
+            : "Rolling Horizon: Standby";
+        UnityEngine.GUILayout.Label(
+            horizon_text,
+            style: Style.Info(UnityEngine.GUI.skin.label));
+      }
       history_length_.Render(enabled : true);
       if (FlightGlobals.ActiveVessel?.orbitTargeter != null &&
           (MapView.MapIsEnabled ||

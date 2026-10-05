@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
@@ -30,22 +30,25 @@ class Plotter {
     if (number_of_equipotentials == 0) {
       return;
     }
-    for (int i = equipotential_meshes_.Count;
-         i < number_of_equipotentials;
-         ++i) {
-      equipotential_meshes_.Add(MakeDynamicMesh());
+    while (equipotential_entries_.Count < number_of_equipotentials) {
+      equipotential_entries_.Add(new CachedMeshEntry());
     }
     var colour = adapter_.plotting_frame_selector_.Primary()
         .orbitDriver?.Renderer?.orbitColor ?? XKCDColors.SunshineYellow;
     for (int i = 0; i < number_of_equipotentials; ++i) {
+      var entry = equipotential_entries_[i];
+      if (entry.is_valid) {
+        entry.Draw();
+        continue;
+      }
       planetarium.PlanetariumPlotEquipotential(
           Plugin,
           i,
           VertexBuffer.data,
           VertexBuffer.size,
           out int vertex_count);
-      DrawLineMesh(equipotential_meshes_[i], vertex_count, colour,
-                   GLLines.Style.Solid);
+      entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_);
+      entry.Draw();
     }
   }
 
@@ -54,6 +57,26 @@ class Plotter {
                                double history_length,
                                double? prediction_t_max,
                                double? flight_plan_t_max) {
+    // Detect Krakensbane or FloatingOrigin shifts in ScaledSpace.
+    Vector3d current_scaled_space_origin =
+        ScaledSpace.ScaledToLocalSpace(Vector3d.zero);
+    if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1e-4) {
+      InvalidateAll();
+      last_scaled_space_origin_ = current_scaled_space_origin;
+    }
+    if (main_vessel_guid != last_main_vessel_guid_) {
+      InvalidateAll();
+      last_main_vessel_guid_ = main_vessel_guid;
+    }
+    if (Math.Abs(history_length - last_history_length_) > 1e-3) {
+      psychohistory_entry_.Invalidate();
+      target_psychohistory_entry_.Invalidate();
+      foreach (var pair in celestial_trajectory_meshes_) {
+        pair.Value.past.Invalidate();
+      }
+      last_history_length_ = history_length;
+    }
+
     PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
     PlotVesselTrajectories(planetarium, main_vessel_guid, history_length,
                            prediction_t_max, flight_plan_t_max);
@@ -64,8 +87,32 @@ class Plotter {
                                       double history_length,
                                       double? prediction_t_max,
                                       double? flight_plan_t_max) {
+    bool time_is_advancing = adapter_.is_time_advancing;
+    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
+    double current_time_ut = Planetarium.GetUniversalTime();
+
+    bool is_expensive_frame =
+        adapter_.plotting_frame_selector_.frame_type ==
+            FrameType.ROTATING_PULSATING ||
+        adapter_.plotting_frame_selector_.frame_type ==
+            FrameType.BARYCENTRIC_ROTATING ||
+        adapter_.plotting_frame_selector_.target_frame_selected;
+
+    Vessel active = FlightGlobals.ActiveVessel;
+    bool is_maneuvering = active != null &&
+        (active.ctrlState.mainThrottle > 1e-3 ||
+         active.acceleration.sqrMagnitude > 0.01);
+
     if (main_vessel_guid != null) {
-      {
+      // Psychohistory: throttled to 5 Hz during time advance (history accumulates gradually).
+      bool can_reuse_psychohistory = psychohistory_entry_.is_valid &&
+          (!time_is_advancing ||
+           (current_realtime - psychohistory_entry_.last_update_realtime < 0.20 &&
+            Math.Abs(current_time_ut - psychohistory_entry_.last_update_ut) < 60.0));
+
+      if (can_reuse_psychohistory) {
+        psychohistory_entry_.Draw();
+      } else {
         planetarium.PlanetariumPlotPsychohistory(
             Plugin,
             main_vessel_guid,
@@ -74,38 +121,71 @@ class Plotter {
             VertexBuffer.data,
             VertexBuffer.size,
             out int vertex_count);
-        DrawLineMesh(ref psychohistory_mesh_,
-                     vertex_count,
-                     adapter_.history_colour,
-                     adapter_.history_style);
+        psychohistory_entry_.last_update_realtime = current_realtime;
+        psychohistory_entry_.last_update_ut = current_time_ut;
+        psychohistory_entry_.UpdateMesh(vertex_count,
+                                        adapter_.history_colour,
+                                        adapter_.history_style,
+                                        shared_indices_);
+        psychohistory_entry_.Draw();
       }
-      {
-        planetarium.PlanetariumPlotPrediction(Plugin,
-                                              main_vessel_guid,
-                                              prediction_t_max,
-                                              VertexBuffer.data,
-                                              VertexBuffer.size,
-                                              out int vertex_count);
-        DrawLineMesh(ref prediction_mesh_,
-                     vertex_count,
-                     adapter_.prediction_colour,
-                     adapter_.prediction_style);
+
+      // Prediction: 30 Hz when maneuvering; 20 Hz in rotating frames; 25 Hz in standard frames.
+      // During intermediate frames, draws directly from cached 3D GPU mesh (0 ms CPU, 120 FPS camera navigation).
+      double pred_interval = is_maneuvering ? 0.033 : (is_expensive_frame ? 0.050 : 0.040);
+      bool can_reuse_prediction = prediction_entry_.is_valid &&
+          (!time_is_advancing ||
+           (!is_maneuvering &&
+            current_realtime - prediction_entry_.last_update_realtime < pred_interval &&
+            Math.Abs(current_time_ut - prediction_entry_.last_update_ut) < 10.0));
+
+      if (can_reuse_prediction) {
+        prediction_entry_.Draw();
+      } else {
+        planetarium.PlanetariumPlotPrediction(
+            Plugin,
+            main_vessel_guid,
+            prediction_t_max,
+            VertexBuffer.data,
+            VertexBuffer.size,
+            out int vertex_count);
+        prediction_entry_.last_update_realtime = current_realtime;
+        prediction_entry_.last_update_ut = current_time_ut;
+        prediction_entry_.UpdateMesh(vertex_count,
+                                     adapter_.prediction_colour,
+                                     adapter_.prediction_style,
+                                     shared_indices_);
+        prediction_entry_.Draw();
       }
 
       // Main vessel flight plan.
-      if (Plugin.FlightPlanExists(main_vessel_guid)) {
+      if (Plugin.FlightPlanExists(main_vessel_guid) &&
+          !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
         int number_of_segments =
             Plugin.FlightPlanNumberOfSegments(main_vessel_guid);
-        for (int i = flight_plan_segment_meshes_.Count;
-             i < number_of_segments;
-             ++i) {
-          flight_plan_segment_meshes_.Add(MakeDynamicMesh());
+        while (flight_plan_segment_entries_.Count < number_of_segments) {
+          flight_plan_segment_entries_.Add(new CachedMeshEntry());
         }
+
+        bool fp_dirty = adapter_.flight_plan_dirty;
         for (int i = 0; i < number_of_segments; ++i) {
+          var entry = flight_plan_segment_entries_[i];
+          bool can_reuse_fp = !fp_dirty && entry.is_valid &&
+              (!time_is_advancing ||
+               (current_realtime - entry.last_update_realtime < 0.10 &&
+                Math.Abs(current_time_ut - entry.last_update_ut) < 10.0));
+
+          if (can_reuse_fp) {
+            entry.Draw();
+            continue;
+          }
           bool is_burn = i % 2 == 1;
           var colour = is_burn
                            ? adapter_.burn_colour
                            : adapter_.flight_plan_colour;
+          var style = is_burn
+                          ? adapter_.burn_style
+                          : adapter_.flight_plan_style;
           planetarium.PlanetariumPlotFlightPlanSegment(
               Plugin,
               main_vessel_guid,
@@ -114,13 +194,13 @@ class Plotter {
               VertexBuffer.data,
               VertexBuffer.size,
               out int vertex_count);
-          // No need for dynamic initialization, that was done above.
-          DrawLineMesh(flight_plan_segment_meshes_[i],
-                       vertex_count,
-                       colour,
-                       is_burn
-                           ? adapter_.burn_style
-                           : adapter_.flight_plan_style);
+          entry.last_update_realtime = current_realtime;
+          entry.last_update_ut = current_time_ut;
+          entry.UpdateMesh(vertex_count, colour, style, shared_indices_);
+          entry.Draw();
+        }
+        if (fp_dirty) {
+          adapter_.flight_plan_dirty = false;
         }
       }
     }
@@ -132,7 +212,21 @@ class Plotter {
         !adapter_.plotting_frame_selector_.target_frame_selected &&
         target_id != null &&
         Plugin.HasVessel(target_id)) {
-      {
+      if (target_id != last_target_id_) {
+        target_psychohistory_entry_.Invalidate();
+        target_prediction_entry_.Invalidate();
+        last_target_id_ = target_id;
+      }
+
+      // Target psychohistory
+      bool can_reuse_target_psychohistory = target_psychohistory_entry_.is_valid &&
+          (!time_is_advancing ||
+           (current_realtime - target_psychohistory_entry_.last_update_realtime < 0.20 &&
+            Math.Abs(current_time_ut - target_psychohistory_entry_.last_update_ut) < 60.0));
+
+      if (can_reuse_target_psychohistory) {
+        target_psychohistory_entry_.Draw();
+      } else {
         planetarium.PlanetariumPlotPsychohistory(
             Plugin,
             target_id,
@@ -141,12 +235,24 @@ class Plotter {
             VertexBuffer.data,
             VertexBuffer.size,
             out int vertex_count);
-        DrawLineMesh(ref target_psychohistory_mesh_,
-                     vertex_count,
-                     adapter_.target_history_colour,
-                     adapter_.target_history_style);
+        target_psychohistory_entry_.last_update_realtime = current_realtime;
+        target_psychohistory_entry_.last_update_ut = current_time_ut;
+        target_psychohistory_entry_.UpdateMesh(vertex_count,
+                                               adapter_.target_history_colour,
+                                               adapter_.target_history_style,
+                                               shared_indices_);
+        target_psychohistory_entry_.Draw();
       }
-      {
+
+      // Target prediction
+      bool can_reuse_target_prediction = target_prediction_entry_.is_valid &&
+          (!time_is_advancing ||
+           (current_realtime - target_prediction_entry_.last_update_realtime < 0.050 &&
+            Math.Abs(current_time_ut - target_prediction_entry_.last_update_ut) < 10.0));
+
+      if (can_reuse_target_prediction) {
+        target_prediction_entry_.Draw();
+      } else {
         planetarium.PlanetariumPlotPrediction(
             Plugin,
             target_id,
@@ -154,10 +260,13 @@ class Plotter {
             VertexBuffer.data,
             VertexBuffer.size,
             out int vertex_count);
-        DrawLineMesh(ref target_prediction_mesh_,
-                     vertex_count,
-                     adapter_.target_prediction_colour,
-                     adapter_.target_prediction_style);
+        target_prediction_entry_.last_update_realtime = current_realtime;
+        target_prediction_entry_.last_update_ut = current_time_ut;
+        target_prediction_entry_.UpdateMesh(vertex_count,
+                                            adapter_.target_prediction_colour,
+                                            adapter_.target_prediction_style,
+                                            shared_indices_);
+        target_prediction_entry_.Draw();
       }
     }
   }
@@ -187,9 +296,25 @@ class Plotter {
         PlanetariumCamera.fetch.transform.position);
     double min_distance_from_camera =
         (root.position - camera_world_position).magnitude;
+
+    bool time_is_advancing = adapter_.is_time_advancing;
+    double current_time_ut = Planetarium.GetUniversalTime();
+    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
+
     if (!adapter_.plotting_frame_selector_.FixesBody(root) &&
         adapter_.show_celestial_trajectory(root)) {
-      {
+      // Past trajectory: freeze when paused; throttle to 4 updates/sec during 1x warp
+      bool can_reuse_past = trajectories.past.is_valid &&
+          (!time_is_advancing ||
+           (current_realtime - trajectories.past.last_update_realtime < 0.25 &&
+            Math.Abs(current_time_ut - trajectories.past.last_update_ut) < 30.0));
+
+      if (can_reuse_past) {
+        trajectories.past.Draw();
+        min_distance_from_camera =
+            Math.Min(min_distance_from_camera,
+                     trajectories.past.min_distance_from_camera);
+      } else {
         planetarium.PlanetariumPlotCelestialPastTrajectory(
             Plugin,
             root.flightGlobalsIndex,
@@ -201,34 +326,51 @@ class Plotter {
             out int vertex_count);
         min_distance_from_camera =
             Math.Min(min_distance_from_camera, min_past_distance);
-        DrawLineMesh(ref trajectories.past,
-                     vertex_count,
-                     colour,
-                     GLLines.Style.Faded);
+        trajectories.past.min_distance_from_camera = min_past_distance;
+        trajectories.past.last_update_ut = current_time_ut;
+        trajectories.past.last_update_realtime = current_realtime;
+        trajectories.past.UpdateMesh(vertex_count,
+                                     colour,
+                                     GLLines.Style.Faded,
+                                     shared_indices_);
+        trajectories.past.Draw();
       }
 
       if (main_vessel_guid != null) {
-        planetarium.PlanetariumPlotCelestialFutureTrajectory(
-            Plugin,
-            root.flightGlobalsIndex,
-            main_vessel_guid,
-            VertexBuffer.data,
-            VertexBuffer.size,
-            out double min_future_distance,
-            out int vertex_count);
-        min_distance_from_camera =
-            Math.Min(min_distance_from_camera, min_future_distance);
-        DrawLineMesh(ref trajectories.future,
-                     vertex_count,
-                     colour,
-                     GLLines.Style.Solid);
+        // Future trajectory
+        bool can_reuse_future = trajectories.future.is_valid &&
+            (!time_is_advancing ||
+             (current_realtime - trajectories.future.last_update_realtime < 0.25 &&
+              Math.Abs(current_time_ut - trajectories.future.last_update_ut) < 30.0));
+
+        if (can_reuse_future) {
+          trajectories.future.Draw();
+          min_distance_from_camera =
+              Math.Min(min_distance_from_camera,
+                       trajectories.future.min_distance_from_camera);
+        } else {
+          planetarium.PlanetariumPlotCelestialFutureTrajectory(
+              Plugin,
+              root.flightGlobalsIndex,
+              main_vessel_guid,
+              VertexBuffer.data,
+              VertexBuffer.size,
+              out double min_future_distance,
+              out int vertex_count);
+          min_distance_from_camera =
+              Math.Min(min_distance_from_camera, min_future_distance);
+          trajectories.future.min_distance_from_camera = min_future_distance;
+          trajectories.future.last_update_ut = current_time_ut;
+          trajectories.future.last_update_realtime = current_realtime;
+          trajectories.future.UpdateMesh(vertex_count,
+                                         colour,
+                                         GLLines.Style.Solid,
+                                         shared_indices_);
+          trajectories.future.Draw();
+        }
       }
     }
     foreach (CelestialBody child in root.orbitingBodies) {
-      // Plot the trajectory of an orbiting body if it could be separated from
-      // that of its parent by a pixel of empty space, instead of merely making
-      // the line wider; but always traverse the subtree if the current body is
-      // hidden.
       if (!adapter_.show_celestial_trajectory(root) ||
           child.orbit.ApR / min_distance_from_camera >
               2 * tan_angular_resolution) {
@@ -238,73 +380,41 @@ class Plotter {
     }
   }
 
-  private void DrawLineMesh(ref UnityEngine.Mesh mesh,
-                            int vertex_count,
-                            UnityEngine.Color colour,
-                            GLLines.Style style) {
-    // Construct the mesh on the first call because Unity doesn't want us to do
-    // that at construction.
-    if (mesh == null) {
-      mesh = MakeDynamicMesh();
+  public void InvalidateAll() {
+    foreach (var pair in celestial_trajectory_meshes_) {
+      pair.Value.past.Invalidate();
+      pair.Value.future.Invalidate();
     }
-    DrawLineMesh(mesh, vertex_count, colour, style);
+    psychohistory_entry_.Invalidate();
+    prediction_entry_.Invalidate();
+    target_psychohistory_entry_.Invalidate();
+    target_prediction_entry_.Invalidate();
+    for (int i = 0; i < flight_plan_segment_entries_.Count; ++i) {
+      flight_plan_segment_entries_[i].Invalidate();
+    }
+    for (int i = 0; i < equipotential_entries_.Count; ++i) {
+      equipotential_entries_[i].Invalidate();
+    }
   }
 
-  private void DrawLineMesh(UnityEngine.Mesh mesh,
-                            int vertex_count,
-                            UnityEngine.Color colour,
-                            GLLines.Style style) {
-    if (vertex_count > VertexBuffer.size) {
-      Log.Fatal("Trying to draw " +
-                vertex_count +
-                " vertices, maximum is " +
-                VertexBuffer.size);
+  public void Dispose() {
+    foreach (var pair in celestial_trajectory_meshes_) {
+      pair.Value.past.Dispose();
+      pair.Value.future.Dispose();
     }
-
-    mesh.vertices = VertexBuffer.vertices;
-    int index_count = style == GLLines.Style.Dashed ? vertex_count & ~1
-                                                    : vertex_count;
-
-    if (indices_ == null) {
-      indices_ = new int[VertexBuffer.size];
-      for (int i = 0; i < indices_.Length; ++i) {
-        indices_[i] = i;
-      }
+    celestial_trajectory_meshes_.Clear();
+    psychohistory_entry_.Dispose();
+    prediction_entry_.Dispose();
+    target_psychohistory_entry_.Dispose();
+    target_prediction_entry_.Dispose();
+    for (int i = 0; i < flight_plan_segment_entries_.Count; ++i) {
+      flight_plan_segment_entries_[i].Dispose();
     }
-
-    if (style == GLLines.Style.Faded) {
-      for (int i = 0; i < vertex_count; ++i) {
-        var faded_colour = colour;
-        // Fade from the opacity of `colour` (when i = 0) down to 20% of that
-        // opacity.
-        faded_colour.a *= 1 - 0.8f * (i / (float)vertex_count);
-        colours_[i] = faded_colour;
-      }
-    } else {
-      for (int i = 0; i < vertex_count; ++i) {
-        colours_[i] = colour;
-      }
+    flight_plan_segment_entries_.Clear();
+    for (int i = 0; i < equipotential_entries_.Count; ++i) {
+      equipotential_entries_[i].Dispose();
     }
-
-    mesh.colors = colours_;
-    mesh.SetIndices(indices_,
-                    indicesStart: 0,
-                    indicesLength: index_count,
-                    style == GLLines.Style.Dashed
-                        ? UnityEngine.MeshTopology.Lines
-                        : UnityEngine.MeshTopology.LineStrip,
-                    submesh: 0);
-    mesh.RecalculateBounds();
-    // If the lines are drawn in layer 31 (Vectors), which sounds more
-    // appropriate, they vanish when zoomed out.  Layer 9 works; pay no
-    // attention to its name.
-    UnityEngine.Graphics.DrawMesh(
-        mesh,
-        UnityEngine.Vector3.zero,
-        UnityEngine.Quaternion.identity,
-        GLLines.line_material,
-        (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
-        PlanetariumCamera.Camera);
+    equipotential_entries_.Clear();
   }
 
   private static UnityEngine.Mesh MakeDynamicMesh() {
@@ -329,25 +439,152 @@ class Plotter {
         GCHandle.Alloc(vertices_, GCHandleType.Pinned);
   }
 
+  internal class CachedMeshEntry {
+    public UnityEngine.Mesh mesh;
+    public UnityEngine.Vector3[] compact_vertices;
+    public UnityEngine.Color[] compact_colors;
+    public int vertex_count;
+    public bool is_valid;
+    public double last_update_ut;
+    public double last_update_realtime;
+    public double min_distance_from_camera;
+
+    public CachedMeshEntry() {
+      mesh = MakeDynamicMesh();
+      is_valid = false;
+    }
+
+    public void UpdateMesh(int count,
+                           UnityEngine.Color colour,
+                           GLLines.Style style,
+                           int[] shared_indices) {
+      vertex_count = count;
+      if (count <= 0) {
+        mesh.Clear();
+        is_valid = true;
+        return;
+      }
+
+      if (count > VertexBuffer.size) {
+        Log.Fatal("Trying to draw " + count + " vertices, maximum is " +
+                  VertexBuffer.size);
+      }
+
+      // Compact vertex array reuse (resizes only if count grows).
+      if (compact_vertices == null || compact_vertices.Length != count) {
+        compact_vertices = new UnityEngine.Vector3[count];
+      }
+      System.Array.Copy(VertexBuffer.vertices, compact_vertices, count);
+
+      // Fast O(N) accurate AABB calculation in managed C#
+      // completely replaces native RecalculateBounds() which scans 10,000 vertices.
+      float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
+      float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
+      for (int i = 0; i < count; ++i) {
+        var v = compact_vertices[i];
+        if (v.x < min_x) min_x = v.x;
+        if (v.x > max_x) max_x = v.x;
+        if (v.y < min_y) min_y = v.y;
+        if (v.y > max_y) max_y = v.y;
+        if (v.z < min_z) min_z = v.z;
+        if (v.z > max_z) max_z = v.z;
+      }
+      var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
+                                           (min_y + max_y) * 0.5f,
+                                           (min_z + max_z) * 0.5f);
+      var size = new UnityEngine.Vector3(max_x - min_x,
+                                         max_y - min_y,
+                                         max_z - min_z);
+      mesh.bounds = new UnityEngine.Bounds(center, size);
+
+      // Compact color array reuse.
+      if (compact_colors == null || compact_colors.Length != count) {
+        compact_colors = new UnityEngine.Color[count];
+      }
+      if (style == GLLines.Style.Faded) {
+        float inv_count = 1.0f / count;
+        for (int i = 0; i < count; ++i) {
+          var faded = colour;
+          faded.a *= 1.0f - 0.8f * (i * inv_count);
+          compact_colors[i] = faded;
+        }
+      } else {
+        for (int i = 0; i < count; ++i) {
+          compact_colors[i] = colour;
+        }
+      }
+
+      mesh.vertices = compact_vertices;
+      mesh.colors = compact_colors;
+
+      int index_count = style == GLLines.Style.Dashed ? count & ~1 : count;
+      mesh.SetIndices(shared_indices,
+                      indicesStart: 0,
+                      indicesLength: index_count,
+                      style == GLLines.Style.Dashed
+                          ? UnityEngine.MeshTopology.Lines
+                          : UnityEngine.MeshTopology.LineStrip,
+                      submesh: 0);
+
+      is_valid = true;
+    }
+
+    public void Draw() {
+      if (is_valid && vertex_count > 0 && mesh != null) {
+        UnityEngine.Graphics.DrawMesh(
+            mesh,
+            UnityEngine.Vector3.zero,
+            UnityEngine.Quaternion.identity,
+            GLLines.line_material,
+            (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
+            PlanetariumCamera.Camera);
+      }
+    }
+
+    public void Invalidate() {
+      is_valid = false;
+    }
+
+    public void Dispose() {
+      if (mesh != null) {
+        UnityEngine.Object.Destroy(mesh);
+        mesh = null;
+      }
+      compact_vertices = null;
+      compact_colors = null;
+      is_valid = false;
+    }
+  }
+
   private class CelestialTrajectories {
-    public UnityEngine.Mesh future = MakeDynamicMesh();
-    public UnityEngine.Mesh past = MakeDynamicMesh();
+    public CachedMeshEntry future = new CachedMeshEntry();
+    public CachedMeshEntry past = new CachedMeshEntry();
+  }
+
+  private static readonly int[] shared_indices_ = new int[VertexBuffer.size];
+
+  static Plotter() {
+    for (int i = 0; i < shared_indices_.Length; ++i) {
+      shared_indices_[i] = i;
+    }
   }
 
   private readonly Dictionary<CelestialBody, CelestialTrajectories>
       celestial_trajectory_meshes_ =
       new Dictionary<CelestialBody, CelestialTrajectories>();
-  private UnityEngine.Mesh psychohistory_mesh_;
-  private UnityEngine.Mesh prediction_mesh_;
-  private readonly List<UnityEngine.Mesh> flight_plan_segment_meshes_ =
-      new List<UnityEngine.Mesh>();
-  private readonly List<UnityEngine.Mesh> equipotential_meshes_ =
-      new List<UnityEngine.Mesh>();
-  private UnityEngine.Mesh target_psychohistory_mesh_;
-  private UnityEngine.Mesh target_prediction_mesh_;
-  private int[] indices_ = null;
-  private UnityEngine.Color[] colours_ =
-      new UnityEngine.Color[VertexBuffer.size];
+  private readonly CachedMeshEntry psychohistory_entry_ = new CachedMeshEntry();
+  private readonly CachedMeshEntry prediction_entry_ = new CachedMeshEntry();
+  private readonly List<CachedMeshEntry> flight_plan_segment_entries_ =
+      new List<CachedMeshEntry>();
+  private readonly List<CachedMeshEntry> equipotential_entries_ =
+      new List<CachedMeshEntry>();
+  private readonly CachedMeshEntry target_psychohistory_entry_ = new CachedMeshEntry();
+  private readonly CachedMeshEntry target_prediction_entry_ = new CachedMeshEntry();
+
+  private Vector3d last_scaled_space_origin_ = Vector3d.zero;
+  private string last_main_vessel_guid_ = null;
+  private double last_history_length_ = -1.0;
+  private string last_target_id_ = null;
 }
 
 }  // namespace ksp_plugin_adapter
