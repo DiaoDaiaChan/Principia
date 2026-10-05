@@ -258,7 +258,7 @@ public static class PerformanceProbe {
           ? "<color=orange>[回压熔断已激活 (主帧率保护)]</color>"
           : "<color=lime>[负载畅通 (任务可分流)]</color>";
       GUILayout.Label($"GPGPU 调度总督: {mode_str} {bp_str}");
-      GUILayout.Label($"异构分流计数: GPU <b>{HeterogeneousDynamicGovernor.GpuDispatchCount}</b> 次 | CPU <b>{HeterogeneousDynamicGovernor.CpuDispatchCount}</b> 次 (变轨寻优就绪)");
+      GUILayout.Label($"异构分流计数: GPU <b>{HeterogeneousDynamicGovernor.GpuDispatchCount:N0}</b> 次 (显存直出) | CPU <b>{HeterogeneousDynamicGovernor.CpuDispatchCount:N0}</b> 次 (网格重构)");
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
@@ -268,7 +268,7 @@ public static class PerformanceProbe {
       DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting, 5.0f);
       DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration, 3.0f);
       DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation, 15.0f);
-      DrawMetricBar("• GPGPU 计算 (Compute):", ProbeCategory.GpuCompute, 5.0f);
+      DrawMetricBar("• GPU绘制直出 (GPU Pass):", ProbeCategory.GpuCompute, 5.0f);
 
       GUILayout.EndScrollView();
 

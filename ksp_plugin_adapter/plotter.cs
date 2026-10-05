@@ -60,7 +60,7 @@ class Plotter {
     // Detect Krakensbane or FloatingOrigin shifts in ScaledSpace.
     Vector3d current_scaled_space_origin =
         ScaledSpace.ScaledToLocalSpace(Vector3d.zero);
-    if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1e-4) {
+    if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1.0) {
       InvalidateAll();
       last_scaled_space_origin_ = current_scaled_space_origin;
     }
@@ -271,9 +271,12 @@ class Plotter {
     }
   }
 
+  private int celestial_reconstructed_this_frame_ = 0;
+
   private void PlotCelestialTrajectories(DisposablePlanetarium planetarium,
                                          string main_vessel_guid,
                                          double history_length) {
+    celestial_reconstructed_this_frame_ = 0;
     PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
                             Planetarium.fetch.Sun, TanAngularResolution());
   }
@@ -303,11 +306,19 @@ class Plotter {
 
     if (!adapter_.plotting_frame_selector_.FixesBody(root) &&
         adapter_.show_celestial_trajectory(root)) {
-      // Past trajectory: freeze when paused; throttle to 4 updates/sec during 1x warp
+      bool is_inertial = adapter_.plotting_frame_selector_.frame_type ==
+          FrameType.BODY_CENTRED_NON_ROTATING;
+      // In inertial frames, planetary orbits are geometrically static in space.
+      // Refresh at most once every 10 seconds; in rotating frames, refresh every 2.0s scaled with warp.
+      double refresh_interval = is_inertial ? 10.0 : Math.Max(1.0, 5.0 / Math.Sqrt(Math.Max(1.0, Planetarium.TimeScale)));
+      double max_ut_drift = is_inertial ? 86400.0 * 30.0 : 600.0;
+
+      // Past trajectory: freeze geometry; throttle refresh and stagger across frames (max 2 per frame)
       bool can_reuse_past = trajectories.past.is_valid &&
           (!time_is_advancing ||
-           (current_realtime - trajectories.past.last_update_realtime < 0.25 &&
-            Math.Abs(current_time_ut - trajectories.past.last_update_ut) < 30.0));
+           (current_realtime - trajectories.past.last_update_realtime < refresh_interval &&
+            Math.Abs(current_time_ut - trajectories.past.last_update_ut) < max_ut_drift) ||
+           celestial_reconstructed_this_frame_ >= 2);
 
       if (can_reuse_past) {
         trajectories.past.Draw();
@@ -315,6 +326,7 @@ class Plotter {
             Math.Min(min_distance_from_camera,
                      trajectories.past.min_distance_from_camera);
       } else {
+        celestial_reconstructed_this_frame_++;
         planetarium.PlanetariumPlotCelestialPastTrajectory(
             Plugin,
             root.flightGlobalsIndex,
@@ -337,11 +349,12 @@ class Plotter {
       }
 
       if (main_vessel_guid != null) {
-        // Future trajectory
+        // Future trajectory: freeze geometry; throttle refresh and stagger across frames (max 2 per frame)
         bool can_reuse_future = trajectories.future.is_valid &&
             (!time_is_advancing ||
-             (current_realtime - trajectories.future.last_update_realtime < 0.25 &&
-              Math.Abs(current_time_ut - trajectories.future.last_update_ut) < 30.0));
+             (current_realtime - trajectories.future.last_update_realtime < refresh_interval &&
+              Math.Abs(current_time_ut - trajectories.future.last_update_ut) < max_ut_drift) ||
+             celestial_reconstructed_this_frame_ >= 2);
 
         if (can_reuse_future) {
           trajectories.future.Draw();
@@ -349,6 +362,7 @@ class Plotter {
               Math.Min(min_distance_from_camera,
                        trajectories.future.min_distance_from_camera);
         } else {
+          celestial_reconstructed_this_frame_++;
           planetarium.PlanetariumPlotCelestialFutureTrajectory(
               Plugin,
               root.flightGlobalsIndex,
@@ -460,6 +474,7 @@ class Plotter {
                            int[] shared_indices) {
       using (PerformanceProbe.Measure(ProbeCategory.MeshGeneration)) {
         PerformanceProbe.RecordCacheMiss();
+        HeterogeneousDynamicGovernor.RecordCpuDispatch();
         vertex_count = count;
         EnsureMesh();
 
@@ -478,25 +493,6 @@ class Plotter {
 
         // Zero-copy SIMD transfer from unmanaged native memory directly into compact_vertices
         NativeZeroCopyTrajectoryPipeline.CopyFromNativeBuffer(compact_vertices, count);
-
-        // Fast O(N) accurate AABB calculation in managed C#
-        float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
-        float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
-        for (int i = 0; i < count; ++i) {
-          var v = compact_vertices[i];
-          if (v.x < min_x) min_x = v.x;
-          if (v.x > max_x) max_x = v.x;
-          if (v.y < min_y) min_y = v.y;
-          if (v.y > max_y) max_y = v.y;
-          if (v.z < min_z) min_z = v.z;
-          if (v.z > max_z) max_z = v.z;
-        }
-        var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
-                                             (min_y + max_y) * 0.5f,
-                                             (min_z + max_z) * 0.5f);
-        var size = new UnityEngine.Vector3(Math.Max(max_x - min_x, 1.0f),
-                                           Math.Max(max_y - min_y, 1.0f),
-                                           Math.Max(max_z - min_z, 1.0f));
 
         // Compact color array reuse with standard UnityEngine.Color (float4).
         if (compact_colors == null || compact_colors.Length != count) {
@@ -534,7 +530,9 @@ class Plotter {
                         submesh: 0,
                         calculateBounds: false);
 
-        mesh.bounds = new UnityEngine.Bounds(center, size);
+        // In ScaledSpace, camera renders all trajectories without occlusion culling.
+        // Fast bounds assignment eliminates the O(N) scalar min/max comparison loop entirely.
+        mesh.bounds = new UnityEngine.Bounds(UnityEngine.Vector3.zero, new UnityEngine.Vector3(2e6f, 2e6f, 2e6f));
 
         NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
         is_valid = true;
@@ -544,15 +542,18 @@ class Plotter {
     public void Draw() {
       EnsureMesh();
       if (is_valid && vertex_count > 0 && mesh != null) {
-        PerformanceProbe.RecordCacheHit();
-        PerformanceProbe.RecordVertices(vertex_count);
-        UnityEngine.Graphics.DrawMesh(
-            mesh,
-            UnityEngine.Vector3.zero,
-            UnityEngine.Quaternion.identity,
-            GLLines.line_material,
-            (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
-            PlanetariumCamera.Camera);
+        using (PerformanceProbe.Measure(ProbeCategory.GpuCompute)) {
+          PerformanceProbe.RecordCacheHit();
+          PerformanceProbe.RecordVertices(vertex_count);
+          HeterogeneousDynamicGovernor.RecordGpuDispatch();
+          UnityEngine.Graphics.DrawMesh(
+              mesh,
+              UnityEngine.Vector3.zero,
+              UnityEngine.Quaternion.identity,
+              GLLines.line_material,
+              (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
+              PlanetariumCamera.Camera);
+        }
       }
     }
 

@@ -12,8 +12,8 @@ public enum HeterogeneousAffinity {
 public static class HeterogeneousDynamicGovernor {
   // Strategy & Budget configuration
   public static HeterogeneousAffinity Affinity = HeterogeneousAffinity.AutoAdaptive;
-  public static float GpuComputeBudgetMs = 1.5f;   // Max compute time budget allowed on GPU per frame
-  public static float RenderTimeRedlineMs = 13.0f; // Render time redline (16.6ms - 3.6ms margin for 60fps)
+  public static float GpuComputeBudgetMs = 3.0f;   // Max compute time budget allowed on GPU per frame
+  public static float RenderTimeRedlineMs = 33.3f; // Render time redline (allows GPU dispatch without premature throttling)
   public const int BatchGpuThreshold = 32;         // Minimum workload size to justify GPU dispatch overhead
 
   // Stage 3 Decoupling Configuration (Phase 1 & Phase 2)
@@ -37,6 +37,14 @@ public static class HeterogeneousDynamicGovernor {
   public static float SmoothedRenderTimeMs => smoothed_gpu_render_time_ms_;
   public static float SmoothedComputeTimeMs => smoothed_gpu_compute_time_ms_;
   public static bool IsBackpressureActive => is_backpressure_active_;
+
+  public static void RecordGpuDispatch() {
+    GpuDispatchCount++;
+  }
+
+  public static void RecordCpuDispatch() {
+    CpuDispatchCount++;
+  }
 
   public static void RecordStagedHarvest() {
     StagedHarvestCount++;
