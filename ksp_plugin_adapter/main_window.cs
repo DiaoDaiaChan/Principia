@@ -252,6 +252,16 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
         }
       }
 
+      var ephem_driver = RollingEphemerisDriver.Instance;
+      if (ephem_driver != null) {
+        string ephem_tag = ephem_driver.is_paused
+            ? "<color=yellow>[已暂停]</color>"
+            : (ephem_driver.is_prolonging ? "<color=cyan>[推演中]</color>" : "<color=lime>[已就绪]</color>");
+        UnityEngine.GUILayout.Label(
+            $"星历自主推演: +{ephem_driver.current_horizon_years:F2}Y / {ephem_driver.lookahead_horizon_years:F1}Y {ephem_tag} (载体: {ephem_driver.carrier_vessel_name})",
+            style: Style.Info(UnityEngine.GUI.skin.label));
+      }
+
       using (new UnityEngine.GUILayout.HorizontalScope()) {
         PerformanceProbe.ShowProfilingHud = UnityEngine.GUILayout.Toggle(
             PerformanceProbe.ShowProfilingHud,

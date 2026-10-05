@@ -744,9 +744,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   public static bool is_lit_solid_booster(Part part) {
-    foreach (PartModule module in part.Modules) {
-      var module_engines = module as ModuleEngines;
-      if (module_engines != null &&
+    var modules = part.Modules;
+    for (int mi = 0; mi < modules.Count; ++mi) {
+      if (modules[mi] is ModuleEngines module_engines &&
           module_engines.EngineIgnited &&
           module_engines.engineType == EngineType.SolidBooster) {
         return true;
@@ -1544,9 +1544,10 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         yield break;
       }
 
-      // We are going to touch plenty of `Transform`s, so we will prevent
-      // Unity from syncing with the physics system all the time.
-      UnityEngine.Physics.autoSyncTransforms = false;
+      using (PerformanceProbe.Measure(ProbeCategory.UnityWaitedForFixedUpdate)) {
+        // We are going to touch plenty of `Transform`s, so we will prevent
+        // Unity from syncing with the physics system all the time.
+        UnityEngine.Physics.autoSyncTransforms = false;
 
       double Δt = Planetarium.TimeScale * Planetarium.fetch.fixedDeltaTime;
 
@@ -1640,7 +1641,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             }
             if (part_id_to_intrinsic_forces_.TryGetValue(part_id,
                     out PartCentredForceHolder[] intrinsic_forces)) {
-              foreach (var part_centred_force in intrinsic_forces) {
+              for (int ifi = 0; ifi < intrinsic_forces.Length; ++ifi) {
+                var part_centred_force = intrinsic_forces[ifi];
                 plugin_.PartApplyIntrinsicForceAtPosition(
                     part_id,
                     (XYZ)part_centred_force.force,
@@ -1986,6 +1988,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
       UnityEngine.Physics.SyncTransforms();
       UnityEngine.Physics.autoSyncTransforms = true;
+      }
     } catch (Exception e) {
       Log.Fatal(e.ToString());
     }
@@ -2084,8 +2087,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
     using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
       collided_vessels_cache_.Clear();
-      foreach (var f in vessel_futures_) {
-        var future = f;
+      for (int fi = 0; fi < vessel_futures_.Count; ++fi) {
+        var future = vessel_futures_[fi];
         plugin_.FutureWaitForVesselToCatchUp(ref future,
                                              out DisposableIterator
                                                      collided_vessels);

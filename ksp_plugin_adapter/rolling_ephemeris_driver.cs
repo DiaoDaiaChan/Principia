@@ -57,6 +57,7 @@ internal class RollingEphemerisDriver {
       }
       ConsoleLogs.Add($"[{time_str}] {msg}");
     }
+    Log.Info($"[RollingEphemeris] {msg}");
   }
 
   public void TogglePause() {

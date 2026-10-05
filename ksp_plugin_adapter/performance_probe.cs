@@ -13,10 +13,11 @@ public enum ProbeCategory {
   GpuCompute = 5,
   UnityPrecalc = 6,
   UnityFixedUpdate = 7,
-  UnityBetterLate = 8,
-  UnityLateUpdate = 9,
-  TotalFrame = 10,
-  Count = 11
+  UnityWaitedForFixedUpdate = 8,
+  UnityBetterLate = 9,
+  UnityLateUpdate = 10,
+  TotalFrame = 11,
+  Count = 12
 }
 
 public static class PerformanceProbe {
@@ -134,12 +135,14 @@ public static class PerformanceProbe {
       // 2. Unity Lifecycle Timing Breakdown
       GUILayout.Label("<b>Unity 端生命周期耗时分析 (Smoothed / Peak):</b>");
       DrawMetricBar("• Precalc() (天体/历表推进):", ProbeCategory.UnityPrecalc, 2.0f);
-      DrawMetricBar("• FixedUpdate() (物理帧同步步):", ProbeCategory.UnityFixedUpdate, 0.5f);
+      DrawMetricBar("• FixedUpdate() (物理帧同步):", ProbeCategory.UnityFixedUpdate, 0.5f);
+      DrawMetricBar("• WaitedForFixed() (部件动力学):", ProbeCategory.UnityWaitedForFixedUpdate, 2.0f);
       DrawMetricBar("• BetterLate() (分阶段收割):", ProbeCategory.UnityBetterLate, 1.0f);
       DrawMetricBar("• LateUpdate() (轨迹与视口交互):", ProbeCategory.UnityLateUpdate, 2.0f);
 
       float principia_total = GetSmoothedMs(ProbeCategory.UnityPrecalc) +
                               GetSmoothedMs(ProbeCategory.UnityFixedUpdate) +
+                              GetSmoothedMs(ProbeCategory.UnityWaitedForFixedUpdate) +
                               GetSmoothedMs(ProbeCategory.UnityBetterLate) +
                               GetSmoothedMs(ProbeCategory.UnityLateUpdate);
       float principia_ratio = FrameTimeMs > 0.001f ? (principia_total / FrameTimeMs) * 100.0f : 0.0f;
