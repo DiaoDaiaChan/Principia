@@ -63,6 +63,19 @@ Write-Host "Deploying latest Principia binaries to KSP directories..." -Foregrou
 Copy-Item -Path $srcDll -Destination "$targetDir1\ksp_plugin_adapter.dll" -Force
 Copy-Item -Path $srcPdb -Destination "$targetDir1\ksp_plugin_adapter.pdb" -Force
 
+$shadersSrc = "Release\GameData\Principia\shaders"
+if (-not (Test-Path $shadersSrc)) {
+    $shadersSrc = "shaders"
+}
+if (Test-Path $shadersSrc) {
+    $shadersDst = Join-Path $targetDir1 "shaders"
+    if (-not (Test-Path $shadersDst)) {
+        New-Item -ItemType Directory -Path $shadersDst -Force | Out-Null
+    }
+    Copy-Item -Path "$shadersSrc\*" -Destination $shadersDst -Recurse -Force
+    Write-Host "Synced shaders to $shadersDst" -ForegroundColor Green
+}
+
 if (Test-Path $targetDir2) {
     Copy-Item -Path $srcDll -Destination "$targetDir2\ksp_plugin_adapter.dll" -Force
     Copy-Item -Path $srcPdb -Destination "$targetDir2\ksp_plugin_adapter.pdb" -Force
