@@ -512,9 +512,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   public bool PluginRunning() {
-    if (plugin_ != IntPtr.Zero && rolling_ephemeris_driver_ == null) {
-      rolling_ephemeris_driver_ = new RollingEphemerisDriver(plugin_, this);
-    }
     return plugin_ != IntPtr.Zero;
   }
 

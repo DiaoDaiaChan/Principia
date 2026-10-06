@@ -56,11 +56,10 @@ internal class RollingEphemerisDriver {
     adapter_ = adapter;
     Instance = this;
     AddLog("星历自动推演驱动器已初始化");
-    EnsureEphemerisAnchor();
   }
 
   public bool EnsureEphemerisAnchor() {
-    if (plugin_ == IntPtr.Zero || !adapter_.PluginRunning()) {
+    if (plugin_ == IntPtr.Zero) {
       return false;
     }
     if (plugin_.HasVessel(EphemerisAnchorGuid)) {
@@ -154,7 +153,6 @@ internal class RollingEphemerisDriver {
       carrier_vessel_guid_ = null;
       suppress_plot_on_active_ = false;
       Instance?.AddLog("已释放当前载体飞船");
-      Instance?.EnsureHorizon(Planetarium.GetUniversalTime(), force: true);
     }
   }
 
