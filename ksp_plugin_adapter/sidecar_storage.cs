@@ -8,11 +8,11 @@ namespace ksp_plugin_adapter {
 
 internal static class SidecarStorage {
   private static readonly byte[] MagicHeader =
-      Encoding.ASCII.GetBytes("PRNC_SIDECAR_V1\0");
+      Encoding.ASCII.GetBytes("PRNC_SIDECAR_V2\0");
   private static readonly byte[] MagicFooter =
       Encoding.ASCII.GetBytes("PRNCDONE");
 
-  public const int CurrentFormatVersion = 1;
+  public const int CurrentFormatVersion = 2;
 
   public static string GetSaveDirectory() {
     string folder = HighLogic.SaveFolder;
@@ -102,15 +102,8 @@ internal static class SidecarStorage {
           break;
         }
 
-        string standard_base64 = serialization.Replace('-', '+').Replace('_', '/');
-        switch (standard_base64.Length % 4) {
-          case 2: standard_base64 += "=="; break;
-          case 3: standard_base64 += "="; break;
-        }
-        byte[] raw_bytes = Convert.FromBase64String(standard_base64);
-        writer.Write(raw_bytes.Length);
-        writer.Write(raw_bytes);
-        total_bytes += raw_bytes.Length;
+        writer.Write(serialization);
+        total_bytes += serialization.Length;
         chunk_count++;
       }
 
@@ -160,7 +153,7 @@ internal static class SidecarStorage {
       }
       for (int i = 0; i < MagicHeader.Length; ++i) {
         if (header[i] != MagicHeader[i]) {
-          Log.Error("Invalid Principia sidecar magic header");
+          Log.Error("Invalid Principia sidecar magic header or unsupported legacy version");
           return false;
         }
       }
@@ -180,9 +173,7 @@ internal static class SidecarStorage {
       Log.Info($"Loading Principia sidecar with {chunk_count} chunks (v{version}, {compression})");
 
       for (int i = 0; i < chunk_count; ++i) {
-        int length = reader.ReadInt32();
-        byte[] raw_bytes = reader.ReadBytes(length);
-        string chunk_base64 = Convert.ToBase64String(raw_bytes);
+        string chunk_base64 = reader.ReadString();
         Interface.DeserializePlugin(chunk_base64,
                                     ref deserializer,
                                     ref plugin_reader,

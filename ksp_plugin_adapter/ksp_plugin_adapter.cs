@@ -58,7 +58,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private const string principia_sidecar_version = "principia_sidecar_version";
   private const string principia_sidecar_timestamp = "principia_sidecar_timestamp";
   private const string principia_sidecar_chunks = "principia_sidecar_chunks";
-  private const uint principia_sidecar_current_version = 1;
+  private const uint principia_sidecar_current_version = 2;
 
   private static string PluginStatesDirectory =>
       Path.Combine(KSPUtil.ApplicationRootPath, "GameData", "Principia", "PluginStates");
@@ -912,6 +912,15 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                                       scratch_orbit_.referenceBody,
                                       universal_time);
     body.CBUpdate();
+    CelestialPositionCache.RecordCelestialState(
+        body_index,
+        parent_index,
+        universal_time,
+        body_pos,
+        body_vel,
+        body.position,
+        body.rotation,
+        body.Radius);
 
     if (celestial_last_motion_.TryGetValue(body_index, out var last_motion) &&
         universal_time > last_motion.time_ut) {
@@ -1689,6 +1698,16 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     using (PerformanceProbe.Measure(ProbeCategory.UnityLateUpdate)) {
       if (!PluginRunning()) {
         return;
+      }
+      rolling_ephemeris_driver_?.Update();
+      if (topological_bodies_ != null && HighLogic.LoadedScene != GameScenes.FLIGHT) {
+        double current_ut = Planetarium.GetUniversalTime();
+        for (int i = 0; i < topological_bodies_.Count; ++i) {
+          var body = topological_bodies_[i];
+          if (body != null && body.orbit != null) {
+            UpdateBody(body, current_ut);
+          }
+        }
       }
       string main_vessel_guid = GetVesselGuid(PredictedVessel());
       RenderTrajectoryCollisions(main_vessel_guid,
@@ -3132,9 +3151,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           double universal_time = Planetarium.GetUniversalTime();
           for (int i = 0; i < topological_bodies_.Count; ++i) {
             var body = topological_bodies_[i];
-            if (ShouldUpdateCelestialBody(body, current_realtime, current_frame)) {
-              UpdateBody(body, universal_time);
-            }
+            UpdateBody(body, universal_time);
           }
         }
 

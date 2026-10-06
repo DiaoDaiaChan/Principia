@@ -336,5 +336,76 @@ internal static class CelestialTrajectoryBinaryCache {
   }
 }
 
+public struct CelestialStateRecord {
+  public double ut;
+  public int parent_index;
+  public Vector3d position_from_parent;
+  public Vector3d velocity_from_parent;
+  public Vector3d world_position;
+  public UnityEngine.QuaternionD rotation;
+  public double radius;
+  public bool is_valid;
+}
+
+internal static class CelestialPositionCache {
+  private const int MaxTrackedBodies = 128;
+  private static readonly CelestialStateRecord[] records_ = new CelestialStateRecord[MaxTrackedBodies];
+  public static long TotalRecordUpdates { get; private set; } = 0;
+  public static double LastUpdateUt { get; private set; } = -1.0;
+  public static int CachedBodyCount { get; private set; } = 0;
+
+  public static void RecordCelestialState(int body_index,
+                                          int parent_index,
+                                          double ut,
+                                          Vector3d pos_from_parent,
+                                          Vector3d vel_from_parent,
+                                          Vector3d world_pos,
+                                          UnityEngine.QuaternionD rot,
+                                          double radius) {
+    if (body_index < 0 || body_index >= MaxTrackedBodies) {
+      return;
+    }
+    if (!records_[body_index].is_valid) {
+      CachedBodyCount++;
+    }
+    records_[body_index].ut = ut;
+    records_[body_index].parent_index = parent_index;
+    records_[body_index].position_from_parent = pos_from_parent;
+    records_[body_index].velocity_from_parent = vel_from_parent;
+    records_[body_index].world_position = world_pos;
+    records_[body_index].rotation = rot;
+    records_[body_index].radius = radius;
+    records_[body_index].is_valid = true;
+    LastUpdateUt = ut;
+    TotalRecordUpdates++;
+  }
+
+  public static bool TryGetCachedState(int body_index, out CelestialStateRecord state) {
+    if (body_index >= 0 && body_index < MaxTrackedBodies && records_[body_index].is_valid) {
+      state = records_[body_index];
+      return true;
+    }
+    state = default;
+    return false;
+  }
+
+  public static Vector3d GetCachedWorldPosition(int body_index, Vector3d fallback) {
+    if (body_index >= 0 && body_index < MaxTrackedBodies && records_[body_index].is_valid) {
+      return records_[body_index].world_position;
+    }
+    return fallback;
+  }
+
+  public static void Clear() {
+    for (int i = 0; i < records_.Length; ++i) {
+      records_[i] = default;
+    }
+    CachedBodyCount = 0;
+    TotalRecordUpdates = 0;
+    LastUpdateUt = -1.0;
+  }
+}
+
 }  // namespace ksp_plugin_adapter
 }  // namespace principia
+
