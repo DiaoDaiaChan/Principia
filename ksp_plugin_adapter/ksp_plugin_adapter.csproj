@@ -164,11 +164,6 @@
     <Compile Include="MapMarkerEventGovernor.cs" />
     <Compile Include="CelestialTrajectoryBinaryCache.cs" />
     <Compile Include="GpuFlightPlanOptimizer.cs" />
-    <Compile Include="GpuPorkchopScanner.cs" />
-    <Compile Include="GpuTerrainCollisionDetector.cs" />
-    <Compile Include="GpuGeopotentialGrid.cs" />
-    <Compile Include="GpuSolarRadiationPressure.cs" />
-    <Compile Include="GpuConjunctionMonitor.cs" />
     <Compile Include="GpuTrajectoryRenderer.cs" />
     <Compile Include="GpuModuleTelemetry.cs" />
     <Compile Include="gpu_diagnostics_window.cs" />

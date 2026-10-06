@@ -12,15 +12,6 @@ public static class PrincipiaGPGPUContext {
   public static ComputeShader batch_orbit_integrator { get; private set; }
   public static ComputeShader flight_plan_shooting_optimizer { get; private set; }
   public static ComputeShader trajectory_tessellator { get; private set; }
-  public static ComputeShader wsb_bundle_evaluator { get; private set; }
-  public static ComputeShader equipotential_marching_cubes { get; private set; }
-  public static ComputeShader porkchop_lambert_scanner { get; private set; }
-  public static ComputeShader terrain_collision_raymarcher { get; private set; }
-  public static ComputeShader high_degree_geopotential_grid { get; private set; }
-  public static ComputeShader solar_eclipse_occlusion { get; private set; }
-  public static ComputeShader all_pairs_conjunction_broadphase { get; private set; }
-  public static ComputeShader ground_track_swath_accumulator { get; private set; }
-  public static ComputeShader aerodynamic_area_reduction { get; private set; }
 
   // Procedural Shaders & Materials
   public static Shader trajectory_procedural_shader { get; private set; }
@@ -77,15 +68,6 @@ public static class PrincipiaGPGPUContext {
           flight_plan_shooting_optimizer = gpu_bundle_.LoadAsset<ComputeShader>("FlightPlanShootingOptimizer");
           batch_orbit_integrator = gpu_bundle_.LoadAsset<ComputeShader>("BatchOrbitIntegrator");
           trajectory_tessellator = gpu_bundle_.LoadAsset<ComputeShader>("TrajectoryTessellator");
-          wsb_bundle_evaluator = gpu_bundle_.LoadAsset<ComputeShader>("WSBBundleEvaluator");
-          equipotential_marching_cubes = gpu_bundle_.LoadAsset<ComputeShader>("EquipotentialMarchingCubes");
-          porkchop_lambert_scanner = gpu_bundle_.LoadAsset<ComputeShader>("PorkchopLambertScanner");
-          terrain_collision_raymarcher = gpu_bundle_.LoadAsset<ComputeShader>("TerrainCollisionRaymarcher");
-          high_degree_geopotential_grid = gpu_bundle_.LoadAsset<ComputeShader>("HighDegreeGeopotentialGrid");
-          solar_eclipse_occlusion = gpu_bundle_.LoadAsset<ComputeShader>("SolarEclipseOcclusion");
-          all_pairs_conjunction_broadphase = gpu_bundle_.LoadAsset<ComputeShader>("AllPairsConjunctionBroadphase");
-          ground_track_swath_accumulator = gpu_bundle_.LoadAsset<ComputeShader>("GroundTrackSwathAccumulator");
-          aerodynamic_area_reduction = gpu_bundle_.LoadAsset<ComputeShader>("AerodynamicAreaReduction");
           trajectory_procedural_shader = gpu_bundle_.LoadAsset<Shader>("TrajectoryProcedural");
           Log.Info("[GPGPU] principia_gpu.bundle successfully loaded.");
         }
@@ -131,15 +113,6 @@ public static class PrincipiaGPGPUContext {
     flight_plan_shooting_optimizer = null;
     batch_orbit_integrator = null;
     trajectory_tessellator = null;
-    wsb_bundle_evaluator = null;
-    equipotential_marching_cubes = null;
-    porkchop_lambert_scanner = null;
-    terrain_collision_raymarcher = null;
-    high_degree_geopotential_grid = null;
-    solar_eclipse_occlusion = null;
-    all_pairs_conjunction_broadphase = null;
-    ground_track_swath_accumulator = null;
-    aerodynamic_area_reduction = null;
 
     if (trajectory_procedural_material != null) {
       UnityEngine.Object.Destroy(trajectory_procedural_material);

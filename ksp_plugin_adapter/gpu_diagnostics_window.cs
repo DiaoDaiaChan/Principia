@@ -106,7 +106,7 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
         } else if (set_gpu && is_native) {
           HeterogeneousDynamicGovernor.PipelineMode =
               ComputationPipelineMode.GpuAccelerated;
-          GpuModuleTelemetry.LogBenchmarkResult("已切换至 [GPGPU 异构加速] 模式: 并行打靶、Porkchop、DEM 光线步进等着色器接入。");
+          GpuModuleTelemetry.LogBenchmarkResult("已切换至 [GPGPU 异构加速] 模式: 并行打靶、自适应曲率细分等着色器接入。");
         }
       }
 
@@ -121,7 +121,7 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
       } else {
         using (new GUILayout.HorizontalScope()) {
           GUILayout.Label(
-              "<color=cyan><b>【异构计算激活模式】</b>GPGPU 运算管线已激活，16,384 条机动打靶、Porkchop 猪排图、DEM 地形光线步进、自适应曲率细分等多任务并发由 GPU 调度执行。</color>",
+              "<color=cyan><b>【异构计算激活模式】</b>GPGPU 运算管线已激活，16,384 条机动打靶、自适应曲率细分等多任务并发由 GPU 调度执行。</color>",
               Style.Info(GUI.skin.label));
         }
       }

@@ -24,15 +24,6 @@ public static class BuildPrincipiaGpuAssetBundle {
       "Assets/PrincipiaShaders/FlightPlanShootingOptimizer.compute",
       "Assets/PrincipiaShaders/BatchOrbitIntegrator.compute",
       "Assets/PrincipiaShaders/TrajectoryTessellator.compute",
-      "Assets/PrincipiaShaders/WSBBundleEvaluator.compute",
-      "Assets/PrincipiaShaders/EquipotentialMarchingCubes.compute",
-      "Assets/PrincipiaShaders/PorkchopLambertScanner.compute",
-      "Assets/PrincipiaShaders/TerrainCollisionRaymarcher.compute",
-      "Assets/PrincipiaShaders/HighDegreeGeopotentialGrid.compute",
-      "Assets/PrincipiaShaders/SolarEclipseOcclusion.compute",
-      "Assets/PrincipiaShaders/AllPairsConjunctionBroadphase.compute",
-      "Assets/PrincipiaShaders/GroundTrackSwathAccumulator.compute",
-      "Assets/PrincipiaShaders/AerodynamicAreaReduction.compute",
       "Assets/PrincipiaShaders/TrajectoryProcedural.shader",
     };
 
