@@ -231,6 +231,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private static Dictionary<CelestialBody, Orbit> unmodified_orbits_;
   private static Dictionary<CelestialBody, double>
       unmodified_initial_rotations_;
+  private readonly Dictionary<int, MotionSnapshot> celestial_last_motion_ =
+      new Dictionary<int, MotionSnapshot>();
 
   private Krakensbane krakensbane_;
 
@@ -903,11 +905,34 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     body.orbit.referenceBody = scratch_orbit_.referenceBody;
     body.orbit.Init();
     body.orbit.UpdateFromUT(universal_time);
-    body.orbit.UpdateFromStateVectors((Vector3d)from_parent.q,
-                                      (Vector3d)from_parent.p,
+    Vector3d body_pos = (Vector3d)from_parent.q;
+    Vector3d body_vel = (Vector3d)from_parent.p;
+    body.orbit.UpdateFromStateVectors(body_pos,
+                                      body_vel,
                                       scratch_orbit_.referenceBody,
                                       universal_time);
     body.CBUpdate();
+
+    if (celestial_last_motion_.TryGetValue(body_index, out var last_motion) &&
+        universal_time > last_motion.time_ut) {
+      var slice = DensePolynomialSlice.FromEndpoints(
+          last_motion.time_ut,
+          universal_time,
+          last_motion.position,
+          last_motion.velocity,
+          body_pos,
+          body_vel,
+          UnityEngine.QuaternionD.identity,
+          UnityEngine.QuaternionD.identity);
+      TripleBufferStateBus.PublishBodySlice(body_index, ref slice);
+    }
+    celestial_last_motion_[body_index] = new MotionSnapshot{
+        time_ut = universal_time,
+        position = body_pos,
+        velocity = body_vel,
+        rotation = UnityEngine.QuaternionD.identity,
+        angular_velocity = Vector3d.zero
+    };
   }
 
   public static bool IsVesselManeuvering(Vessel vessel) {
@@ -3007,6 +3032,22 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
   }
 
+  private void ProcessCommandPacket(in CommandPacket cmd) {
+    switch (cmd.type) {
+      case CommandType.SetManœuvre:
+      case CommandType.DeleteManœuvre:
+        flight_plan_dirty = true;
+        break;
+      case CommandType.SetPlottingFrame:
+        break;
+      case CommandType.TriggerPrediction:
+        plotter_?.InvalidateAll();
+        break;
+      default:
+        break;
+    }
+  }
+
   private void BetterLateThanNeverLateUpdate() {
     // Phase 2 Decoupled Rendering: instantaneous evaluation from lock-free triple buffer.
     if (HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling &&
@@ -3021,6 +3062,11 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             out Vector3d sample_pos,
             out UnityEngine.QuaternionD sample_rot);
       }
+    }
+
+    // Drain and process SPSC commands from UI/background threads
+    while (SpscCommandBus.TryPollCommand(out var cmd)) {
+      ProcessCommandPacket(in cmd);
     }
 
     // While we draw the trajectories directly (and thus do so after everything
@@ -4010,6 +4056,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     } else {
       plugin_.ClearTargetVessel();
       plugin_.SetPlottingFrame(frame_parameters);
+      SpscCommandBus.TryPostCommand(CommandPacket.ForCelestial(CommandType.SetPlottingFrame, 0));
     }
     navball_changed_ = true;
     reset_rsas_target_ = true;

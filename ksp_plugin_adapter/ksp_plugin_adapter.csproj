@@ -169,6 +169,9 @@
     <Compile Include="gpu_diagnostics_window.cs" />
     <Compile Include="NativeZeroCopyTrajectoryPipeline.cs" />
     <Compile Include="NativeStateSnapshotChannel.cs" />
+    <Compile Include="DensePolynomialSlice.cs" />
+    <Compile Include="TripleBufferStateBus.cs" />
+    <Compile Include="SpscCommandBus.cs" />
     <Compile Include="performance_probe.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />

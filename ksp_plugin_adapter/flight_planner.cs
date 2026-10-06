@@ -66,6 +66,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
     }
     var status = plugin.FlightPlanReplace(vessel_guid, burn, i);
     adapter_.flight_plan_dirty = true;
+    SpscCommandBus.TryPostCommand(CommandPacket.ForVessel(CommandType.SetManœuvre, predicted_vessel.id, burn.initial_time));
     UpdateStatus(status, i);
     ResetOptimizer(vessel_guid);
     if (burn_editors_?.Count > i && burn_editors_[i] is BurnEditor editor) {
@@ -391,6 +392,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             new PlannedOrbitAnalyser(adapter_, predicted_vessel_);
         plugin.FlightPlanDelete(vessel_guid);
         adapter_.flight_plan_dirty = true;
+        SpscCommandBus.TryPostCommand(CommandPacket.ForVessel(CommandType.DeleteManœuvre, predicted_vessel.id));
         ResetStatus();
         ScheduleShrink();
         // The state change will happen the next time we go through OnGUI.
@@ -557,6 +559,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             case BurnEditor.Event.Deleted: {
               var status = plugin.FlightPlanRemove(vessel_guid, i);
               adapter_.flight_plan_dirty = true;
+              SpscCommandBus.TryPostCommand(CommandPacket.ForVessel(CommandType.DeleteManœuvre, predicted_vessel.id, i));
               UpdateStatus(status, null);
               ResetOptimizer(vessel_guid);
               burn_editors_[i].Close();
@@ -714,6 +717,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
                                              candidate_burn,
                                              index);
         adapter_.flight_plan_dirty = true;
+        SpscCommandBus.TryPostCommand(CommandPacket.ForVessel(CommandType.SetManœuvre, predicted_vessel.id, candidate_burn.initial_time));
         ResetOptimizer(vessel_guid);
 
         // The previous call did not necessarily create a manœuvre.  Check if

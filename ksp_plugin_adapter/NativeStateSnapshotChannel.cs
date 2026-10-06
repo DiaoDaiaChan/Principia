@@ -35,7 +35,7 @@ public struct MotionSnapshot {
 /// <summary>
 /// Lock-Free Triple-Buffering State Channel (Phase 2 Decoupling)
 /// Decouples Unity's rendering/Precalc timeline from C++ physics integration.
-/// Buffer 0/1/2 with atomic CAS exchange.
+/// Bridges seamlessly to TripleBufferStateBus and DensePolynomialSlice.
 /// </summary>
 public static class NativeStateSnapshotChannel {
   private static readonly Dictionary<string, EntityTripleBuffer> entity_buffers_ =
@@ -53,11 +53,34 @@ public static class NativeStateSnapshotChannel {
   }
 
   private class EntityTripleBuffer {
+    private readonly string entity_id_;
     public readonly MotionSnapshot[] buffers = new MotionSnapshot[3];
     // Atomic state: packed integer [reader, ready, writer]
     private int state_ = 0x000102; // reader=0, ready=1, writer=2
+    private MotionSnapshot last_snapshot_;
+    private bool has_last_ = false;
+
+    public EntityTripleBuffer(string entity_id) {
+      entity_id_ = entity_id;
+    }
 
     public void Publish(in MotionSnapshot snapshot) {
+      // Feed into continuous Hermite dense polynomial slice
+      if (has_last_ && snapshot.time_ut > last_snapshot_.time_ut) {
+        var slice = DensePolynomialSlice.FromEndpoints(
+            last_snapshot_.time_ut,
+            snapshot.time_ut,
+            last_snapshot_.position,
+            last_snapshot_.velocity,
+            snapshot.position,
+            snapshot.velocity,
+            last_snapshot_.rotation,
+            snapshot.rotation);
+        TripleBufferStateBus.PublishVesselSlice(entity_id_, ref slice);
+      }
+      last_snapshot_ = snapshot;
+      has_last_ = true;
+
       int cur_state = state_;
       int writer = cur_state & 0xFF;
       buffers[writer] = snapshot;
@@ -99,7 +122,7 @@ public static class NativeStateSnapshotChannel {
     EntityTripleBuffer buf;
     lock (lock_) {
       if (!entity_buffers_.TryGetValue(entity_id, out buf)) {
-        buf = new EntityTripleBuffer();
+        buf = new EntityTripleBuffer(entity_id);
         entity_buffers_[entity_id] = buf;
       }
     }
@@ -110,6 +133,12 @@ public static class NativeStateSnapshotChannel {
     pos = Vector3d.zero;
     rot = QuaternionD.identity;
     if (string.IsNullOrEmpty(entity_id)) return false;
+
+    // High precision O(1) Horner evaluation from continuous dense polynomial slice
+    if (TripleBufferStateBus.SampleVesselSlice(entity_id, query_ut, out pos, out Vector3d _, out rot)) {
+      SnapshotsConsumed++;
+      return true;
+    }
 
     EntityTripleBuffer buf;
     lock (lock_) {
@@ -124,6 +153,7 @@ public static class NativeStateSnapshotChannel {
     lock (lock_) {
       entity_buffers_.Clear();
     }
+    TripleBufferStateBus.Clear();
   }
 }
 

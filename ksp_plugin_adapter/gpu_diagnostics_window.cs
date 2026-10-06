@@ -142,6 +142,25 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             $"<b>调度计数:</b> GPU 派发 <b>{HeterogeneousDynamicGovernor.GpuDispatchCount:N0}</b> 次 | CPU 回退 <b>{HeterogeneousDynamicGovernor.CpuDispatchCount:N0}</b> 次 | 零拷贝轨迹直通: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 | 阶段收割: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次",
             GUILayout.ExpandWidth(true));
       }
+
+      using (new GUILayout.HorizontalScope()) {
+        string state_bus_badge = Interface.HasStateBusSupport
+            ? "<color=#55ff55>C++ 原生原子三缓冲 (Lock-Free 64B Aligned)</color>"
+            : "<color=#55ffff>托管无锁三缓冲 (Lock-Free Atomic Fallback)</color>";
+        string cmd_bus_badge = Interface.HasCommandBusSupport
+            ? "<color=#55ff55>C++ SPSC 环形缓冲</color>"
+            : "<color=#55ffff>托管 SPSC 环形队列</color>";
+
+        GUILayout.Label(
+            $"<b>解耦总线 (Phase 2):</b> 状态总线: {state_bus_badge} | 命令总线: {cmd_bus_badge}",
+            GUILayout.ExpandWidth(true));
+      }
+
+      using (new GUILayout.HorizontalScope()) {
+        GUILayout.Label(
+            $"<b>状态通道吞吐:</b> 载具切片: <b>{TripleBufferStateBus.ActiveVesselChannels}</b> | 天体切片: <b>{TripleBufferStateBus.ActiveBodyChannels}</b> | 派发: <b>{TripleBufferStateBus.TotalSnapshotsPublished:N0}</b> | 采样消费: <b>{TripleBufferStateBus.TotalSnapshotsSampled:N0}</b> | SPSC 命令入队: <b>{SpscCommandBus.CommandsPostedCount:N0}</b> / 出队: <b>{SpscCommandBus.CommandsExecutedCount:N0}</b>",
+            GUILayout.ExpandWidth(true));
+      }
     }
   }
 
