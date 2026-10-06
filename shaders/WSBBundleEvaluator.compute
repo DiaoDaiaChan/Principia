@@ -26,6 +26,9 @@ cbuffer WSBConfig : register(b0) {
     uint _CelestialCount;
     uint _TargetPrimaryIndex;
     uint _TargetSecondaryIndex;
+    float _EscapeRadius;
+    float _CaptureRadius;
+    float2 _WSBPadding;
 };
 
 StructuredBuffer<CelestialBodyLite> _CelestialBodies : register(t0);
@@ -76,17 +79,19 @@ void EvaluateWSBBundle(uint3 id : SV_DispatchThreadID) {
         vel += accel * dt;
         pos += vel * dt;
 
-        if (length(pos) > 1e12f) {
+        float escape_r = _EscapeRadius > 0.0f ? _EscapeRadius : 1e12f;
+        if (length(pos) > escape_r) {
             escaped = true;
             break;
         }
     }
 
+    float capture_r = _CaptureRadius > 0.0f ? _CaptureRadius : 1e8f;
     WSBParticleState result;
     result.position = pos;
     result.velocity = vel;
     result.min_periapsis = min_r_target;
-    result.capture_status = escaped ? 0.0f : (min_r_target < 1e8f ? 1.0f : 0.5f);
+    result.capture_status = escaped ? 0.0f : (min_r_target < capture_r ? 1.0f : 0.5f);
 
     _Particles[index] = result;
 }

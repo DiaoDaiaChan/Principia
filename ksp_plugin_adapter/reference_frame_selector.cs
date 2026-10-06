@@ -1,4 +1,4 @@
-﻿#undef HAS_SURFACE
+#undef HAS_SURFACE
 #undef HAS_BODY_CENTRED_ALIGNED_WITH_PARENT
 
 using System;
@@ -720,12 +720,34 @@ internal class
     }
   }
 
+  private int custom_pinned_count_ = 0;
+
   private bool AnyDescendantPinned(CelestialBody celestial) {
     if (pinned[celestial]) {
       return true;
     }
-    if (target_pinned_ && target_vessel?.orbit.referenceBody == celestial) {
+    CelestialBody target_ref = (target_pinned_ && target_vessel != null)
+        ? target_vessel.orbit?.referenceBody
+        : null;
+    if (target_ref == celestial) {
       return true;
+    }
+    // Fast path: if no bodies are custom-pinned and there is no target reference body,
+    // avoid recursive tree traversal entirely across hundreds of unexpanded bodies.
+    if (custom_pinned_count_ == 0 && target_ref == null) {
+      return false;
+    }
+    // Fast path: if no bodies are custom-pinned, target_ref is the only possible pinned body.
+    // Check in O(depth) by walking up target_ref's parent chain instead of traversing downwards.
+    if (custom_pinned_count_ == 0 && target_ref != null) {
+      for (CelestialBody parent = target_ref.orbit?.referenceBody;
+           parent != null;
+           parent = parent.orbit?.referenceBody) {
+        if (parent == celestial) {
+          return true;
+        }
+      }
+      return false;
     }
     foreach (CelestialBody body in celestial.orbitingBodies) {
       if (AnyDescendantPinned(body)) {
@@ -794,6 +816,11 @@ internal class
       UnityEngine.GUILayout.FlexibleSpace();
       if (RenderPinButton(celestial)) {
         pinned[celestial] = !pinned[celestial];
+        if (pinned[celestial]) {
+          ++custom_pinned_count_;
+        } else {
+          --custom_pinned_count_;
+        }
         ScheduleShrink();
       }
       if (RenderFocusButton()) {
@@ -1012,7 +1039,10 @@ internal class
     var target_frame_was_selected = target_frame_selected;
     action();
     if (is_freshly_constructed_) {
-      pinned[selected_celestial] = true;
+      if (!pinned[selected_celestial]) {
+        pinned[selected_celestial] = true;
+        ++custom_pinned_count_;
+      }
       if (!selected_celestial.is_leaf(target_vessel)) {
         expanded_[selected_celestial] = true;
       }

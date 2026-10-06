@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -150,9 +150,11 @@ internal partial class PlottingFrameParameters : IReferenceFrameParameters,
     return obj is IReferenceFrameParameters other && this == other;
   }
 
-  public override int GetHashCode() =>
-      (extension, centre_index, primary_index.DefaultIfEmpty(-1).First(),
-       secondary_index.DefaultIfEmpty(-1).First()).GetHashCode();
+  public override int GetHashCode() {
+    int p = primary_index != null && primary_index.Length > 0 ? primary_index[0] : -1;
+    int s = secondary_index != null && secondary_index.Length > 0 ? secondary_index[0] : -1;
+    return (extension, centre_index, p, s).GetHashCode();
+  }
 
   public void Load(ConfigNode node) {
     if (!Enum.TryParse(node.GetUniqueValue("extension"),

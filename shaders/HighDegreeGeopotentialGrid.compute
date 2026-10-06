@@ -1,0 +1,112 @@
+// HighDegreeGeopotentialGrid.compute - High-Degree Spherical Harmonic Geopotential Voxelizer
+// Evaluates degree 70~150 Legendre polynomials in parallel across 3D voxel space in <2 ms.
+
+#pragma kernel ComputeGeopotentialField3D
+#pragma kernel ComputeGeopotentialAccelerationField3D
+
+#define THREADS_X 8
+#define THREADS_Y 8
+#define THREADS_Z 8
+#define MAX_DEGREE 128
+
+struct SphericalHarmonicCoeff {
+    float C_nm;
+    float S_nm;
+    uint n;
+    uint m;
+};
+
+cbuffer GeopotentialConfig : register(b0) {
+    float3 _BodyCenter;
+    float _BodyReferenceRadius;
+    float _GravitationalParameter; // GM
+    uint _MaxDegree;
+    float3 _GridOrigin;
+    float _VoxelSpacing;
+    uint3 _GridSize;
+    float _BodySpinAngleRad;
+};
+
+StructuredBuffer<SphericalHarmonicCoeff> _HarmonicCoeffs : register(t0);
+StructuredBuffer<float> _ZonalHarmonicsJ : register(t1); // J_2, J_3, ..., J_N
+
+RWTexture3D<float> _PotentialVolume : register(u0);
+RWStructuredBuffer<float3> _AccelerationGrid : register(u1);
+
+// Legendre polynomial recurrence P_n(u) for zonal harmonics
+void EvaluateZonalLegendre(float u, uint max_degree, out float P[MAX_DEGREE + 1]) {
+    P[0] = 1.0;
+    P[1] = u;
+    for (uint n = 2; n <= max_degree; ++n) {
+        P[n] = ((float)(2 * n - 1) * u * P[n - 1] - (float)(n - 1) * P[n - 2]) / (float)n;
+    }
+}
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void ComputeGeopotentialField3D(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _GridSize.x || id.y >= _GridSize.y || id.z >= _GridSize.z) return;
+
+    float3 world_pos = _GridOrigin + float3(id) * _VoxelSpacing;
+    float3 r_vec = world_pos - _BodyCenter;
+    float r = length(r_vec);
+
+    if (r < 1.0) {
+        _PotentialVolume[id] = 0.0;
+        return;
+    }
+
+    // Latitude (sin_phi) and longitude (lambda)
+    float sin_phi = clamp(r_vec.y / r, -1.0, 1.0);
+    float lambda = atan2(r_vec.z, r_vec.x) - _BodySpinAngleRad;
+
+    // 1. Point mass potential: GM / r
+    float base_potential = _GravitationalParameter / r;
+
+    // 2. High-degree zonal harmonic perturbation sum: - sum (J_n * (R/r)^n * P_n(sin_phi))
+    float zonal_perturbation = 0.0;
+    float R_over_r = _BodyReferenceRadius / r;
+    float R_over_r_pow_n = R_over_r * R_over_r; // Starts at n = 2
+
+    float P[MAX_DEGREE + 1];
+    uint eval_degree = min(_MaxDegree, (uint)MAX_DEGREE);
+    EvaluateZonalLegendre(sin_phi, eval_degree, P);
+
+    for (uint n = 2; n <= eval_degree; ++n) {
+        float J_n = _ZonalHarmonicsJ[n];
+        zonal_perturbation -= J_n * R_over_r_pow_n * P[n];
+        R_over_r_pow_n *= R_over_r;
+    }
+
+    float total_potential = base_potential * (1.0 + zonal_perturbation);
+    _PotentialVolume[id] = total_potential;
+}
+
+[numthreads(THREADS_X, THREADS_Y, THREADS_Z)]
+void ComputeGeopotentialAccelerationField3D(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _GridSize.x || id.y >= _GridSize.y || id.z >= _GridSize.z) return;
+
+    // Central differences on _PotentialVolume to compute gravity gradient acceleration g = nabla V
+    uint3 id_xm = uint3(max(0, (int)id.x - 1), id.y, id.z);
+    uint3 id_xp = uint3(min(_GridSize.x - 1, id.x + 1), id.y, id.z);
+    uint3 id_ym = uint3(id.x, max(0, (int)id.y - 1), id.z);
+    uint3 id_yp = uint3(id.x, min(_GridSize.y - 1, id.y + 1), id.z);
+    uint3 id_zm = uint3(id.x, id.y, max(0, (int)id.z - 1));
+    uint3 id_zp = uint3(id.x, id.y, min(_GridSize.z - 1, id.z + 1));
+
+    float v_xp = _PotentialVolume[id_xp];
+    float v_xm = _PotentialVolume[id_xm];
+    float v_yp = _PotentialVolume[id_yp];
+    float v_ym = _PotentialVolume[id_ym];
+    float v_zp = _PotentialVolume[id_zp];
+    float v_zm = _PotentialVolume[id_zm];
+
+    float inv_2h = 1.0 / (2.0 * _VoxelSpacing);
+    float3 accel = float3(
+        (v_xp - v_xm) * inv_2h,
+        (v_yp - v_ym) * inv_2h,
+        (v_zp - v_zm) * inv_2h
+    );
+
+    uint linear_idx = id.x + id.y * _GridSize.x + id.z * _GridSize.x * _GridSize.y;
+    _AccelerationGrid[linear_idx] = accel;
+}

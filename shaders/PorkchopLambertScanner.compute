@@ -1,0 +1,301 @@
+// PorkchopLambertScanner.compute - High-Throughput GPGPU Porkchop Plot & Lambert Solver
+// Computes 1024x1024 (1,048,576) grid of interplanetary transfer windows in <3 ms.
+
+#pragma kernel ScanPorkchopGrid
+#pragma kernel FindPorkchopMinimum
+#pragma kernel FindPorkchopMinimumFinal
+
+#define THREADS_X 16
+#define THREADS_Y 16
+#define GROUP_REDUCE_SIZE 256
+#define PI 3.14159265358979323846
+#define TWO_PI 6.28318530717958647692
+
+struct KeplerOrbitElements {
+    float semi_major_axis;
+    float eccentricity;
+    float inclination;
+    float lan;              // Longitude of Ascending Node
+    float arg_pe;           // Argument of Periapsis
+    float mean_anomaly_0;   // Mean anomaly at epoch
+    float epoch;
+    float mu;               // Central body GM
+};
+
+struct PorkchopMinimumResult {
+    float departure_time;
+    float arrival_time;
+    float total_delta_v;
+    float departure_delta_v;
+    float arrival_delta_v;
+    float c3;
+    float3 v1_vector;
+    float3 v2_vector;
+};
+
+cbuffer PorkchopConfig : register(b0) {
+    float _TDepartMin;
+    float _TDepartMax;
+    float _TArriveMin;
+    float _TArriveMax;
+    uint _GridWidth;
+    uint _GridHeight;
+    float _CentralBodyGM;
+    float _MaxDeltaVCap;
+    float _MinFlightTime;
+    float3 _Padding;
+    KeplerOrbitElements _OriginBody;
+    KeplerOrbitElements _TargetBody;
+};
+
+RWTexture2D<float4> _PorkchopHeatmap : register(u0); // R: dv_dep, G: dv_arr, B: total_dv, A: tof_days
+RWStructuredBuffer<PorkchopMinimumResult> _MinimumCandidates : register(u1);
+RWStructuredBuffer<PorkchopMinimumResult> _FinalMinimum : register(u2);
+
+groupshared PorkchopMinimumResult s_shared_min[GROUP_REDUCE_SIZE];
+
+// Kepler solver for body position and velocity at time t
+void KeplerToCartesian(KeplerOrbitElements elem, float t, out float3 pos, out float3 vel) {
+    float a = elem.semi_major_axis;
+    float e = elem.eccentricity;
+    float mu = elem.mu;
+    float n = sqrt(abs(mu / (a * a * a)));
+    float M = elem.mean_anomaly_0 + n * (t - elem.epoch);
+    M = fmod(M, TWO_PI);
+    if (M < 0.0) M += TWO_PI;
+
+    // Solve Kepler's equation E - e*sin(E) = M
+    float E = M;
+    [unroll]
+    for (int iter = 0; iter < 5; ++iter) {
+        float f = E - e * sin(E) - M;
+        float f_prime = 1.0 - e * cos(E);
+        E -= f / f_prime;
+    }
+
+    float cos_E = cos(E);
+    float sin_E = sin(E);
+    float r = a * (1.0 - e * cos_E);
+    float sqrt_1_minus_e2 = sqrt(max(0.0, 1.0 - e * e));
+    float nu = atan2(sqrt_1_minus_e2 * sin_E, cos_E - e);
+
+    // Orbital plane coordinates
+    float p = a * (1.0 - e * e);
+    float h = sqrt(max(1.0e-5, mu * p));
+    float cos_nu = cos(nu);
+    float sin_nu = sin(nu);
+
+    float3 pos_orbital = float3(r * cos_nu, r * sin_nu, 0.0);
+    float3 vel_orbital = float3(-mu / h * sin_nu, mu / h * (e + cos_nu), 0.0);
+
+    // Rotation matrices: Rz(-LAN) * Rx(-inc) * Rz(-arg_pe)
+    float s_O = sin(elem.lan);
+    float c_O = cos(elem.lan);
+    float s_i = sin(elem.inclination);
+    float c_i = cos(elem.inclination);
+    float s_w = sin(elem.arg_pe);
+    float c_w = cos(elem.arg_pe);
+
+    float3x3 R;
+    R[0][0] = c_O * c_w - s_O * s_w * c_i;
+    R[0][1] = -c_O * s_w - s_O * c_w * c_i;
+    R[0][2] = s_O * s_i;
+
+    R[1][0] = s_O * c_w + c_O * s_w * c_i;
+    R[1][1] = -s_O * s_w + c_O * c_w * c_i;
+    R[1][2] = -c_O * s_i;
+
+    R[2][0] = s_w * s_i;
+    R[2][1] = c_w * s_i;
+    R[2][2] = c_i;
+
+    pos = mul(R, pos_orbital);
+    vel = mul(R, vel_orbital);
+}
+
+// Stumpff functions c2(z), c3(z)
+void Stumpff(float z, out float c2, out float c3) {
+    if (z > 1.0e-5) {
+        float sz = sqrt(z);
+        c2 = (1.0 - cos(sz)) / z;
+        c3 = (sz - sin(sz)) / (sz * z);
+    } else if (z < -1.0e-5) {
+        float sz = sqrt(-z);
+        c2 = (cosh(sz) - 1.0) / (-z);
+        c3 = (sinh(sz) - sz) / (sz * (-z));
+    } else {
+        c2 = 0.5;
+        c3 = 1.0 / 6.0;
+    }
+}
+
+// Universal Variable Lambert Solver
+bool SolveLambert(
+    float3 r1, float3 r2, float tof, float mu,
+    out float3 v1, out float3 v2) {
+    
+    float r1_len = length(r1);
+    float r2_len = length(r2);
+    if (r1_len < 1.0 || r2_len < 1.0 || tof <= 10.0) {
+        v1 = float3(0,0,0);
+        v2 = float3(0,0,0);
+        return false;
+    }
+
+    float cos_theta = dot(r1, r2) / (r1_len * r2_len);
+    cos_theta = clamp(cos_theta, -1.0, 1.0);
+    float3 cross_r1_r2 = cross(r1, r2);
+
+    // Assume prograde transfer
+    float sin_theta = (cross_r1_r2.z >= 0.0 ? 1.0 : -1.0) * sqrt(max(0.0, 1.0 - cos_theta * cos_theta));
+    float A = sin_theta * sqrt(r1_len * r2_len / (1.0 - cos_theta + 1.0e-7));
+
+    if (abs(A) < 1.0e-5) {
+        v1 = float3(0,0,0);
+        v2 = float3(0,0,0);
+        return false;
+    }
+
+    // Solve for universal anomaly z via Newton-Raphson
+    float z = 0.0;
+    float c2, c3;
+    [unroll]
+    for (int iter = 0; iter < 8; ++iter) {
+        Stumpff(z, c2, c3);
+        float y = r1_len + r2_len + A * (z * c3 - 1.0) / (sqrt(max(1.0e-7, c2)));
+        if (y <= 0.0) {
+            z += 0.5;
+            continue;
+        }
+        float chi = sqrt(y / max(1.0e-7, c2));
+        float t_val = (chi * chi * chi * c3 + A * sqrt(y)) / sqrt(mu);
+        float dt_dz;
+        if (abs(z) < 1.0e-4) {
+            dt_dz = (sqrt(2.0) / 40.0) * pow(y, 1.5) + (A / 8.0) * (sqrt(y) + A * sqrt(0.5 / y));
+        } else {
+            dt_dz = (pow(chi, 3.0) * (c3 - 1.5 * c2 * c3 / (c2 + 1.0e-7)) + 0.75 * A * sqrt(y)) / (2.0 * z * sqrt(mu) + 1.0e-7);
+        }
+        float f = t_val - tof;
+        if (abs(f) < 1.0) break;
+        z -= f / (dt_dz + 1.0e-6);
+    }
+
+    Stumpff(z, c2, c3);
+    float y = r1_len + r2_len + A * (z * c3 - 1.0) / sqrt(max(1.0e-7, c2));
+    if (y <= 0.0) {
+        v1 = float3(0,0,0);
+        v2 = float3(0,0,0);
+        return false;
+    }
+
+    float f_coeff = 1.0 - y / r1_len;
+    float g_coeff = A * sqrt(y / mu);
+    float g_dot_coeff = 1.0 - y / r2_len;
+
+    v1 = (r2 - f_coeff * r1) / (g_coeff + 1.0e-6);
+    v2 = (g_dot_coeff * r2 - r1) / (g_coeff + 1.0e-6);
+    return true;
+}
+
+// Kernel 1: Scan 1024x1024 Porkchop Grid
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void ScanPorkchopGrid(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _GridWidth || id.y >= _GridHeight) return;
+
+    float t_dep = lerp(_TDepartMin, _TDepartMax, (float)id.x / (float)(_GridWidth - 1));
+    float t_arr = lerp(_TArriveMin, _TArriveMax, (float)id.y / (float)(_GridHeight - 1));
+    float tof = t_arr - t_dep;
+
+    float min_tof = _MinFlightTime > 0.0 ? _MinFlightTime : 1800.0;
+    if (tof <= min_tof) { // Transfer of flight must be > min_tof
+        _PorkchopHeatmap[id.xy] = float4(_MaxDeltaVCap, _MaxDeltaVCap, _MaxDeltaVCap, 0.0);
+        return;
+    }
+
+    float3 r1, v_body1;
+    float3 r2, v_body2;
+    KeplerToCartesian(_OriginBody, t_dep, r1, v_body1);
+    KeplerToCartesian(_TargetBody, t_arr, r2, v_body2);
+
+    float3 v1, v2;
+    bool success = SolveLambert(r1, r2, tof, _CentralBodyGM, v1, v2);
+
+    if (!success) {
+        _PorkchopHeatmap[id.xy] = float4(_MaxDeltaVCap, _MaxDeltaVCap, _MaxDeltaVCap, tof / 86400.0);
+        return;
+    }
+
+    float dv_dep = length(v1 - v_body1);
+    float dv_arr = length(v2 - v_body2);
+    float total_dv = dv_dep + dv_arr;
+    total_dv = min(total_dv, _MaxDeltaVCap);
+
+    _PorkchopHeatmap[id.xy] = float4(dv_dep, dv_arr, total_dv, tof / 86400.0);
+}
+
+// Kernel 2: Parallel reduction over row chunks to find minimum delta-v candidates
+[numthreads(GROUP_REDUCE_SIZE, 1, 1)]
+void FindPorkchopMinimum(uint3 id : SV_DispatchThreadID, uint group_index : SV_GroupIndex, uint3 group_id : SV_GroupID) {
+    uint linear_idx = id.x;
+    uint total_pixels = _GridWidth * _GridHeight;
+
+    PorkchopMinimumResult item;
+    item.total_delta_v = 1.0e10;
+    item.departure_time = 0;
+    item.arrival_time = 0;
+    item.departure_delta_v = 0;
+    item.arrival_delta_v = 0;
+    item.c3 = 0;
+    item.v1_vector = float3(0,0,0);
+    item.v2_vector = float3(0,0,0);
+
+    if (linear_idx < total_pixels) {
+        uint x = linear_idx % _GridWidth;
+        uint y = linear_idx / _GridWidth;
+        float4 pixel = _PorkchopHeatmap[uint2(x, y)];
+        item.departure_delta_v = pixel.r;
+        item.arrival_delta_v = pixel.g;
+        item.total_delta_v = pixel.b;
+        item.c3 = pixel.r * pixel.r;
+        item.departure_time = lerp(_TDepartMin, _TDepartMax, (float)x / (float)(_GridWidth - 1));
+        item.arrival_time = lerp(_TArriveMin, _TArriveMax, (float)y / (float)(_GridHeight - 1));
+    }
+
+    s_shared_min[group_index] = item;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = GROUP_REDUCE_SIZE / 2; stride > 0; stride >>= 1) {
+        if (group_index < stride) {
+            if (s_shared_min[group_index + stride].total_delta_v < s_shared_min[group_index].total_delta_v) {
+                s_shared_min[group_index] = s_shared_min[group_index + stride];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (group_index == 0) {
+        _MinimumCandidates[group_id.x] = s_shared_min[0];
+    }
+}
+
+// Kernel 3: Final reduction over candidate array into a single global minimum
+[numthreads(GROUP_REDUCE_SIZE, 1, 1)]
+void FindPorkchopMinimumFinal(uint group_index : SV_GroupIndex) {
+    s_shared_min[group_index] = _MinimumCandidates[group_index];
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = GROUP_REDUCE_SIZE / 2; stride > 0; stride >>= 1) {
+        if (group_index < stride) {
+            if (s_shared_min[group_index + stride].total_delta_v < s_shared_min[group_index].total_delta_v) {
+                s_shared_min[group_index] = s_shared_min[group_index + stride];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (group_index == 0) {
+        _FinalMinimum[0] = s_shared_min[0];
+    }
+}

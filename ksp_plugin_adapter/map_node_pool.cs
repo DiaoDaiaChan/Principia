@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using KSP.Localization;
 
@@ -17,7 +17,7 @@ internal class MapNodePool {
     FlightPlan,
   }
 
-  public struct Provenance {
+  public struct Provenance : IEquatable<Provenance> {
     public string vessel_guid;
     public NodeSource source;
     public MapObject.ObjectType type;
@@ -30,8 +30,14 @@ internal class MapNodePool {
       this.type = type;
     }
 
-    public override int GetHashCode() =>
-    (vessel_guid, source, type).GetHashCode();
+    public override int GetHashCode() {
+      unchecked {
+        int hash = (vessel_guid != null ? vessel_guid.GetHashCode() : 0);
+        hash = (hash * 397) ^ (int)source;
+        hash = (hash * 397) ^ (int)type;
+        return hash;
+      }
+    }
     public override bool Equals(object other) =>
         other is Provenance p && Equals(p);
     public bool Equals(Provenance other) => vessel_guid == other.vessel_guid &&
@@ -51,6 +57,8 @@ internal class MapNodePool {
 
   public class SingleProvenancePool {
     public int nodes_used;
+    public int active_nodes;
+    public bool was_refreshed;
     public List<KSP.UI.Screens.Mapview.MapNode> nodes =
         new List<KSP.UI.Screens.Mapview.MapNode>(MaxNodesPerProvenance);
   }
@@ -67,7 +75,9 @@ internal class MapNodePool {
   public void Clear() {
     foreach (var provenance_pool in nodes_) {
       foreach (var node in provenance_pool.Value.nodes) {
-        node.Terminate();
+        if (node != null && node.gameObject != null) {
+          node.Terminate();
+        }
       }
     }
     nodes_ = new Dictionary<Provenance, SingleProvenancePool>();
@@ -75,32 +85,70 @@ internal class MapNodePool {
         new Dictionary<KSP.UI.Screens.Mapview.MapNode, MapNodeProperties>();
   }
 
+  private bool IsNodeCulled(KSP.UI.Screens.Mapview.MapNode node, MapNodeProperties properties) {
+    if (node == null || properties == null || properties.payload == null) {
+      return false;
+    }
+    // Never cull pinned or hovered nodes
+    if (node.Pinned || node.Hover) {
+      return false;
+    }
+    UnityEngine.Camera camera = PlanetariumCamera.Camera;
+    if (camera == null) {
+      return false;
+    }
+    UnityEngine.Vector3 scaled_space_pos =
+        (UnityEngine.Vector3)ScaledSpace.LocalToScaledSpace(properties.payload.GetWorldPosition());
+    UnityEngine.Vector3 viewport_pos = camera.WorldToViewportPoint(scaled_space_pos);
+
+    // Behind camera check: z <= 0
+    if (viewport_pos.z <= 0f) {
+      return true;
+    }
+    // Off-screen viewport check with safety margin to prevent premature clipping of label UI
+    const float viewport_margin = 0.15f;
+    const float viewport_min = -viewport_margin;
+    const float viewport_max = 1.0f + viewport_margin;
+    if (viewport_pos.x < viewport_min || viewport_pos.x > viewport_max ||
+        viewport_pos.y < viewport_min || viewport_pos.y > viewport_max) {
+      return true;
+    }
+    return false;
+  }
+
   public void Update() {
-    List<Provenance> unused_provenances = new List<Provenance>();
     foreach (var provenance_pool in nodes_) {
-      var provenance = provenance_pool.Key;
       var pool = provenance_pool.Value;
-      if (pool.nodes_used == 0) {
-        unused_provenances.Add(provenance);
-        continue;
-      }
-      for (int i = pool.nodes_used; i < pool.nodes.Count; ++i) {
-        if (properties_[pool.nodes[i]].visible) {
-          properties_[pool.nodes[i]].visible = false;
-          pool.nodes[i].NodeUpdate();
+      int active = pool.was_refreshed ? pool.nodes_used : pool.active_nodes;
+      pool.active_nodes = active;
+      pool.was_refreshed = false;
+      pool.nodes_used = 0;
+      for (int i = active; i < pool.nodes.Count; ++i) {
+        var node = pool.nodes[i];
+        if (properties_.TryGetValue(node, out var props) && props.visible) {
+          props.visible = false;
+          node.NodeUpdate();
         }
       }
-      for (int i = 0; i < pool.nodes_used; ++i) {
-        pool.nodes[i].NodeUpdate();
+      for (int i = 0; i < active; ++i) {
+        var node = pool.nodes[i];
+        if (node == null) {
+          continue;
+        }
+        if (properties_.TryGetValue(node, out var props)) {
+          if (IsNodeCulled(node, props)) {
+            if (props.visible) {
+              props.visible = false;
+              node.NodeUpdate();
+            }
+            continue;
+          }
+          if (!props.visible) {
+            props.visible = true;
+          }
+        }
+        node.NodeUpdate();
       }
-      pool.nodes_used = 0;
-    }
-    foreach (var provenance in unused_provenances) {
-      foreach (var node in nodes_[provenance].nodes) {
-        node.Terminate();
-        properties_.Remove(node);
-      }
-      nodes_.Remove(provenance);
     }
   }
 
@@ -114,25 +162,55 @@ internal class MapNodePool {
                            out MapObject associated_map_object);
 
     var pool = nodes_[provenance];
-    foreach (TQP marker in markers) {
-      MapNodeProperties node_properties = new MapNodeProperties {
-          visible = true,
-          object_type = provenance.type,
-          colour = colour,
-          reference_frame = reference_frame,
-          payload = new LegacyMapNodePayload {
-              time = marker.t,
-              world_position = (Vector3d)marker.qp.q,
-              velocity = (Vector3d)marker.qp.p
-          },
-          source = provenance.source,
-          associated_map_object = associated_map_object,
-      };
+    CelestialBody anchor_body = associated_map_object?.celestialBody;
+    Vessel anchor_vessel = associated_map_object?.vessel;
 
+    foreach (TQP marker in markers) {
       if (pool.nodes_used == pool.nodes.Count) {
         pool.nodes.Add(MakePoolNode());
       }
-      properties_[pool.nodes[pool.nodes_used++]] = node_properties;
+      var map_node = pool.nodes[pool.nodes_used++];
+      if (!properties_.TryGetValue(map_node, out var node_properties)) {
+        node_properties = new MapNodeProperties();
+        properties_[map_node] = node_properties;
+      }
+      node_properties.visible = true;
+      node_properties.object_type = provenance.type;
+      node_properties.colour = colour;
+      node_properties.reference_frame = reference_frame;
+      node_properties.source = provenance.source;
+      node_properties.associated_map_object = associated_map_object;
+
+      Vector3d world_pos = (Vector3d)marker.qp.q;
+      Vector3d rel_offset = world_pos;
+      bool has_rel = false;
+      if (anchor_body != null) {
+        rel_offset = world_pos - anchor_body.position;
+        has_rel = true;
+      } else if (anchor_vessel != null) {
+        rel_offset = world_pos - anchor_vessel.GetWorldPos3D();
+        has_rel = true;
+      }
+
+      if (node_properties.payload is LegacyMapNodePayload legacy_payload) {
+        legacy_payload.time = marker.t;
+        legacy_payload.world_position = world_pos;
+        legacy_payload.relative_offset = rel_offset;
+        legacy_payload.anchor_body = anchor_body;
+        legacy_payload.anchor_vessel = anchor_vessel;
+        legacy_payload.has_relative_offset = has_rel;
+        legacy_payload.velocity = (Vector3d)marker.qp.p;
+      } else {
+        node_properties.payload = new LegacyMapNodePayload {
+            time = marker.t,
+            world_position = world_pos,
+            relative_offset = rel_offset,
+            anchor_body = anchor_body,
+            anchor_vessel = anchor_vessel,
+            has_relative_offset = has_rel,
+            velocity = (Vector3d)marker.qp.p
+        };
+      }
     }
   }
 
@@ -146,25 +224,55 @@ internal class MapNodePool {
                            out MapObject associated_map_object);
 
     var pool = nodes_[provenance];
-    foreach (Node marker in markers) {
-      MapNodeProperties node_properties = new MapNodeProperties {
-          visible = true,
-          object_type = provenance.type,
-          colour = colour,
-          reference_frame = reference_frame,
-          payload = new NodeMapNodePayload {
-              time = marker.time,
-              world_position = (Vector3d)marker.world_position,
-              node = marker
-          },
-          source = provenance.source,
-          associated_map_object = associated_map_object,
-      };
+    CelestialBody anchor_body = associated_map_object?.celestialBody;
+    Vessel anchor_vessel = associated_map_object?.vessel;
 
+    foreach (Node marker in markers) {
       if (pool.nodes_used == pool.nodes.Count) {
         pool.nodes.Add(MakePoolNode());
       }
-      properties_[pool.nodes[pool.nodes_used++]] = node_properties;
+      var map_node = pool.nodes[pool.nodes_used++];
+      if (!properties_.TryGetValue(map_node, out var node_properties)) {
+        node_properties = new MapNodeProperties();
+        properties_[map_node] = node_properties;
+      }
+      node_properties.visible = true;
+      node_properties.object_type = provenance.type;
+      node_properties.colour = colour;
+      node_properties.reference_frame = reference_frame;
+      node_properties.source = provenance.source;
+      node_properties.associated_map_object = associated_map_object;
+
+      Vector3d world_pos = (Vector3d)marker.world_position;
+      Vector3d rel_offset = world_pos;
+      bool has_rel = false;
+      if (anchor_body != null) {
+        rel_offset = world_pos - anchor_body.position;
+        has_rel = true;
+      } else if (anchor_vessel != null) {
+        rel_offset = world_pos - anchor_vessel.GetWorldPos3D();
+        has_rel = true;
+      }
+
+      if (node_properties.payload is NodeMapNodePayload node_payload) {
+        node_payload.time = marker.time;
+        node_payload.world_position = world_pos;
+        node_payload.relative_offset = rel_offset;
+        node_payload.anchor_body = anchor_body;
+        node_payload.anchor_vessel = anchor_vessel;
+        node_payload.has_relative_offset = has_rel;
+        node_payload.node = marker;
+      } else {
+        node_properties.payload = new NodeMapNodePayload {
+            time = marker.time,
+            world_position = world_pos,
+            relative_offset = rel_offset,
+            anchor_body = anchor_body,
+            anchor_vessel = anchor_vessel,
+            has_relative_offset = has_rel,
+            node = marker
+        };
+      }
     }
   }
 
@@ -173,9 +281,12 @@ internal class MapNodePool {
       ReferenceFrameSelector<PlottingFrameParameters> reference_frame,
       out UnityEngine.Color colour,
       out MapObject associated_map_object) {
-    if (!nodes_.ContainsKey(provenance)) {
-      nodes_.Add(provenance, new SingleProvenancePool());
+    if (!nodes_.TryGetValue(provenance, out var pool)) {
+      pool = new SingleProvenancePool();
+      nodes_.Add(provenance, pool);
     }
+    pool.was_refreshed = true;
+    pool.nodes_used = 0;
     switch (provenance.type) {
       case MapObject.ObjectType.Apoapsis:
       case MapObject.ObjectType.Periapsis:
@@ -275,6 +386,16 @@ internal class MapNodePool {
     new_node.OnUpdateCaption += (KSP.UI.Screens.Mapview.MapNode node,
                                  KSP.UI.Screens.Mapview.MapNode.CaptionData
                                      caption) => {
+      // Fast path: In KSP MapView, captions are only displayed when the node
+      // is pinned or hovered. Avoid expensive L10N formatting, string allocations,
+      // and TextMeshProUGUI vertex regeneration when invisible!
+      if (!node.Pinned && !node.Hover) {
+        caption.Header = "";
+        caption.captionLine1 = "";
+        caption.captionLine2 = "";
+        caption.captionLine3 = "";
+        return;
+      }
       var properties = properties_[node];
       string source;
       switch (properties.source) {
@@ -292,7 +413,7 @@ internal class MapNodePool {
         case MapObject.ObjectType.Apoapsis: {
           var payload = properties.payload as LegacyMapNodePayload;
           CelestialBody celestial = properties.reference_frame.Centre();
-          Vector3d position = payload.world_position;
+          Vector3d position = payload.GetWorldPosition();
           double speed = payload.velocity.magnitude;
           caption.Header = L10N.CelestialString(
               properties.object_type == MapObject.ObjectType.Periapsis
@@ -303,7 +424,7 @@ internal class MapNodePool {
               celestial.GetAltitude(position).FormatN(0));
           caption.captionLine2 =
               L10N.CacheFormat("#Principia_MapNode_ApsisCaptionLine2",
-                               speed.FormatN(0));
+                                speed.FormatN(0));
           break;
         }
         case MapObject.ObjectType.AscendingNode:
@@ -334,7 +455,7 @@ internal class MapNodePool {
           var payload = properties.payload as LegacyMapNodePayload;
           double separation =
               (properties.reference_frame.target_vessel.GetWorldPos3D() -
-               payload.world_position).magnitude;
+               payload.GetWorldPosition()).magnitude;
           double speed = payload.velocity.magnitude;
           caption.Header = L10N.CacheFormat("#Principia_MapNode_ApproachHeader",
                                             source,
@@ -347,7 +468,7 @@ internal class MapNodePool {
         case MapObject.ObjectType.PatchTransition: {
           var payload = properties.payload as LegacyMapNodePayload;
           CelestialBody celestial = properties.reference_frame.Centre();
-          Vector3d position = payload.world_position;
+          Vector3d position = payload.GetWorldPosition();
           double speed = payload.velocity.magnitude;
           caption.Header = L10N.CelestialString(
               "#Principia_MapNode_ImpactHeader",
@@ -375,9 +496,12 @@ internal class MapNodePool {
       caption.captionLine2 = caption.captionLine2?.Replace(minus, "-");
       caption.captionLine3 = caption.captionLine3?.Replace(minus, "-");
     };
-    new_node.OnUpdatePosition += (KSP.UI.Screens.Mapview.MapNode node) =>
-        ScaledSpace.LocalToScaledSpace(
-            properties_[node].payload.world_position);
+    new_node.OnUpdatePosition += (KSP.UI.Screens.Mapview.MapNode node) => {
+      if (properties_.TryGetValue(node, out var props) && props.payload != null) {
+        return ScaledSpace.LocalToScaledSpace(props.payload.GetWorldPosition());
+      }
+      return UnityEngine.Vector3.zero;
+    };
     return new_node;
   }
 
@@ -385,6 +509,22 @@ internal class MapNodePool {
   private abstract class MapNodePayload {
     public double time;
     public Vector3d world_position;
+    public Vector3d relative_offset;
+    public CelestialBody anchor_body;
+    public Vessel anchor_vessel;
+    public bool has_relative_offset;
+
+    public Vector3d GetWorldPosition() {
+      if (has_relative_offset) {
+        if (anchor_body != null) {
+          return anchor_body.position + relative_offset;
+        }
+        if (anchor_vessel != null) {
+          return anchor_vessel.GetWorldPos3D() + relative_offset;
+        }
+      }
+      return world_position;
+    }
   }
 
   // TODO(phl): Move away from legacy payloads.

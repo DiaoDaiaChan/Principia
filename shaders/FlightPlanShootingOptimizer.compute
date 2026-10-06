@@ -4,6 +4,7 @@
 #pragma kernel GenerateCandidateGrid
 #pragma kernel EvaluateTrajectoryBundle
 #pragma kernel ParallelReduceOptimalBurn
+#pragma kernel ParallelReduceOptimalBurnFinal
 
 #include "DoubleSingle.hlsl"
 
@@ -42,6 +43,7 @@ cbuffer OptimizerConfig : register(b0) {
     float4 _OptimizationWeights;    // x: w_dist, y: w_speed, z: w_delta_v, w: w_inclination
     float4 _InitialVesselPos;       // xyz: pos_m, w: initial_time
     float4 _InitialVesselVel;       // xyz: vel_m_s, w: step_size_s
+    float4 _GridDimensions;         // x: dim_t, y: dim_vt, z: dim_vn, w: dim_vb
     uint _CelestialCount;
     uint _StepCount;
     uint _TargetCelestialIndex;
@@ -61,17 +63,23 @@ void GenerateCandidateGrid(uint3 id : SV_DispatchThreadID) {
     uint index = id.x;
     if (index >= TOTAL_CANDIDATES) return;
 
-    // Decompose index into 4D parameter space: 16 x 16 x 8 x 8 = 16384
-    uint idx_t  = (index >> 10) & 0x0F; // 16 subdivisions for delta_t
-    uint idx_vt = (index >> 6)  & 0x0F; // 16 subdivisions for dv_tangent
-    uint idx_vn = (index >> 3)  & 0x07; // 8 subdivisions for dv_normal
-    uint idx_vb =  index        & 0x07; // 8 subdivisions for dv_binormal
+    // Decompose index into dynamic 4D parameter space
+    uint dim_t  = _GridDimensions.x > 0.5f ? uint(_GridDimensions.x) : 16;
+    uint dim_vt = _GridDimensions.y > 0.5f ? uint(_GridDimensions.y) : 16;
+    uint dim_vn = _GridDimensions.z > 0.5f ? uint(_GridDimensions.z) : 8;
+    uint dim_vb = _GridDimensions.w > 0.5f ? uint(_GridDimensions.w) : 8;
 
-    // Map [0, N-1] to [-1.0, 1.0]
-    float norm_t  = (float(idx_t)  / 15.0f) * 2.0f - 1.0f;
-    float norm_vt = (float(idx_vt) / 15.0f) * 2.0f - 1.0f;
-    float norm_vn = (float(idx_vn) / 7.0f)  * 2.0f - 1.0f;
-    float norm_vb = (float(idx_vb) / 7.0f)  * 2.0f - 1.0f;
+    uint idx_vb = index % dim_vb;
+    uint rem1   = index / dim_vb;
+    uint idx_vn = rem1 % dim_vn;
+    uint rem2   = rem1 / dim_vn;
+    uint idx_vt = rem2 % dim_vt;
+    uint idx_t  = rem2 / dim_vt;
+
+    float norm_t  = dim_t  > 1 ? (float(idx_t)  / float(dim_t  - 1)) * 2.0f - 1.0f : 0.0f;
+    float norm_vt = dim_vt > 1 ? (float(idx_vt) / float(dim_vt - 1)) * 2.0f - 1.0f : 0.0f;
+    float norm_vn = dim_vn > 1 ? (float(idx_vn) / float(dim_vn - 1)) * 2.0f - 1.0f : 0.0f;
+    float norm_vb = dim_vb > 1 ? (float(idx_vb) / float(dim_vb - 1)) * 2.0f - 1.0f : 0.0f;
 
     CandidateBurnParameters params;
     params.delta_t            = norm_t  * _BaseBurnTimes.y;
@@ -96,45 +104,51 @@ void EvaluateTrajectoryBundle(uint3 id : SV_DispatchThreadID) {
                    params.delta_v_binormal * params.delta_v_binormal;
     float delta_v_mag = sqrt(dv_sqr);
 
-    // Initial state setup with candidate perturbation
-    float3 pos = _InitialVesselPos.xyz;
-    float3 vel = _InitialVesselVel.xyz;
-
-    // Apply impulsive burn delta-v
-    vel += float3(params.delta_v_tangent, params.delta_v_normal, params.delta_v_binormal);
+    // Initial state setup with candidate perturbation using Double-Single precision
+    ds_vec3 pos = ds_vec3_make(_InitialVesselPos.xyz);
+    float3 burn_dv = float3(params.delta_v_tangent, params.delta_v_normal, params.delta_v_binormal);
+    ds_vec3 vel = ds_vec3_make(_InitialVesselVel.xyz + burn_dv);
 
     float min_periapsis_dist = 1e30f;
     float min_periapsis_speed = 1e30f;
-    float dt = _InitialVesselVel.w; // step size in seconds
+    ds_real dt = ds_make(_InitialVesselVel.w); // step size in seconds
 
-    // Forward propagation using symplectic Velocity-Verlet
+    // Forward propagation using symplectic Velocity-Verlet with DoubleSingle precision and moving bodies
     [loop]
     for (uint step = 0; step < _StepCount; ++step) {
-        // Compute total gravitational acceleration from all massive celestial bodies
-        float3 accel = float3(0.0f, 0.0f, 0.0f);
+        ds_vec3 accel = ds_vec3_make(float3(0.0f, 0.0f, 0.0f));
+        ds_real step_elapsed = ds_mul(dt, ds_make(float(step)));
         [loop]
         for (uint b = 0; b < _CelestialCount; ++b) {
             CelestialBodyState body = _CelestialBodies[b];
-            float3 r = body.position - pos;
-            float r2 = dot(r, r) + 1.0f; // Softening to prevent singularity
-            float inv_r = rsqrt(r2);
-            float inv_r3 = inv_r * inv_r * inv_r;
-            accel += r * (body.gravitational_parameter * inv_r3);
+            ds_vec3 body_motion = ds_vec3_scale(ds_vec3_make(body.velocity), step_elapsed);
+            ds_vec3 body_pos = ds_vec3_add(ds_vec3_make(body.position), body_motion);
+            ds_vec3 r = ds_vec3_sub(body_pos, pos);
+            ds_real r2 = ds_vec3_length_sqr(r);
+            ds_real dist = ds_sqrt(r2);
+            float dist_f = ds_to_float(dist);
+
+            if (dist_f > 1.0f) {
+                ds_real inv_r = ds_div(ds_make(1.0f), dist);
+                ds_real inv_r3 = ds_mul(ds_mul(inv_r, inv_r), inv_r);
+                ds_real gm = ds_make(body.gravitational_parameter);
+                ds_real factor = ds_mul(gm, inv_r3);
+                accel = ds_vec3_add(accel, ds_vec3_scale(r, factor));
+            }
 
             // Track distance to target celestial body
             if (b == _TargetCelestialIndex) {
-                float dist = sqrt(r2);
-                if (dist < min_periapsis_dist) {
-                    min_periapsis_dist = dist;
-                    float3 rel_vel = vel - body.velocity;
-                    min_periapsis_speed = length(rel_vel);
+                if (dist_f < min_periapsis_dist) {
+                    min_periapsis_dist = dist_f;
+                    ds_vec3 rel_vel = ds_vec3_sub(vel, ds_vec3_make(body.velocity));
+                    min_periapsis_speed = ds_to_float(ds_vec3_length(rel_vel));
                 }
             }
         }
 
-        // Symplectic step
-        vel += accel * dt;
-        pos += vel * dt;
+        // Symplectic step with DoubleSingle precision
+        vel = ds_vec3_add(vel, ds_vec3_scale(accel, dt));
+        pos = ds_vec3_add(pos, ds_vec3_scale(vel, dt));
     }
 
     // Cost metric calculation
@@ -187,5 +201,38 @@ void ParallelReduceOptimalBurn(
 
     if (tid == 0) {
         _ReducedResults[group_id.x] = s_shared_evals[0];
+    }
+}
+
+// Kernel 4: Final Parallel Reduction of the 64 group minimums into a single global minimum
+[numthreads(GROUP_SIZE, 1, 1)]
+void ParallelReduceOptimalBurnFinal(
+    uint3 group_thread_id : SV_GroupThreadID,
+    uint3 group_id : SV_GroupID,
+    uint3 dispatch_thread_id : SV_DispatchThreadID) {
+    uint tid = group_thread_id.x;
+
+    // Load from the 64 group minimums produced by Pass 1
+    if (tid < 64) {
+        s_shared_evals[tid] = _ReducedResults[tid];
+    } else {
+        CandidateBurnEvaluation inf_eval;
+        inf_eval.cost_metric = 1e38f;
+        s_shared_evals[tid] = inf_eval;
+    }
+    GroupMemoryBarrierWithGroupSync();
+
+    // In-place reduction in shared memory
+    for (uint stride = GROUP_SIZE / 2; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            if (s_shared_evals[tid + stride].cost_metric < s_shared_evals[tid].cost_metric) {
+                s_shared_evals[tid] = s_shared_evals[tid + stride];
+            }
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid == 0) {
+        _ReducedResults[0] = s_shared_evals[0];
     }
 }

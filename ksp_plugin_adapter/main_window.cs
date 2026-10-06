@@ -19,6 +19,7 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
   public MainWindow(PrincipiaPluginAdapter adapter,
                     FlightPlanner flight_planner,
                     OrbitAnalyser orbit_analyser,
+                    GpuDiagnosticsWindow gpu_diagnostics_window,
                     ReferenceFrameSelector<PlottingFrameParameters>
                         plotting_frame_selector,
                     PredictedVessel predicted_vessel) : base(
@@ -36,6 +37,7 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
     adapter_ = adapter;
     flight_planner_ = flight_planner;
     orbit_analyser_ = orbit_analyser;
+    gpu_diagnostics_window_ = gpu_diagnostics_window;
     plotting_frame_selector_ = plotting_frame_selector;
     Show();
   }
@@ -83,6 +85,13 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
         node.GetAtMostOneValue("show_ksp_features");
     if (show_ksp_features_value != null) {
       show_ksp_features_ = Convert.ToBoolean(show_ksp_features_value);
+    }
+    string pipeline_mode_value = node.GetAtMostOneValue("pipeline_mode");
+    if (pipeline_mode_value != null) {
+      if (Enum.IsDefined(typeof(ComputationPipelineMode), pipeline_mode_value)) {
+        HeterogeneousDynamicGovernor.PipelineMode =
+            (ComputationPipelineMode)Enum.Parse(typeof(ComputationPipelineMode), pipeline_mode_value);
+      }
     }
     string show_logging_settings_value =
         node.GetAtMostOneValue("show_logging_settings");
@@ -151,6 +160,9 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
     node.SetValue("show_ksp_features",
                   show_ksp_features_,
                   createIfNotFound : true);
+    node.SetValue("pipeline_mode",
+                  HeterogeneousDynamicGovernor.PipelineMode.ToString(),
+                  createIfNotFound : true);
     node.SetValue("show_logging_settings",
                   show_logging_settings_,
                   createIfNotFound : true);
@@ -212,53 +224,143 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
                                   platform,
                                   style: Style.Info(
                                       UnityEngine.GUI.skin.label));
-      if (adapter_.rolling_ephemeris_driver != null) {
-        var driver = adapter_.rolling_ephemeris_driver;
-        string horizon_text = driver.is_active
-            ? $"Rolling Horizon: +{driver.current_horizon_years:F2} a [{driver.carrier_vessel_name}]"
-            : "Rolling Horizon: Standby";
-        UnityEngine.GUILayout.Label(
-            horizon_text,
-            style: Style.Info(UnityEngine.GUI.skin.label));
+
+      // GPGPU Heterogeneous Telemetry (Throttled to 10 Hz for zero GC).
+      float now = UnityEngine.Time.realtimeSinceStartup;
+      if (now - last_telemetry_label_update_time_ >= TelemetryLabelUpdateInterval ||
+          last_telemetry_label_update_time_ < 0) {
+        last_telemetry_label_update_time_ = now;
+        string gpu_mode_str;
+        switch (HeterogeneousDynamicGovernor.Affinity) {
+          case HeterogeneousAffinity.CpuDominant:
+            gpu_mode_str = "CPU-Dominant";
+            break;
+          case HeterogeneousAffinity.GpuDominant:
+            gpu_mode_str = "GPU-Dominant";
+            break;
+          default:
+            gpu_mode_str = "Auto (Dynamic)";
+            break;
+        }
+        string backpressure_tag = HeterogeneousDynamicGovernor.IsBackpressureActive
+            ? "[Backpressure: Throttled]"
+            : "[Load: Normal]";
+        cached_gpu_label_ =
+            $"GPGPU: {PrincipiaGPGPUContext.GpuDeviceName} | Mode: {gpu_mode_str} {backpressure_tag}";
+
+        cached_render_budget_label_ =
+            $"Render: {HeterogeneousDynamicGovernor.SmoothedRenderTimeMs:F1}ms | Budget: {HeterogeneousDynamicGovernor.GpuComputeBudgetMs:F1}ms";
       }
 
-      // GPGPU Heterogeneous Telemetry and Governor Controls.
-      string gpu_mode_str;
-      switch (HeterogeneousDynamicGovernor.Affinity) {
-        case HeterogeneousAffinity.CpuDominant:
-          gpu_mode_str = "CPU-Dominant";
-          break;
-        case HeterogeneousAffinity.GpuDominant:
-          gpu_mode_str = "GPU-Dominant";
-          break;
-        default:
-          gpu_mode_str = "Auto (Dynamic)";
-          break;
-      }
-      string backpressure_tag = HeterogeneousDynamicGovernor.IsBackpressureActive
-          ? "[Backpressure: Throttled]"
-          : "[Load: Normal]";
-      UnityEngine.GUILayout.Label(
-          $"GPGPU: {PrincipiaGPGPUContext.GpuDeviceName} | Mode: {gpu_mode_str} {backpressure_tag}",
-          style: Style.Info(UnityEngine.GUI.skin.label));
+      // Rolling Ephemeris & Cache Telemetry (Throttled to 1 Hz for minimal overhead).
+      if (now - last_rolling_ephemeris_update_time_ >= RollingEphemerisUpdateInterval ||
+          last_rolling_ephemeris_update_time_ < 0) {
+        last_rolling_ephemeris_update_time_ = now;
+        var ephem_driver = RollingEphemerisDriver.Instance;
+        if (ephem_driver != null) {
+          string ephem_tag = ephem_driver.is_paused
+              ? "<color=yellow>⏸ 挂起</color>"
+              : (ephem_driver.is_prolonging ? "<color=cyan>⏳ 推演中</color>" : "<color=lime>● 就绪</color>");
+          string carrier_info = ephem_driver.is_active
+              ? $"[{ephem_driver.carrier_vessel_name}]"
+              : "[待机搜寻载体]";
+          string cache_hit_str = CelestialTrajectoryBinaryCache.TotalRequests > 0
+              ? $"{CelestialTrajectoryBinaryCache.HitRatio:F1}%"
+              : "100%";
+          cached_ephem_label_ =
+              $"星历前瞻: +{ephem_driver.current_horizon_years:F2}Y / 目标: {ephem_driver.lookahead_horizon_years:F1}Y {ephem_tag} {carrier_info} | 轨迹缓存: <b>{cache_hit_str}</b>";
 
-      using (new UnityEngine.GUILayout.HorizontalScope()) {
-        UnityEngine.GUILayout.Label(
-            $"Render: {HeterogeneousDynamicGovernor.SmoothedRenderTimeMs:F1}ms | Budget: {HeterogeneousDynamicGovernor.GpuComputeBudgetMs:F1}ms",
-            style: Style.Info(UnityEngine.GUI.skin.label));
-        if (UnityEngine.GUILayout.Button("Switch Mode", GUILayoutWidth(4))) {
-          HeterogeneousDynamicGovernor.Affinity = (HeterogeneousAffinity)(
-              ((int)HeterogeneousDynamicGovernor.Affinity + 1) % 3);
+          if (show_rolling_ephemeris_) {
+            string status_str = ephem_driver.is_paused
+                ? "<color=yellow>⏸ 已暂停 (待机中)</color>"
+                : (ephem_driver.is_prolonging
+                    ? "<color=cyan>⏳ 正在向 C++ 申请延展...</color>"
+                    : (ephem_driver.is_active
+                        ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
+                        : "<color=yellow>○ 待机寻找载体中</color>"));
+            cached_rolling_status_ = $"推演状态: {status_str}";
+            cached_rolling_carrier_ = $"载体飞船 (Carrier): <b>{ephem_driver.carrier_vessel_name}</b>";
+
+            float progress = (float)ephem_driver.progress_ratio;
+            int filled = UnityEngine.Mathf.Clamp(UnityEngine.Mathf.RoundToInt(progress * 20), 0, 20);
+            string bar_str = "[" + new string('█', filled) + new string('░', 20 - filled) + $"] {progress * 100.0f:F1}%";
+            string bar_color = ephem_driver.is_paused
+                ? "<color=grey>"
+                : (progress < 0.33f ? "<color=yellow>" : (ephem_driver.is_prolonging ? "<color=cyan>" : "<color=lime>"));
+            cached_rolling_progress_ =
+                $"<b>前瞻余量:</b> {bar_color}{bar_str}</color> (+{ephem_driver.current_horizon_years:F2}Y / 目标: {ephem_driver.lookahead_horizon_years:F1}Y)";
+            cached_rolling_remaining_ =
+                $"前瞻剩余: <b>{ephem_driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{ephem_driver.refresh_threshold_years:F1} 年)";
+
+            cached_rolling_cache_summary_ =
+                $"<b>天体轨迹二进制缓存:</b> L1显存常驻: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | L2磁盘持久化: <b>{CelestialTrajectoryBinaryCache.L2DiskFileCount}</b> 文件";
+            cached_rolling_cache_metrics_ =
+                $"缓存命中统计: L1命中 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | L2载入 <b>{CelestialTrajectoryBinaryCache.L2HitCount:N0}</b> | C++重构 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
+
+            cached_rolling_log_title_ = $"▼ 实时推演日志 ({ephem_driver.ConsoleLogs.Count} 条)";
+            if (show_ephemeris_logs_) {
+              cached_rolling_logs_.Clear();
+              lock (ephem_driver.ConsoleLogs) {
+                int start = Math.Max(0, ephem_driver.ConsoleLogs.Count - 5);
+                for (int i = start; i < ephem_driver.ConsoleLogs.Count; ++i) {
+                  cached_rolling_logs_.Add($"<size=10><color=#a0ffa0>{ephem_driver.ConsoleLogs[i]}</color></size>");
+                }
+              }
+            }
+          }
+        } else {
+          cached_ephem_label_ = "";
         }
       }
 
-      var ephem_driver = RollingEphemerisDriver.Instance;
-      if (ephem_driver != null) {
-        string ephem_tag = ephem_driver.is_paused
-            ? "<color=yellow>[已暂停]</color>"
-            : (ephem_driver.is_prolonging ? "<color=cyan>[推演中]</color>" : "<color=lime>[已就绪]</color>");
+      using (new UnityEngine.GUILayout.HorizontalScope()) {
+        UnityEngine.GUILayout.Label("计算管线精度:", GUILayoutWidth(4));
+        bool is_native = HeterogeneousDynamicGovernor.IsNativeDoublePrecision;
+        bool set_native = UnityEngine.GUILayout.Toggle(
+            is_native,
+            "● 原生双精度 (CPU FP64)",
+            UnityEngine.GUI.skin.toggle);
+        bool set_gpu = UnityEngine.GUILayout.Toggle(
+            !is_native,
+            "⚡ GPGPU 异构加速",
+            UnityEngine.GUI.skin.toggle);
+        if (set_native && !is_native) {
+          HeterogeneousDynamicGovernor.PipelineMode =
+              ComputationPipelineMode.NativeDoublePrecision;
+        } else if (set_gpu && is_native) {
+          HeterogeneousDynamicGovernor.PipelineMode =
+              ComputationPipelineMode.GpuAccelerated;
+        }
+        if (UnityEngine.GUILayout.Button("⚡ GPU 诊断", GUILayoutWidth(3))) {
+          gpu_diagnostics_window_.Toggle();
+        }
+      }
+
+      if (HeterogeneousDynamicGovernor.IsNativeDoublePrecision) {
         UnityEngine.GUILayout.Label(
-            $"星历自主推演: +{ephem_driver.current_horizon_years:F2}Y / {ephem_driver.lookahead_horizon_years:F1}Y {ephem_tag} (载体: {ephem_driver.carrier_vessel_name})",
+            "<color=lime>● 物理保真模式: 原生 C++ 双精度 (IEEE 754 FP64) 经典管线锁定中 (旧实现 100% 保持不动)</color>",
+            style: Style.Info(UnityEngine.GUI.skin.label));
+      } else {
+        UnityEngine.GUILayout.Label(
+            cached_gpu_label_,
+            style: Style.Info(UnityEngine.GUI.skin.label));
+
+        using (new UnityEngine.GUILayout.HorizontalScope()) {
+          UnityEngine.GUILayout.Label(
+              cached_render_budget_label_,
+              style: Style.Info(UnityEngine.GUI.skin.label));
+          if (UnityEngine.GUILayout.Button(
+                  $"调度倾向: {HeterogeneousDynamicGovernor.Affinity}",
+                  GUILayoutWidth(5))) {
+            HeterogeneousDynamicGovernor.Affinity = (HeterogeneousAffinity)(
+                ((int)HeterogeneousDynamicGovernor.Affinity + 1) % 3);
+          }
+        }
+      }
+
+      if (!string.IsNullOrEmpty(cached_ephem_label_)) {
+        UnityEngine.GUILayout.Label(
+            cached_ephem_label_,
             style: Style.Info(UnityEngine.GUI.skin.label));
       }
 
@@ -359,9 +461,25 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
         using (new UnityEngine.GUILayout.HorizontalScope()) {
           flight_planner_.RenderButton();
           orbit_analyser_.RenderButton();
+          gpu_diagnostics_window_.RenderButton();
+          string ephem_btn_text = show_rolling_ephemeris_
+              ? "▲ 星历与缓存"
+              : "▼ 星历与缓存";
+          if (UnityEngine.GUILayout.Button(ephem_btn_text)) {
+            show_rolling_ephemeris_ = !show_rolling_ephemeris_;
+            if (!show_rolling_ephemeris_) {
+              ScheduleShrink();
+            } else {
+              last_rolling_ephemeris_update_time_ = -1.0f;
+            }
+          }
         }
         RenderPredictionSettings();
       }
+      RenderToggleableSection(
+          name   : "星历自主前瞻推演与轨迹缓存 (Rolling Ephemeris & Cache)",
+          show   : ref show_rolling_ephemeris_,
+          render : RenderRollingEphemeris);
       RenderToggleableSection(
           name   : L10N.CacheFormat("#Principia_MainWindow_KspFeatures"),
           show   : ref show_ksp_features_,
@@ -372,6 +490,80 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
           render : RenderLoggingSettings);
     }
     UnityEngine.GUI.DragWindow();
+  }
+
+  private void RenderRollingEphemeris() {
+    var driver = RollingEphemerisDriver.Instance;
+    if (driver != null) {
+      if (string.IsNullOrEmpty(cached_rolling_status_)) {
+        last_rolling_ephemeris_update_time_ = -1.0f;
+      }
+      UnityEngine.GUILayout.Label(cached_rolling_status_);
+      UnityEngine.GUILayout.Label(cached_rolling_carrier_);
+      UnityEngine.GUILayout.Label(cached_rolling_progress_);
+      UnityEngine.GUILayout.Label(cached_rolling_remaining_);
+
+      using (new UnityEngine.GUILayout.HorizontalScope()) {
+        if (UnityEngine.GUILayout.Button(driver.is_paused ? "▶ 恢复" : "⏸ 暂停")) {
+          driver.TogglePause();
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+        if (UnityEngine.GUILayout.Button("⚡ 立即延展")) {
+          driver.ForceProlong();
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+        if (UnityEngine.GUILayout.Button("🔄 优选载体")) {
+          driver.ReselectCarrier();
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+        if (UnityEngine.GUILayout.Button("+1年", GUILayoutWidth(2))) {
+          driver.AdjustHorizon(1.0);
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+        if (UnityEngine.GUILayout.Button("-1年", GUILayoutWidth(2))) {
+          driver.AdjustHorizon(-1.0);
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+      }
+
+      UnityEngine.GUILayout.Box("", UnityEngine.GUILayout.Height(1), UnityEngine.GUILayout.ExpandWidth(true));
+      UnityEngine.GUILayout.Label(cached_rolling_cache_summary_);
+      UnityEngine.GUILayout.Label(cached_rolling_cache_metrics_);
+      using (new UnityEngine.GUILayout.HorizontalScope()) {
+        if (UnityEngine.GUILayout.Button("🗑 清理轨迹缓存")) {
+          CelestialTrajectoryBinaryCache.ClearDiskCache();
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+        if (UnityEngine.GUILayout.Button("🔄 重置统计计数")) {
+          CelestialTrajectoryBinaryCache.ResetMetrics();
+          last_rolling_ephemeris_update_time_ = -1.0f;
+        }
+      }
+      UnityEngine.GUILayout.Box("", UnityEngine.GUILayout.Height(1), UnityEngine.GUILayout.ExpandWidth(true));
+
+      bool prev_show_logs = show_ephemeris_logs_;
+      show_ephemeris_logs_ = UnityEngine.GUILayout.Toggle(
+          show_ephemeris_logs_,
+          string.IsNullOrEmpty(cached_rolling_log_title_)
+              ? $"▼ 实时推演日志 ({driver.ConsoleLogs.Count} 条)"
+              : cached_rolling_log_title_);
+      if (prev_show_logs != show_ephemeris_logs_) {
+        last_rolling_ephemeris_update_time_ = -1.0f;
+      }
+      if (show_ephemeris_logs_) {
+        using (new UnityEngine.GUILayout.VerticalScope(UnityEngine.GUI.skin.box)) {
+          if (cached_rolling_logs_.Count == 0) {
+            UnityEngine.GUILayout.Label("<color=grey><i>(暂无日志记录)</i></color>");
+          } else {
+            for (int i = 0; i < cached_rolling_logs_.Count; ++i) {
+              UnityEngine.GUILayout.Label(cached_rolling_logs_[i]);
+            }
+          }
+        }
+      }
+    } else {
+      UnityEngine.GUILayout.Label("<color=grey>○ 暂无活动星历驱动器 (等待场景就绪)</color>");
+    }
   }
 
   private void RenderKSPFeatures() {
@@ -678,15 +870,35 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
   private readonly PrincipiaPluginAdapter adapter_;
   private readonly FlightPlanner flight_planner_;
   private readonly OrbitAnalyser orbit_analyser_;
+  private readonly GpuDiagnosticsWindow gpu_diagnostics_window_;
   private readonly ReferenceFrameSelector<PlottingFrameParameters>
       plotting_frame_selector_;
 
   private bool selecting_target_celestial_ = false;
 
+  private bool show_rolling_ephemeris_ = true;
+  private bool show_ephemeris_logs_ = false;
   private bool show_ksp_features_ = false;
   private bool show_logging_settings_ = false;
 
   private bool show_selection_ui_ = false;
+
+  private float last_telemetry_label_update_time_ = -1.0f;
+  private const float TelemetryLabelUpdateInterval = 0.1f;
+  private string cached_gpu_label_ = "";
+  private string cached_render_budget_label_ = "";
+  private string cached_ephem_label_ = "";
+
+  private float last_rolling_ephemeris_update_time_ = -1.0f;
+  private const float RollingEphemerisUpdateInterval = 1.0f; // 1 Hz UI refresh
+  private string cached_rolling_status_ = "";
+  private string cached_rolling_carrier_ = "";
+  private string cached_rolling_progress_ = "";
+  private string cached_rolling_remaining_ = "";
+  private string cached_rolling_cache_summary_ = "";
+  private string cached_rolling_cache_metrics_ = "";
+  private string cached_rolling_log_title_ = "";
+  private readonly List<string> cached_rolling_logs_ = new List<string>();
 
   private int prediction_length_tolerance_index_ =
       default_prediction_length_tolerance_index;

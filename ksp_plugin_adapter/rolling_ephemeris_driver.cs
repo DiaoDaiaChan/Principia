@@ -8,10 +8,11 @@ internal class RollingEphemerisDriver {
   public const double JulianYear = 365.25 * 86400.0;
 
   // Horizon configuration:
-  // Maintain a rolling lookahead horizon of 3.0 Julian Years.
-  // When remaining lookahead is less than 1.0 Julian Year, extend forward.
-  public double lookahead_horizon = 3.0 * JulianYear;
-  public double refresh_threshold = 1.0 * JulianYear;
+  // Maintain a rolling lookahead horizon of 100 days.
+  // When remaining lookahead is less than 30 days, extend forward.
+  // Clamped to prevent exceeding C++ FlightPlan adaptive step limit (4096 steps).
+  public double lookahead_horizon = 100.0 * 86400.0;
+  public double refresh_threshold = 30.0 * 86400.0;
 
   private readonly IntPtr plugin_;
   private readonly PrincipiaPluginAdapter adapter_;
@@ -188,20 +189,26 @@ internal class RollingEphemerisDriver {
     try {
       if (!plugin_.FlightPlanExists(carrier_vessel_guid_)) {
         double mass = 1.0;
-        var vessel = FlightGlobals.Vessels?.Find(v => v?.id.ToString() == carrier_vessel_guid_);
+        var vessel = FlightGlobals.FindVessel(new Guid(carrier_vessel_guid_));
         if (vessel != null) {
           mass = Math.Max(0.1, vessel.GetTotalMass());
         }
         plugin_.FlightPlanCreate(carrier_vessel_guid_, new_target, mass);
         Log.Info($"[RollingEphemeris] Created background rolling ephemeris carrier on '{carrier_vessel_name}' (target: +{lookahead_horizon / JulianYear:F1} yr)");
-        AddLog($"创建新背景飞行计划 (目标: +{lookahead_horizon / JulianYear:F1} 年)");
+        AddLog($"创建新背景飞行计划 (目标: +{lookahead_horizon / (86400.0 * 365.25):F2} 年)");
       } else {
         var status = plugin_.FlightPlanSetDesiredFinalTime(carrier_vessel_guid_, new_target);
         if (!status.ok()) {
-          Log.Warning($"[RollingEphemeris] FlightPlanSetDesiredFinalTime status: {status.error}");
-          AddLog($"更新推演终点异常: {status.error}");
+          double achieved = plugin_.FlightPlanGetDesiredFinalTime(carrier_vessel_guid_);
+          if (achieved > current_ut) {
+            target_extended_time_ = achieved;
+          }
+          last_update_realtime_ = UnityEngine.Time.realtimeSinceStartup + 60.0;
+          Log.Warning($"[RollingEphemeris] FlightPlanSetDesiredFinalTime status: {status.error} (achieved UT {achieved:F0})");
+          AddLog($"推演终点达上限: {status.error} (已延展至上限)");
+          return;
         } else {
-          AddLog($"星历成功延展至 UT {new_target:F0}s (+{lookahead_horizon / JulianYear:F1} 年)");
+          AddLog($"星历成功延展至 UT {new_target:F0}s (+{lookahead_horizon / (86400.0 * 365.25):F2} 年)");
         }
       }
       target_extended_time_ = new_target;
@@ -265,51 +272,41 @@ internal class RollingEphemerisDriver {
     return null;
   }
 
+  // Structured scoring weights for candidate carrier vessels
+  private static readonly System.Collections.Generic.Dictionary<VesselType, int> VesselTypeWeights =
+      new System.Collections.Generic.Dictionary<VesselType, int> {
+        { VesselType.Debris, 500 },
+        { VesselType.SpaceObject, 450 },
+        { VesselType.Probe, 400 },
+        { VesselType.Relay, 400 },
+        { VesselType.Station, 300 },
+        { VesselType.Base, 300 },
+        { VesselType.Ship, 200 },
+      };
+
+  private static readonly System.Collections.Generic.Dictionary<Vessel.Situations, int> SituationWeights =
+      new System.Collections.Generic.Dictionary<Vessel.Situations, int> {
+        { Vessel.Situations.ORBITING, 200 },
+        { Vessel.Situations.ESCAPING, 150 },
+        { Vessel.Situations.SUB_ORBITAL, 50 },
+        { Vessel.Situations.LANDED, 30 },
+        { Vessel.Situations.SPLASHED, 30 },
+        { Vessel.Situations.FLYING, -100 },
+        { Vessel.Situations.PRELAUNCH, -200 },
+      };
+
+  private const int DefaultVesselTypeWeight = 100;
+
   private int ScoreVessel(Vessel v) {
     int score = 0;
-    switch (v.vesselType) {
-      case VesselType.Debris:
-        score += 500;
-        break;
-      case VesselType.SpaceObject:
-        score += 450;
-        break;
-      case VesselType.Probe:
-      case VesselType.Relay:
-        score += 400;
-        break;
-      case VesselType.Station:
-      case VesselType.Base:
-        score += 300;
-        break;
-      case VesselType.Ship:
-        score += 200;
-        break;
-      default:
-        score += 100;
-        break;
+    if (VesselTypeWeights.TryGetValue(v.vesselType, out int type_weight)) {
+      score += type_weight;
+    } else {
+      score += DefaultVesselTypeWeight;
     }
 
-    switch (v.situation) {
-      case Vessel.Situations.ORBITING:
-        score += 200;
-        break;
-      case Vessel.Situations.ESCAPING:
-        score += 150;
-        break;
-      case Vessel.Situations.SUB_ORBITAL:
-        score += 50;
-        break;
-      case Vessel.Situations.LANDED:
-      case Vessel.Situations.SPLASHED:
-        score += 30;
-        break;
-      case Vessel.Situations.FLYING:
-        score -= 100;
-        break;
-      case Vessel.Situations.PRELAUNCH:
-        score -= 200;
-        break;
+    if (SituationWeights.TryGetValue(v.situation, out int situation_weight)) {
+      score += situation_weight;
     }
 
     return score;

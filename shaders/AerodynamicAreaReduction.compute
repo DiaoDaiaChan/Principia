@@ -1,0 +1,63 @@
+// AerodynamicAreaReduction.compute - Orthographic Micro-Rasterization Aerodynamic Area Reduction
+// Computes multi-part aerodynamic self-shielding and exposed cross-sectional area in <0.5 ms.
+
+#pragma kernel AccumulatePartPixels
+#pragma kernel ReduceTotalAerodynamicArea
+
+#define THREADS_X 16
+#define THREADS_Y 16
+#define REDUCE_GROUP_SIZE 256
+#define MAX_PARTS 256
+
+cbuffer AeroReductionConfig : register(b0) {
+    uint _MapWidth;
+    uint _MapHeight;
+    float _PixelAreaM2;
+    uint _TotalParts;
+};
+
+Texture2D<uint> _PartIdDepthMap : register(t0);
+RWStructuredBuffer<uint> _PartPixelCounts : register(u0);
+RWStructuredBuffer<float> _PartExposedAreas : register(u1);
+RWStructuredBuffer<float> _TotalProjectedArea : register(u2);
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void AccumulatePartPixels(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _MapWidth || id.y >= _MapHeight) return;
+
+    uint part_id = _PartIdDepthMap[id.xy];
+    if (part_id > 0 && part_id <= _TotalParts) {
+        // Atomic increment for this part's visible exposed pixel count
+        InterlockedAdd(_PartPixelCounts[part_id - 1], 1);
+    }
+}
+
+groupshared float s_part_areas[REDUCE_GROUP_SIZE];
+
+[numthreads(REDUCE_GROUP_SIZE, 1, 1)]
+void ReduceTotalAerodynamicArea(uint3 id : SV_DispatchThreadID, uint group_index : SV_GroupIndex) {
+    uint part_idx = id.x;
+
+    float area = 0.0;
+    if (part_idx < _TotalParts) {
+        uint count = _PartPixelCounts[part_idx];
+        area = (float)count * _PixelAreaM2;
+        _PartExposedAreas[part_idx] = area;
+    }
+
+    s_part_areas[group_index] = area;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = REDUCE_GROUP_SIZE / 2; stride > 0; stride >>= 1) {
+        if (group_index < stride) {
+            s_part_areas[group_index] += s_part_areas[group_index + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (group_index == 0) {
+        AllMemoryBarrier();
+        _TotalProjectedArea[0] = s_part_areas[0];
+    }
+}

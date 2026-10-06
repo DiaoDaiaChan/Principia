@@ -362,37 +362,66 @@ class BurnEditor : ScalingRenderer {
           string vessel_guid = vessel_.id.ToString();
           int optimized_index =
               plugin.FlightPlanOptimizationDriverInProgress(vessel_guid);
-          if (GpuFlightPlanOptimizer.IsOptimizing) {
-            UnityEngine.GUILayout.Label("[GPU 16K Shooting...]");
-          } else if (optimized_index == index) {
-            UnityEngine.GUILayout.Label(
-                L10N.CacheFormat("#Principia_BurnEditor_OptimizingThis"));
-          } else if (optimized_index != -1) {
-            UnityEngine.GUILayout.Label(
-                L10N.CacheFormat("#Principia_BurnEditor_OptimizingOther"));
-          } else if (UnityEngine.GUILayout.Button(
-                         L10N.CacheFormat("#Principia_BurnEditor_Optimize"))) {
-            if (HeterogeneousDynamicGovernor.ShouldDispatchToGpu(16384)) {
-              UnityEngine.Vector3 base_dv = new UnityEngine.Vector3(
-                  (float)Δv_tangent_.value,
-                  (float)Δv_normal_.value,
-                  (float)Δv_binormal_.value);
-              bool dispatched = GpuFlightPlanOptimizer.TryDispatchGpuOptimization(
-                  base_delta_v: base_dv,
-                  initial_time: (float)initial_time_,
-                  span_t: 300.0f,
-                  span_dv: new UnityEngine.Vector3(50.0f, 50.0f, 50.0f),
-                  on_success: result => {
-                    Δv_tangent_.value = result.delta_v_tangent;
-                    Δv_normal_.value = result.delta_v_normal;
-                    Δv_binormal_.value = result.delta_v_binormal;
-                    ReformatΔv();
-                  });
-              if (!dispatched) {
-                plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
-              }
-            } else {
+          if (HeterogeneousDynamicGovernor.IsNativeDoublePrecision) {
+            // 原生双精度模式 (CPU FP64 经典实现, 完全不动)
+            if (optimized_index == index) {
+              UnityEngine.GUILayout.Label(
+                  L10N.CacheFormat("#Principia_BurnEditor_OptimizingThis"));
+            } else if (optimized_index != -1) {
+              UnityEngine.GUILayout.Label(
+                  L10N.CacheFormat("#Principia_BurnEditor_OptimizingOther"));
+            } else if (UnityEngine.GUILayout.Button(
+                           L10N.CacheFormat("#Principia_BurnEditor_Optimize"))) {
               plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+            }
+          } else {
+            // GPGPU 异构加速模式 (包含原生双精度直通按钮)
+            if (GpuFlightPlanOptimizer.IsOptimizing) {
+              UnityEngine.GUILayout.Label("<color=cyan>[⚡ GPU 16K 并行打靶中...]</color>");
+            } else if (optimized_index == index) {
+              UnityEngine.GUILayout.Label(
+                  L10N.CacheFormat("#Principia_BurnEditor_OptimizingThis"));
+            } else if (optimized_index != -1) {
+              UnityEngine.GUILayout.Label(
+                  L10N.CacheFormat("#Principia_BurnEditor_OptimizingOther"));
+            } else {
+              using (new UnityEngine.GUILayout.HorizontalScope()) {
+                if (UnityEngine.GUILayout.Button(
+                        "⚡ GPU 16K 打靶",
+                        GUILayoutWidth(6))) {
+                  UnityEngine.Vector3 base_dv = new UnityEngine.Vector3(
+                      (float)Δv_tangent_.value,
+                      (float)Δv_normal_.value,
+                      (float)Δv_binormal_.value);
+                  float base_mag = base_dv.magnitude;
+                  float adaptive_span_dv = UnityEngine.Mathf.Clamp(UnityEngine.Mathf.Max(base_mag * 0.25f, 5.0f), 1.0f, 500.0f);
+                  float adaptive_span_t = 300.0f;
+                  if (vessel_?.orbit != null && vessel_.orbit.period > 0) {
+                    adaptive_span_t = UnityEngine.Mathf.Clamp((float)vessel_.orbit.period * 0.05f, 30.0f, 1800.0f);
+                  }
+                  bool dispatched = GpuFlightPlanOptimizer.TryDispatchGpuOptimization(
+                      base_delta_v: base_dv,
+                      initial_time: (float)initial_time_,
+                      span_t: adaptive_span_t,
+                      span_dv: new UnityEngine.Vector3(adaptive_span_dv, adaptive_span_dv, adaptive_span_dv),
+                      on_success: result => {
+                        Δv_tangent_.value = result.delta_v_tangent;
+                        Δv_normal_.value = result.delta_v_normal;
+                        Δv_binormal_.value = result.delta_v_binormal;
+                        ReformatΔv();
+                      },
+                      vessel: vessel_,
+                      target_celestial: centre);
+                  if (!dispatched) {
+                    plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+                  }
+                }
+                if (UnityEngine.GUILayout.Button(
+                        "原生双精度",
+                        GUILayoutWidth(4))) {
+                  plugin.FlightPlanOptimizationDriverStart(vessel_guid, index);
+                }
+              }
             }
           }
         }

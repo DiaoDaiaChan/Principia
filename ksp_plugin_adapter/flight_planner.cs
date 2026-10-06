@@ -43,12 +43,17 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
     if (show_guidance_value != null) {
       show_guidance_ = Convert.ToBoolean(show_guidance_value);
     }
+    string show_porkchop_value = node.GetAtMostOneValue("show_porkchop");
+    if (show_porkchop_value != null) {
+      show_porkchop_ = Convert.ToBoolean(show_porkchop_value);
+    }
   }
 
   public override void Save(ConfigNode node) {
     base.Save(node);
 
     node.SetValue("show_guidance", show_guidance_, createIfNotFound : true);
+    node.SetValue("show_porkchop", show_porkchop_, createIfNotFound : true);
   }
 
   internal NavigationManoeuvre GetManœuvre(int i) {
@@ -250,7 +255,9 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             plugin.FlightPlanSetDesiredFinalTime(
                 vessel_guid,
                 final_time_.value);
-        reached_deadline_ = status.is_deadline_exceeded();
+        reached_deadline_ =
+            plugin.FlightPlanGetAnomalousStatus(vessel_guid).
+                is_deadline_exceeded();
         UpdateStatus(status, null);
         ResetOptimizer(vessel_guid);
       }
@@ -580,6 +587,20 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
         Style.HorizontalLine();
         if (RenderCoast(burn_editors_.Count, orbital_period: out _)) {
           return;
+        }
+
+        Style.HorizontalLine();
+        string porkchop_toggle = show_porkchop_
+            ? "▲ 猪排图 (Porkchop) 转移窗口扫描"
+            : "▼ 猪排图 (Porkchop) 转移窗口扫描";
+        if (UnityEngine.GUILayout.Button(porkchop_toggle)) {
+          show_porkchop_ = !show_porkchop_;
+          if (!show_porkchop_) {
+            ScheduleShrink();
+          }
+        }
+        if (show_porkchop_) {
+          RenderPorkchopSection();
         }
       }
     }
@@ -990,6 +1011,105 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
   private double optimization_altitude_ = default_optimization_altitude;
   private double? optimization_inclination_in_degrees_ =
       default_optimization_inclination_in_degrees;
+  private void RenderPorkchopSection() {
+    using (new UnityEngine.GUILayout.VerticalScope(UnityEngine.GUI.skin.box)) {
+      if (HeterogeneousDynamicGovernor.IsNativeDoublePrecision) {
+        UnityEngine.GUILayout.Label(
+            "<color=lime>● 原生双精度模式: GPGPU 猪排图热力图扫描已旁路 (旧实现 100% 保持不动)</color>",
+            Style.Info(UnityEngine.GUI.skin.label));
+        return;
+      }
+
+      UnityEngine.GUILayout.Label("<b>⚡ GPGPU 百万网格猪排图 (Porkchop Plot) 转移窗口扫描</b>");
+      var origin_body = predicted_vessel?.orbit?.referenceBody;
+      if (origin_body == null) {
+        UnityEngine.GUILayout.Label("无有效出发参考天体。");
+        return;
+      }
+
+      var target_candidates = origin_body.referenceBody?.orbitingBodies;
+      if (target_candidates == null || target_candidates.Count == 0) {
+        target_candidates = origin_body.orbitingBodies;
+      }
+
+      if (target_candidates != null && target_candidates.Count > 0) {
+        selected_porkchop_target_index_ = UnityEngine.Mathf.Clamp(
+            selected_porkchop_target_index_, 0, target_candidates.Count - 1);
+        var target_body = target_candidates[selected_porkchop_target_index_];
+
+        using (new UnityEngine.GUILayout.HorizontalScope()) {
+          UnityEngine.GUILayout.Label("目标天体:", GUILayoutWidth(3));
+          if (UnityEngine.GUILayout.Button("◀", GUILayoutWidth(1)) && selected_porkchop_target_index_ > 0) {
+            selected_porkchop_target_index_--;
+          }
+          UnityEngine.GUILayout.Label($"<b>{target_body.Name()}</b>", GUILayoutWidth(4));
+          if (UnityEngine.GUILayout.Button("▶", GUILayoutWidth(1)) && selected_porkchop_target_index_ < target_candidates.Count - 1) {
+            selected_porkchop_target_index_++;
+          }
+        }
+
+        double t0 = plugin.CurrentTime();
+        double r1 = origin_body.orbit != null ? origin_body.orbit.semiMajorAxis : origin_body.Radius;
+        double r2 = target_body.orbit != null ? target_body.orbit.semiMajorAxis : target_body.Radius;
+        double mu = origin_body.referenceBody != null ? origin_body.referenceBody.gravParameter : 3.5316e12;
+        double a_transfer = Math.Max(1000.0, (r1 + r2) * 0.5);
+        double t_hohmann = Math.PI * Math.Sqrt((a_transfer * a_transfer * a_transfer) / Math.Max(1.0, mu));
+
+        double dynamic_min_flight = Math.Max(1800.0, t_hohmann * 0.15);
+        double dynamic_flight_span = Math.Max(dynamic_min_flight * 5.0, t_hohmann * 2.5);
+        double dynamic_dep_span = Math.Max(86400.0 * 5.0, t_hohmann * 1.5);
+
+        double depart_span_s = Math.Min(dynamic_dep_span, Math.Max(86400.0 * 2.0, porkchop_depart_span_days_ * 86400.0));
+        double flight_span_s = Math.Min(dynamic_flight_span, Math.Max(dynamic_min_flight * 2.0, porkchop_flight_span_days_ * 86400.0));
+
+        double t_dep_min = t0;
+        double t_dep_max = t0 + depart_span_s;
+        double t_arr_min = t_dep_min + dynamic_min_flight;
+        double t_arr_max = t_dep_max + flight_span_s;
+
+        using (new UnityEngine.GUILayout.HorizontalScope()) {
+          if (UnityEngine.GUILayout.Button("⚡ 扫描 26 万转移窗口 (512x512)", GUILayoutWidth(8))) {
+            GpuPorkchopScanner.TryDispatchScan(
+                origin: origin_body,
+                target: target_body,
+                t_depart_min: t_dep_min,
+                t_depart_max: t_dep_max,
+                t_arrive_min: t_arr_min,
+                t_arrive_max: t_arr_max,
+                on_success: res => {
+                  last_porkchop_result_ = res;
+                },
+                resolution: 512,
+                min_flight_time: (float)dynamic_min_flight);
+          }
+          if (GpuPorkchopScanner.IsScanning) {
+            UnityEngine.GUILayout.Label("<color=cyan>计算中...</color>");
+          } else if (GpuPorkchopScanner.LastScanDurationMs > 0) {
+            UnityEngine.GUILayout.Label($"耗时: {GpuPorkchopScanner.LastScanDurationMs:F1}ms");
+          }
+        }
+
+        if (GpuPorkchopScanner.HeatmapTexture != null) {
+          UnityEngine.Rect rect = UnityEngine.GUILayoutUtility.GetRect(256, 128);
+          UnityEngine.GUI.DrawTexture(rect, GpuPorkchopScanner.HeatmapTexture, UnityEngine.ScaleMode.ScaleToFit);
+        }
+
+        if (last_porkchop_result_.HasValue) {
+          var res = last_porkchop_result_.Value;
+          UnityEngine.GUILayout.Label(
+              $"最优转移 Δv: <b>{res.total_delta_v:F1} m/s</b> (出发: {res.departure_delta_v:F1} m/s, 到达: {res.arrival_delta_v:F1} m/s)");
+          UnityEngine.GUILayout.Label(
+              $"特征能量 C3: <b>{res.c3:F1} km²/s²</b> | 飞行时间: <b>{(res.arrival_time - res.departure_time) / 86400.0:F1} 天</b>");
+        }
+      }
+    }
+  }
+
+  private bool show_porkchop_ = false;
+  private int selected_porkchop_target_index_ = 0;
+  private double porkchop_depart_span_days_ = 100.0;
+  private double porkchop_flight_span_days_ = 300.0;
+  private GpuPorkchopScanner.PorkchopMinimumResult? last_porkchop_result_;
   private NavigationFrameParameters optimization_reference_frame_parameters_;
 }
 

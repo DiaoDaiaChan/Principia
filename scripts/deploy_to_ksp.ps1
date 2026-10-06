@@ -1,12 +1,35 @@
 param(
+    [string]$KspDirectory = $env:KSP_DIRECTORY,
     [switch]$Wait
 )
 
 $srcDll = "Release\GameData\Principia\ksp_plugin_adapter.dll"
 $srcPdb = "Release\GameData\Principia\ksp_plugin_adapter.pdb"
 
-$targetDir1 = "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod\GameData\Principia"
-$targetDir2 = "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod\Principia"
+if (-not $KspDirectory) {
+    $candidatePaths = @(
+        $env:KSP_PATH,
+        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program",
+        "C:\Program Files\Steam\steamapps\common\Kerbal Space Program",
+        "D:\SteamLibrary\steamapps\common\Kerbal Space Program",
+        "E:\SteamLibrary\steamapps\common\Kerbal Space Program",
+        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod"
+    )
+    foreach ($cand in $candidatePaths) {
+        if ($cand -and (Test-Path $cand)) {
+            $KspDirectory = $cand
+            break
+        }
+    }
+}
+
+if (-not $KspDirectory -or -not (Test-Path $KspDirectory)) {
+    Write-Error "KSP installation directory not found. Please pass -KspDirectory or set the KSP_DIRECTORY environment variable."
+    exit 1
+}
+
+$targetDir1 = Join-Path $KspDirectory "GameData\Principia"
+$targetDir2 = Join-Path $KspDirectory "Principia"
 
 if (-not (Test-Path $srcDll)) {
     Write-Error "Source DLL not found at $srcDll. Please build first."

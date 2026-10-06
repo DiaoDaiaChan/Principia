@@ -107,6 +107,157 @@ public static class PerformanceProbe {
     last_gc_memory_ = current_mem;
   }
 
+  // Telemetry 10 Hz string cache
+  private static float last_telemetry_update_time_ = -1.0f;
+  private const float TelemetryUpdateInterval = 0.1f; // ~10 Hz
+
+  private static string cached_fps_str_ = "";
+  private static string cached_frametime_str_ = "";
+  private static string cached_gc_str_ = "";
+  private static string cached_principia_timing_str_ = "";
+
+  private static string cached_ephem_status_str_ = "";
+  private static string cached_ephem_carrier_str_ = "";
+  private static string cached_ephem_progress_str_ = "";
+  private static string cached_ephem_remaining_str_ = "";
+  private static string cached_celestial_cache_str1_ = "";
+  private static string cached_celestial_cache_str2_ = "";
+
+  private static string cached_decouple_status_str_ = "";
+  private static string cached_decouple_consumed_str_ = "";
+  private static string cached_decouple_harvest_str_ = "";
+
+  private static string cached_gpu_name_str_ = "";
+  private static string cached_gpu_cap_str_ = "";
+  private static string cached_zc_str_ = "";
+  private static string cached_vertices_str_ = "";
+  private static string cached_zc_direct_str_ = "";
+  private static string cached_zc_pool_str_ = "";
+  private static string cached_cache_hit_str_ = "";
+  private static string cached_governor_mode_str_ = "";
+  private static string cached_governor_dispatch_str_ = "";
+  private static string cached_vacuum_bypass_str_ = "";
+  private static string cached_circuit_breaker_str_ = "";
+  private static string cached_rigid_motion_bypass_str_ = "";
+
+  private static readonly string[] cached_metric_bar_labels_ = new string[(int)ProbeCategory.Count];
+
+  private static void UpdateTelemetryStringsIfNeeded() {
+    float now = Time.realtimeSinceStartup;
+    if (now - last_telemetry_update_time_ < TelemetryUpdateInterval && last_telemetry_update_time_ >= 0) {
+      return;
+    }
+    last_telemetry_update_time_ = now;
+
+    cached_fps_str_ = $"<b>FPS:</b> {CurrentFps:F1}";
+    cached_frametime_str_ = $"<b>帧耗时:</b> {FrameTimeMs:F2} ms";
+    cached_gc_str_ = $"<b>GC:</b> {GcAllocRateKbPerFrame:F1} KB/f";
+
+    // Lifecycle metric bars
+    UpdateMetricBarCache(ProbeCategory.UnityPrecalc, 2.0f);
+    UpdateMetricBarCache(ProbeCategory.UnityFixedUpdate, 0.5f);
+    UpdateMetricBarCache(ProbeCategory.UnityWaitedForFixedUpdate, 2.0f);
+    UpdateMetricBarCache(ProbeCategory.UnityBetterLate, 1.0f);
+    UpdateMetricBarCache(ProbeCategory.UnityLateUpdate, 2.0f);
+
+    float principia_total = GetSmoothedMs(ProbeCategory.UnityPrecalc) +
+                            GetSmoothedMs(ProbeCategory.UnityFixedUpdate) +
+                            GetSmoothedMs(ProbeCategory.UnityWaitedForFixedUpdate) +
+                            GetSmoothedMs(ProbeCategory.UnityBetterLate) +
+                            GetSmoothedMs(ProbeCategory.UnityLateUpdate);
+    float principia_ratio = FrameTimeMs > 0.001f ? (principia_total / FrameTimeMs) * 100.0f : 0.0f;
+    float unity_other = Mathf.Max(0.0f, FrameTimeMs - principia_total);
+    float other_ratio = Mathf.Max(0.0f, 100.0f - principia_ratio);
+    cached_principia_timing_str_ =
+        $"Principia 耗时: <b>{principia_total:F2} ms ({principia_ratio:F1}%)</b> | Unity 其他系统: <b>{unity_other:F2} ms ({other_ratio:F1}%)</b>";
+
+    var driver = RollingEphemerisDriver.Instance;
+    if (driver != null) {
+      string status_str = driver.is_paused
+          ? "<color=yellow>⏸ 已暂停 (待机中)</color>"
+          : (driver.is_prolonging
+              ? "<color=cyan>⏳ 正在向 C++ 申请延展...</color>"
+              : (driver.is_active
+                  ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
+                  : "<color=yellow>○ 待机寻找载体中</color>"));
+      cached_ephem_status_str_ = $"推演状态: {status_str}";
+      cached_ephem_carrier_str_ = $"载体飞船 (Carrier): <b>{driver.carrier_vessel_name}</b>";
+
+      float progress = (float)driver.progress_ratio;
+      string bar_str = FormatProgressBar(progress, 20);
+      string bar_color = driver.is_paused
+          ? "<color=grey>"
+          : (progress < 0.33f
+              ? "<color=yellow>"
+              : (driver.is_prolonging ? "<color=cyan>" : "<color=lime>"));
+      cached_ephem_progress_str_ = $"<b>前瞻余量进度:</b> {bar_color}{bar_str}</color> (+{driver.current_horizon_years:F2}Y / 目标: {driver.lookahead_horizon_years:F1}Y)";
+      cached_ephem_remaining_str_ = $"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{driver.refresh_threshold_years:F1} 年)";
+
+      cached_celestial_cache_str1_ = $"<b>天体轨迹二进制缓存:</b> L1显存: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | L2磁盘: <b>{CelestialTrajectoryBinaryCache.L2DiskFileCount}</b> 文件 | 命中率: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
+      cached_celestial_cache_str2_ = $"缓存吞吐: L1显存命中 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | L2磁盘直出 <b>{CelestialTrajectoryBinaryCache.L2HitCount:N0}</b> | C++重构 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
+    }
+
+    string decouple_status = HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling
+        ? "<color=lime>[自治无锁三缓冲状态流转已激活 (0ms 阻塞)]</color>"
+        : "<color=yellow>[主线程同步锁步模式]</color>";
+    cached_decouple_status_str_ = $"时钟解耦: {decouple_status}";
+    cached_decouple_consumed_str_ = $"无锁快照消费: <b>{NativeStateSnapshotChannel.SnapshotsConsumed:N0}</b> 次 (跟踪实体: {NativeStateSnapshotChannel.TrackedEntityCount} 个)";
+    cached_decouple_harvest_str_ = $"分阶段让步收获: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次 (0.1ms 阻塞已消除)";
+
+    cached_gpu_name_str_ = $"运算设备: <b>{PrincipiaGPGPUContext.GpuDeviceName}</b>";
+    string compute_cap = PrincipiaGPGPUContext.SupportsCompute
+        ? "<color=lime>[Compute Shader 5.0 / D3D11 已就绪]</color>"
+        : "<color=yellow>[CPU 兼容模式]</color>";
+    cached_gpu_cap_str_ = $"硬件加速支持: {compute_cap}";
+
+    string zc_str = HeterogeneousDynamicGovernor.EnableZeroCopyTrajectoryPipeline
+        ? "<color=lime>[零拷贝直通已启用 (0 GC / 无 AABB 扫描)]</color>"
+        : "<color=yellow>[经典网格模式]</color>";
+    cached_zc_str_ = $"显存直通管线: {zc_str}";
+    cached_vertices_str_ = $"在屏顶点总数: <b>{TotalVerticesRendered:N0}</b> 顶点 (整帧全轨道汇总)";
+    cached_zc_direct_str_ = $"直通提交次数: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)";
+    cached_zc_pool_str_ = $"非托管显存池: <b>{NativeZeroCopyTrajectoryPipeline.CurrentCapacity:N0}</b> 顶点 ({NativeZeroCopyTrajectoryPipeline.CurrentCapacity * 12 / 1024} KB 独立池)";
+    cached_cache_hit_str_ = $"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0}) | 天体轨迹命中: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
+
+    string mode_str = HeterogeneousDynamicGovernor.Affinity switch {
+      HeterogeneousAffinity.AutoAdaptive => "Auto (动态自适应)",
+      HeterogeneousAffinity.CpuDominant  => "CPU 优先 (节能/核显)",
+      HeterogeneousAffinity.GpuDominant  => "GPU 优先 (高吞吐独显)",
+      _ => "未知"
+    };
+    string bp_str = HeterogeneousDynamicGovernor.IsBackpressureActive
+        ? "<color=orange>[回压熔断已激活 (主帧率保护)]</color>"
+        : "<color=lime>[负载畅通 (任务可分流)]</color>";
+    cached_governor_mode_str_ = $"GPGPU 调度总督: {mode_str} {bp_str}";
+    cached_governor_dispatch_str_ = $"异构分流计数: GPU <b>{HeterogeneousDynamicGovernor.GpuDispatchCount:N0}</b> 次 (显存直出) | CPU <b>{HeterogeneousDynamicGovernor.CpuDispatchCount:N0}</b> 次 (网格重构)";
+
+    string bypass_status = VacuumBypassGovernor.EnableVacuumBypass
+        ? "<color=lime>Active</color>"
+        : "<color=red>Disabled</color>";
+    cached_vacuum_bypass_str_ = $"真空物理旁路: Vacuum Bypass: {bypass_status} | 旁路预计算: <b>{VacuumBypassGovernor.BypassedPrecalcCount:N0}</b> (气动旁路: <b>{VacuumBypassGovernor.BypassedAeroCount:N0}</b>) | 校准推进: <b>{VacuumBypassGovernor.ExecutedPrecalcCount:N0}</b>";
+
+    string cb_status = HeterogeneousDynamicGovernor.EnableCircuitBreaker
+        ? "<color=lime>[已启用 (硬上限 10.0ms)]</color>"
+        : "<color=yellow>[已禁用]</color>";
+    cached_circuit_breaker_str_ = $"物理循环熔断: {cb_status} | 熔断抑制次数: <b>{HeterogeneousDynamicGovernor.CircuitBreakerTrips:N0}</b> 步 (彻底终结死循环)";
+
+    cached_rigid_motion_bypass_str_ = $"刚体动力学解耦: 稳态部件免检: <b>{HeterogeneousDynamicGovernor.RigidMotionBypassedPartCount:N0}</b> 部件 | 全量运动回写: <b>{HeterogeneousDynamicGovernor.RigidMotionExecutedPartCount:N0}</b> 部件";
+
+    // Core Subsystems
+    UpdateMetricBarCache(ProbeCategory.PhysicsAdvance, 10.0f);
+    UpdateMetricBarCache(ProbeCategory.TrajectoryPlotting, 5.0f);
+    UpdateMetricBarCache(ProbeCategory.MeshGeneration, 3.0f);
+    UpdateMetricBarCache(ProbeCategory.FlightPlanEvaluation, 15.0f);
+    UpdateMetricBarCache(ProbeCategory.GpuCompute, 5.0f);
+  }
+
+  private static void UpdateMetricBarCache(ProbeCategory cat, float warning_threshold_ms) {
+    float ms = GetSmoothedMs(cat);
+    float peak = GetPeakMs(cat);
+    string color_tag = ms > warning_threshold_ms ? "<color=red>" : (ms > warning_threshold_ms * 0.5f ? "<color=yellow>" : "<color=lime>");
+    cached_metric_bar_labels_[(int)cat] = $"{color_tag}{ms:F2}</color> ms (峰值: {peak:F1}ms)";
+  }
+
   // Draw standalone floating Profiler HUD Window
   public static void DrawProfilingHud() {
     if (!ShowProfilingHud) return;
@@ -119,14 +270,15 @@ public static class PerformanceProbe {
   }
 
   private static void RenderHudContents(int window_id) {
+    UpdateTelemetryStringsIfNeeded();
     using (new GUILayout.VerticalScope()) {
       scroll_pos_ = GUILayout.BeginScrollView(scroll_pos_, GUILayout.Height(570));
 
       // 1. Frame & Engine Overview
       using (new GUILayout.HorizontalScope()) {
-        GUILayout.Label($"<b>FPS:</b> {CurrentFps:F1}", GUILayout.Width(100));
-        GUILayout.Label($"<b>帧耗时:</b> {FrameTimeMs:F2} ms", GUILayout.Width(120));
-        GUILayout.Label($"<b>GC:</b> {GcAllocRateKbPerFrame:F1} KB/f");
+        GUILayout.Label(cached_fps_str_, GUILayout.Width(100));
+        GUILayout.Label(cached_frametime_str_, GUILayout.Width(120));
+        GUILayout.Label(cached_gc_str_);
       }
       GUILayout.Label("<color=grey><i>(Principia 零拷贝轨迹通道产生 GC: 0 B/f)</i></color>");
 
@@ -134,22 +286,13 @@ public static class PerformanceProbe {
 
       // 2. Unity Lifecycle Timing Breakdown
       GUILayout.Label("<b>Unity 端生命周期耗时分析 (Smoothed / Peak):</b>");
-      DrawMetricBar("• Precalc() (天体/历表推进):", ProbeCategory.UnityPrecalc, 2.0f);
-      DrawMetricBar("• FixedUpdate() (物理帧同步):", ProbeCategory.UnityFixedUpdate, 0.5f);
-      DrawMetricBar("• WaitedForFixed() (部件动力学):", ProbeCategory.UnityWaitedForFixedUpdate, 2.0f);
-      DrawMetricBar("• BetterLate() (分阶段收割):", ProbeCategory.UnityBetterLate, 1.0f);
-      DrawMetricBar("• LateUpdate() (轨迹与视口交互):", ProbeCategory.UnityLateUpdate, 2.0f);
+      DrawMetricBar("• Precalc() (天体/历表推进):", ProbeCategory.UnityPrecalc);
+      DrawMetricBar("• FixedUpdate() (物理帧同步):", ProbeCategory.UnityFixedUpdate);
+      DrawMetricBar("• WaitedForFixed() (部件动力学):", ProbeCategory.UnityWaitedForFixedUpdate);
+      DrawMetricBar("• BetterLate() (分阶段收割):", ProbeCategory.UnityBetterLate);
+      DrawMetricBar("• LateUpdate() (轨迹与视口交互):", ProbeCategory.UnityLateUpdate);
 
-      float principia_total = GetSmoothedMs(ProbeCategory.UnityPrecalc) +
-                              GetSmoothedMs(ProbeCategory.UnityFixedUpdate) +
-                              GetSmoothedMs(ProbeCategory.UnityWaitedForFixedUpdate) +
-                              GetSmoothedMs(ProbeCategory.UnityBetterLate) +
-                              GetSmoothedMs(ProbeCategory.UnityLateUpdate);
-      float principia_ratio = FrameTimeMs > 0.001f ? (principia_total / FrameTimeMs) * 100.0f : 0.0f;
-      float unity_other = Mathf.Max(0.0f, FrameTimeMs - principia_total);
-      float other_ratio = Mathf.Max(0.0f, 100.0f - principia_ratio);
-
-      GUILayout.Label($"Principia 耗时: <b>{principia_total:F2} ms ({principia_ratio:F1}%)</b> | Unity 其他系统: <b>{unity_other:F2} ms ({other_ratio:F1}%)</b>");
+      GUILayout.Label(cached_principia_timing_str_);
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
@@ -157,27 +300,10 @@ public static class PerformanceProbe {
       GUILayout.Label("<b>后台星历滚动推演控制台 (Rolling Ephemeris Console):</b>");
       var driver = RollingEphemerisDriver.Instance;
       if (driver != null) {
-        string status_str = driver.is_paused
-            ? "<color=yellow>⏸ 已暂停 (待机中)</color>"
-            : (driver.is_prolonging
-                ? "<color=cyan>⏳ 正在向 C++ 申请延展...</color>"
-                : (driver.is_active
-                    ? "<color=lime>● 活跃运行中 (自动滚动延展)</color>"
-                    : "<color=yellow>○ 待机寻找载体中</color>"));
-        GUILayout.Label($"推演状态: {status_str}");
-        GUILayout.Label($"载体飞船 (Carrier): <b>{driver.carrier_vessel_name}</b>");
-
-        // Graphical Visual Progress Bar
-        float progress = (float)driver.progress_ratio;
-        string bar_str = FormatProgressBar(progress, 20);
-        string bar_color = driver.is_paused
-            ? "<color=grey>"
-            : (progress < 0.33f
-                ? "<color=yellow>"
-                : (driver.is_prolonging ? "<color=cyan>" : "<color=lime>"));
-        GUILayout.Label($"<b>前瞻余量进度:</b> {bar_color}{bar_str}</color> (+{driver.current_horizon_years:F2}Y / 目标: {driver.lookahead_horizon_years:F1}Y)");
-
-        GUILayout.Label($"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{driver.refresh_threshold_years:F1} 年)");
+        GUILayout.Label(cached_ephem_status_str_);
+        GUILayout.Label(cached_ephem_carrier_str_);
+        GUILayout.Label(cached_ephem_progress_str_);
+        GUILayout.Label(cached_ephem_remaining_str_);
 
         // Interactive Console Buttons
         using (new GUILayout.HorizontalScope()) {
@@ -197,6 +323,9 @@ public static class PerformanceProbe {
             driver.AdjustHorizon(-1.0);
           }
         }
+        // Celestial Trajectory Binary Cache Telemetry
+        GUILayout.Label(cached_celestial_cache_str1_);
+        GUILayout.Label(cached_celestial_cache_str2_);
 
         // Live Event Console Log Feed
         show_ephemeris_console_ = GUILayout.Toggle(show_ephemeris_console_, $"▼ 控制台实时日志 ({driver.ConsoleLogs.Count} 条)");
@@ -222,53 +351,36 @@ public static class PerformanceProbe {
 
       // 4. Decoupling Phase 2: Autonomous Physics & Lock-Free Triple-Buffering State Channel
       GUILayout.Label("<b>解耦 Phase 2: 自治物理与无锁三缓冲状态总线:</b>");
-      string decouple_status = HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling
-          ? "<color=lime>[自治无锁三缓冲状态流转已激活 (0ms 阻塞)]</color>"
-          : "<color=yellow>[主线程同步锁步模式]</color>";
-      GUILayout.Label($"时钟解耦: {decouple_status}");
-      GUILayout.Label($"无锁快照消费: <b>{NativeStateSnapshotChannel.SnapshotsConsumed:N0}</b> 次 (跟踪实体: {NativeStateSnapshotChannel.TrackedEntityCount} 个)");
-      GUILayout.Label($"分阶段让步收获: <b>{HeterogeneousDynamicGovernor.StagedHarvestCount:N0}</b> 次 (0.1ms 阻塞已消除)");
+      GUILayout.Label(cached_decouple_status_str_);
+      GUILayout.Label(cached_decouple_consumed_str_);
+      GUILayout.Label(cached_decouple_harvest_str_);
+      GUILayout.Label(cached_circuit_breaker_str_);
+      GUILayout.Label(cached_rigid_motion_bypass_str_);
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
       // 5. GPU Rendering & Acceleration Indicator
       GUILayout.Label("<b>GPU 绘制与硬件加速指示器 (GPU Acceleration):</b>");
-      GUILayout.Label($"运算设备: <b>{PrincipiaGPGPUContext.GpuDeviceName}</b>");
-      string compute_cap = PrincipiaGPGPUContext.SupportsCompute
-          ? "<color=lime>[Compute Shader 5.0 / D3D11 已就绪]</color>"
-          : "<color=yellow>[CPU 兼容模式]</color>";
-      GUILayout.Label($"硬件加速支持: {compute_cap}");
-
-      string zc_str = HeterogeneousDynamicGovernor.EnableZeroCopyTrajectoryPipeline
-          ? "<color=lime>[零拷贝直通已启用 (0 GC / 无 AABB 扫描)]</color>"
-          : "<color=yellow>[经典网格模式]</color>";
-      GUILayout.Label($"显存直通管线: {zc_str}");
-      GUILayout.Label($"在屏顶点总数: <b>{TotalVerticesRendered:N0}</b> 顶点 (整帧全轨道汇总)");
-      GUILayout.Label($"直通提交次数: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)");
-      GUILayout.Label($"非托管显存池: <b>{NativeZeroCopyTrajectoryPipeline.CurrentCapacity:N0}</b> 顶点 ({NativeZeroCopyTrajectoryPipeline.CurrentCapacity * 12 / 1024} KB 独立池)");
-      GUILayout.Label($"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0})");
-
-      string mode_str = HeterogeneousDynamicGovernor.Affinity switch {
-        HeterogeneousAffinity.AutoAdaptive => "Auto (动态自适应)",
-        HeterogeneousAffinity.CpuDominant  => "CPU 优先 (节能/核显)",
-        HeterogeneousAffinity.GpuDominant  => "GPU 优先 (高吞吐独显)",
-        _ => "未知"
-      };
-      string bp_str = HeterogeneousDynamicGovernor.IsBackpressureActive
-          ? "<color=orange>[回压熔断已激活 (主帧率保护)]</color>"
-          : "<color=lime>[负载畅通 (任务可分流)]</color>";
-      GUILayout.Label($"GPGPU 调度总督: {mode_str} {bp_str}");
-      GUILayout.Label($"异构分流计数: GPU <b>{HeterogeneousDynamicGovernor.GpuDispatchCount:N0}</b> 次 (显存直出) | CPU <b>{HeterogeneousDynamicGovernor.CpuDispatchCount:N0}</b> 次 (网格重构)");
+      GUILayout.Label(cached_gpu_name_str_);
+      GUILayout.Label(cached_gpu_cap_str_);
+      GUILayout.Label(cached_zc_str_);
+      GUILayout.Label(cached_vertices_str_);
+      GUILayout.Label(cached_zc_direct_str_);
+      GUILayout.Label(cached_zc_pool_str_);
+      GUILayout.Label(cached_cache_hit_str_);
+      GUILayout.Label(cached_governor_mode_str_);
+      GUILayout.Label(cached_governor_dispatch_str_);
+      GUILayout.Label(cached_vacuum_bypass_str_);
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
       // 6. Core Subsystem Latency Breakdown
       GUILayout.Label("<b>核心子系统延迟 (Smoothed / Peak):</b>");
-      DrawMetricBar("• 物理推进 (Physics):", ProbeCategory.PhysicsAdvance, 10.0f);
-      DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting, 5.0f);
-      DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration, 3.0f);
-      DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation, 15.0f);
-      DrawMetricBar("• GPU绘制直出 (GPU Pass):", ProbeCategory.GpuCompute, 5.0f);
+      DrawMetricBar("• 物理推进 (Physics):", ProbeCategory.PhysicsAdvance);
+      DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting);
+      DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration);
+      DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation);
+      DrawMetricBar("• GPU绘制直出 (GPU Pass):", ProbeCategory.GpuCompute);
 
       GUILayout.EndScrollView();
 
@@ -285,13 +397,10 @@ public static class PerformanceProbe {
     return "[" + new string('█', filled) + new string('░', empty) + $"] {fraction * 100.0f:F1}%";
   }
 
-  private static void DrawMetricBar(string label, ProbeCategory cat, float warning_threshold_ms) {
-    float ms = GetSmoothedMs(cat);
-    float peak = GetPeakMs(cat);
-    string color_tag = ms > warning_threshold_ms ? "<color=red>" : (ms > warning_threshold_ms * 0.5f ? "<color=yellow>" : "<color=lime>");
+  private static void DrawMetricBar(string label, ProbeCategory cat) {
     using (new GUILayout.HorizontalScope()) {
       GUILayout.Label(label, GUILayout.Width(170));
-      GUILayout.Label($"{color_tag}{ms:F2}</color> ms (峰值: {peak:F1}ms)");
+      GUILayout.Label(cached_metric_bar_labels_[(int)cat] ?? "");
     }
   }
 }

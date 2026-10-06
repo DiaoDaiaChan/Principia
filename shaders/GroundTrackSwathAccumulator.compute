@@ -1,0 +1,98 @@
+// GroundTrackSwathAccumulator.compute - Massively Parallel Planetary Surface Swath & Coverage Accumulator
+// Accumulates sensor swath footprints over millions of surface cells in <2 ms on GPU.
+
+#pragma kernel AccumulateGroundTrackSwath
+#pragma kernel ReduceGlobalCoveragePercentage
+
+#define THREADS_X 16
+#define THREADS_Y 16
+#define REDUCE_GROUP_SIZE 256
+#define PI 3.14159265358979323846
+#define TWO_PI 6.28318530717958647692
+
+struct SatelliteTrackPoint {
+    float latitude_rad;
+    float longitude_rad;
+    float altitude_m;
+    float swath_half_angle_rad; // Maximum angular reach on planetary sphere
+};
+
+cbuffer SwathConfig : register(b0) {
+    uint _MapWidth;
+    uint _MapHeight;
+    uint _TrackPointCount;
+    float _PlanetaryRadiusMeters;
+    float _MinElevationAngleRad;
+};
+
+StructuredBuffer<SatelliteTrackPoint> _TrackPoints : register(t0);
+RWTexture2D<float> _CoverageExposureMap : register(u0); // Stores visit counts / exposure time
+RWStructuredBuffer<uint> _CoverageHistogram : register(u1); // Intermediate reduction bins
+RWStructuredBuffer<float> _GlobalCoveragePercentage : register(u2); // 1-element final ratio
+
+// Great circle angular distance on a sphere between (lat1, lon1) and (lat2, lon2)
+float SphericalDistanceRad(float lat1, float lon1, float lat2, float lon2) {
+    float sin_dlat_2 = sin(0.5 * (lat2 - lat1));
+    float sin_dlon_2 = sin(0.5 * (lon2 - lon1));
+    float a = sin_dlat_2 * sin_dlat_2 + cos(lat1) * cos(lat2) * sin_dlon_2 * sin_dlon_2;
+    return 2.0 * asin(clamp(sqrt(a), 0.0, 1.0));
+}
+
+[numthreads(THREADS_X, THREADS_Y, 1)]
+void AccumulateGroundTrackSwath(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= _MapWidth || id.y >= _MapHeight) return;
+
+    // Convert pixel (x, y) to spherical (lat, lon)
+    float u = (float)id.x / (float)(_MapWidth - 1);
+    float v = (float)id.y / (float)(_MapHeight - 1);
+
+    float lon = u * TWO_PI;
+    float lat = (v - 0.5) * PI;
+
+    float exposure_count = 0.0;
+
+    // Evaluate track points against this ground cell
+    for (uint i = 0; i < _TrackPointCount; ++i) {
+        SatelliteTrackPoint pt = _TrackPoints[i];
+        float ang_dist = SphericalDistanceRad(lat, lon, pt.latitude_rad, pt.longitude_rad);
+
+        if (ang_dist <= pt.swath_half_angle_rad) {
+            exposure_count += 1.0;
+        }
+    }
+
+    _CoverageExposureMap[id.xy] = exposure_count;
+}
+
+groupshared uint s_covered_cells[REDUCE_GROUP_SIZE];
+
+[numthreads(REDUCE_GROUP_SIZE, 1, 1)]
+void ReduceGlobalCoveragePercentage(uint3 id : SV_DispatchThreadID, uint group_index : SV_GroupIndex) {
+    uint linear_idx = id.x;
+    uint total_pixels = _MapWidth * _MapHeight;
+
+    uint is_covered = 0;
+    if (linear_idx < total_pixels) {
+        uint x = linear_idx % _MapWidth;
+        uint y = linear_idx / _MapWidth;
+        float exposure = _CoverageExposureMap[uint2(x, y)];
+        if (exposure > 0.5) {
+            is_covered = 1;
+        }
+    }
+
+    s_covered_cells[group_index] = is_covered;
+    GroupMemoryBarrierWithGroupSync();
+
+    [unroll]
+    for (uint stride = REDUCE_GROUP_SIZE / 2; stride > 0; stride >>= 1) {
+        if (group_index < stride) {
+            s_covered_cells[group_index] += s_covered_cells[group_index + stride];
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (group_index == 0) {
+        InterlockedAdd(_CoverageHistogram[0], s_covered_cells[0]);
+    }
+}

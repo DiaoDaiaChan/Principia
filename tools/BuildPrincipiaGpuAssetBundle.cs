@@ -9,7 +9,11 @@ namespace principia.tools {
 public static class BuildPrincipiaGpuAssetBundle {
   [MenuItem("Principia/Build GPGPU AssetBundle")]
   public static void BuildAssetBundle() {
-    string outputPath = Path.Combine(Application.dataPath, "../../Release/GameData/Principia/assets");
+    string envPath = System.Environment.GetEnvironmentVariable("PRINCIPIA_BUNDLE_OUTPUT_DIR");
+    string outputPath = !string.IsNullOrEmpty(envPath)
+        ? envPath
+        : Path.GetFullPath(Path.Combine(Application.dataPath, "../../Release/GameData/Principia/assets"));
+
     if (!Directory.Exists(outputPath)) {
       Directory.CreateDirectory(outputPath);
     }
@@ -21,7 +25,14 @@ public static class BuildPrincipiaGpuAssetBundle {
       "Assets/PrincipiaShaders/BatchOrbitIntegrator.compute",
       "Assets/PrincipiaShaders/TrajectoryTessellator.compute",
       "Assets/PrincipiaShaders/WSBBundleEvaluator.compute",
-      "Assets/PrincipiaShaders/EquipotentialMarchingCubes.compute"
+      "Assets/PrincipiaShaders/EquipotentialMarchingCubes.compute",
+      "Assets/PrincipiaShaders/PorkchopLambertScanner.compute",
+      "Assets/PrincipiaShaders/TerrainCollisionRaymarcher.compute",
+      "Assets/PrincipiaShaders/HighDegreeGeopotentialGrid.compute",
+      "Assets/PrincipiaShaders/SolarEclipseOcclusion.compute",
+      "Assets/PrincipiaShaders/AllPairsConjunctionBroadphase.compute",
+      "Assets/PrincipiaShaders/GroundTrackSwathAccumulator.compute",
+      "Assets/PrincipiaShaders/AerodynamicAreaReduction.compute",
     };
 
     BuildPipeline.BuildAssetBundles(

@@ -21,6 +21,7 @@
     <DefineConstants>TRACE;DEBUG;KSP_VERSION_1_12_5</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <NoWarn>649</NoWarn>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Prefer32Bit>false</Prefer32Bit>
     <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
@@ -32,6 +33,7 @@
     <DefineConstants>TRACE;KSP_VERSION_1_12_5</DefineConstants>
     <ErrorReport>prompt</ErrorReport>
     <WarningLevel>4</WarningLevel>
+    <NoWarn>649</NoWarn>
     <DebugSymbols>true</DebugSymbols>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Prefer32Bit>false</Prefer32Bit>
@@ -158,8 +160,18 @@
     <Compile Include="rolling_ephemeris_driver.cs" />
     <Compile Include="PrincipiaGPGPUContext.cs" />
     <Compile Include="HeterogeneousDynamicGovernor.cs" />
+    <Compile Include="VacuumBypassGovernor.cs" />
+    <Compile Include="MapMarkerEventGovernor.cs" />
+    <Compile Include="CelestialTrajectoryBinaryCache.cs" />
     <Compile Include="GpuFlightPlanOptimizer.cs" />
+    <Compile Include="GpuPorkchopScanner.cs" />
+    <Compile Include="GpuTerrainCollisionDetector.cs" />
+    <Compile Include="GpuGeopotentialGrid.cs" />
+    <Compile Include="GpuSolarRadiationPressure.cs" />
+    <Compile Include="GpuConjunctionMonitor.cs" />
     <Compile Include="GpuTrajectoryRenderer.cs" />
+    <Compile Include="GpuModuleTelemetry.cs" />
+    <Compile Include="gpu_diagnostics_window.cs" />
     <Compile Include="NativeZeroCopyTrajectoryPipeline.cs" />
     <Compile Include="NativeStateSnapshotChannel.cs" />
     <Compile Include="performance_probe.cs" />

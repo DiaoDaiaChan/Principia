@@ -14,6 +14,13 @@ public static class PrincipiaGPGPUContext {
   public static ComputeShader trajectory_tessellator { get; private set; }
   public static ComputeShader wsb_bundle_evaluator { get; private set; }
   public static ComputeShader equipotential_marching_cubes { get; private set; }
+  public static ComputeShader porkchop_lambert_scanner { get; private set; }
+  public static ComputeShader terrain_collision_raymarcher { get; private set; }
+  public static ComputeShader high_degree_geopotential_grid { get; private set; }
+  public static ComputeShader solar_eclipse_occlusion { get; private set; }
+  public static ComputeShader all_pairs_conjunction_broadphase { get; private set; }
+  public static ComputeShader ground_track_swath_accumulator { get; private set; }
+  public static ComputeShader aerodynamic_area_reduction { get; private set; }
 
   // Persistent Buffers
   public static ComputeBuffer celestial_constants_buffer { get; internal set; }
@@ -35,6 +42,12 @@ public static class PrincipiaGPGPUContext {
   public static string GpuDeviceName => SystemInfo.graphicsDeviceName ?? "Unknown GPU";
   public static int GpuMemoryMB => SystemInfo.graphicsMemorySize;
 
+  public static void EnsureInitialized() {
+    if (!IsInitialized) {
+      Initialize();
+    }
+  }
+
   public static void Initialize() {
     if (IsInitialized) return;
 
@@ -47,9 +60,12 @@ public static class PrincipiaGPGPUContext {
     }
 
     try {
-      string bundle_path = Path.Combine(
-          KSPUtil.ApplicationRootPath,
-          "GameData", "Principia", "assets", "principia_gpu.bundle");
+      string env_bundle = System.Environment.GetEnvironmentVariable("PRINCIPIA_GPU_BUNDLE_PATH");
+      string bundle_path = !string.IsNullOrEmpty(env_bundle) && File.Exists(env_bundle)
+          ? env_bundle
+          : Path.Combine(
+              !string.IsNullOrEmpty(KSPUtil.ApplicationRootPath) ? KSPUtil.ApplicationRootPath : Directory.GetCurrentDirectory(),
+              "GameData", "Principia", "assets", "principia_gpu.bundle");
 
       if (File.Exists(bundle_path)) {
         gpu_bundle_ = AssetBundle.LoadFromFile(bundle_path);
@@ -59,6 +75,13 @@ public static class PrincipiaGPGPUContext {
           trajectory_tessellator = gpu_bundle_.LoadAsset<ComputeShader>("TrajectoryTessellator");
           wsb_bundle_evaluator = gpu_bundle_.LoadAsset<ComputeShader>("WSBBundleEvaluator");
           equipotential_marching_cubes = gpu_bundle_.LoadAsset<ComputeShader>("EquipotentialMarchingCubes");
+          porkchop_lambert_scanner = gpu_bundle_.LoadAsset<ComputeShader>("PorkchopLambertScanner");
+          terrain_collision_raymarcher = gpu_bundle_.LoadAsset<ComputeShader>("TerrainCollisionRaymarcher");
+          high_degree_geopotential_grid = gpu_bundle_.LoadAsset<ComputeShader>("HighDegreeGeopotentialGrid");
+          solar_eclipse_occlusion = gpu_bundle_.LoadAsset<ComputeShader>("SolarEclipseOcclusion");
+          all_pairs_conjunction_broadphase = gpu_bundle_.LoadAsset<ComputeShader>("AllPairsConjunctionBroadphase");
+          ground_track_swath_accumulator = gpu_bundle_.LoadAsset<ComputeShader>("GroundTrackSwathAccumulator");
+          aerodynamic_area_reduction = gpu_bundle_.LoadAsset<ComputeShader>("AerodynamicAreaReduction");
           Log.Info("[GPGPU] principia_gpu.bundle successfully loaded.");
         }
       } else {
@@ -98,6 +121,13 @@ public static class PrincipiaGPGPUContext {
     trajectory_tessellator = null;
     wsb_bundle_evaluator = null;
     equipotential_marching_cubes = null;
+    porkchop_lambert_scanner = null;
+    terrain_collision_raymarcher = null;
+    high_degree_geopotential_grid = null;
+    solar_eclipse_occlusion = null;
+    all_pairs_conjunction_broadphase = null;
+    ground_track_swath_accumulator = null;
+    aerodynamic_area_reduction = null;
 
     IsInitialized = false;
     Log.Info("[GPGPU] Principia GPGPU Context safely disposed.");

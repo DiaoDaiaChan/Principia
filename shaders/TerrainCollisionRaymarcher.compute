@@ -1,0 +1,159 @@
+// TerrainCollisionRaymarcher.compute - Massively Parallel DEM Raymarching Collision Detector
+// Replaces serial CPU P/Invoke bisection with GPU raymarching and slope hazard evaluation.
+
+#pragma kernel RaymarchTrajectoryCollision
+#pragma kernel EvaluateLandingSlopeHazard
+
+#define THREAD_GROUP_SIZE 64
+#define PI 3.14159265358979323846
+#define TWO_PI 6.28318530717958647692
+
+struct TrajectorySamplePoint {
+    float3 position_m;
+    float time_s;
+    float3 velocity_m_s;
+    float padding;
+};
+
+struct CollisionHitResult {
+    uint has_collision;
+    float collision_time;
+    float3 collision_world_pos;
+    float latitude_rad;
+    float longitude_rad;
+    float terrain_altitude;
+    float slope_degrees;
+    float roughness_metric;
+};
+
+cbuffer CollisionConfig : register(b0) {
+    float3 _BodyWorldCenter;
+    float _BodyMeanRadius;
+    float _BodyMinRadius;
+    float _BodyMaxRadius;
+    float _BodyRotationAngleRad;
+    uint _SampleCount;
+    uint _MaxRaymarchSteps;
+    float _StepEpsilonMeters;
+};
+
+StructuredBuffer<TrajectorySamplePoint> _TrajectorySamples : register(t0);
+Texture2D<float> _HeightMap : register(t1);
+SamplerState sampler_HeightMap : register(s1);
+
+RWStructuredBuffer<CollisionHitResult> _CollisionHits : register(u0);
+
+// Spherical coordinates from body-centered local position
+void CartesianToSpherical(float3 pos_local, out float lat, out float lon, out float dist) {
+    dist = length(pos_local);
+    if (dist < 1.0) {
+        lat = 0.0;
+        lon = 0.0;
+        return;
+    }
+    lat = asin(clamp(pos_local.y / dist, -1.0, 1.0));
+    lon = atan2(pos_local.z, pos_local.x);
+    if (lon < 0.0) lon += TWO_PI;
+}
+
+// Sample DEM heightmap bilinearly
+float SampleTerrainElevation(float lat, float lon) {
+    float u = lon / TWO_PI;
+    float v = (lat + 0.5 * PI) / PI;
+    u = frac(u);
+    v = clamp(v, 0.0, 1.0);
+
+    float normalized_height = _HeightMap.SampleLevel(sampler_HeightMap, float2(u, v), 0).r;
+    return normalized_height * (_BodyMaxRadius - _BodyMinRadius) + (_BodyMinRadius - _BodyMeanRadius);
+}
+
+// Kernel 1: Raymarch along trajectory segments to find surface intersection
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void RaymarchTrajectoryCollision(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= _SampleCount - 1) return;
+
+    TrajectorySamplePoint p0 = _TrajectorySamples[idx];
+    TrajectorySamplePoint p1 = _TrajectorySamples[idx + 1];
+
+    float3 p0_local = p0.position_m - _BodyWorldCenter;
+    float3 p1_local = p1.position_m - _BodyWorldCenter;
+
+    float r0 = length(p0_local);
+    float r1 = length(p1_local);
+
+    // Bounding sphere reject: entirely above maximum terrain
+    if (r0 > _BodyMaxRadius && r1 > _BodyMaxRadius) {
+        _CollisionHits[idx].has_collision = 0;
+        return;
+    }
+
+    // Binary search / secant bisection along segment [p0, p1]
+    float low = 0.0;
+    float high = 1.0;
+    float hit_t = -1.0;
+    float hit_alt = 0.0;
+    float hit_lat = 0.0;
+    float hit_lon = 0.0;
+    float3 hit_pos = float3(0, 0, 0);
+
+    uint max_steps = clamp(_MaxRaymarchSteps, 4u, 64u);
+    for (uint step = 0; step < max_steps; ++step) {
+        float mid = 0.5 * (low + high);
+        float3 pos_mid = lerp(p0_local, p1_local, mid);
+        float dist_mid;
+        float lat, lon;
+        CartesianToSpherical(pos_mid, lat, lon, dist_mid);
+
+        // Account for body rotation
+        lon = fmod(lon - _BodyRotationAngleRad, TWO_PI);
+        if (lon < 0.0) lon += TWO_PI;
+
+        float elev = SampleTerrainElevation(lat, lon);
+        float surface_r = _BodyMeanRadius + elev;
+        float alt = dist_mid - surface_r;
+
+        if (alt <= 0.0) {
+            hit_t = mid;
+            hit_alt = alt;
+            hit_lat = lat;
+            hit_lon = lon;
+            hit_pos = pos_mid + _BodyWorldCenter;
+            high = mid; // Search earlier in the segment
+        } else {
+            low = mid;
+        }
+    }
+
+    if (hit_t >= 0.0) {
+        // Calculate slope hazard via central finite differences on DEM
+        float d_ang = 0.0005; // ~0.03 deg
+        float h_lat_plus = SampleTerrainElevation(hit_lat + d_ang, hit_lon);
+        float h_lat_minus = SampleTerrainElevation(hit_lat - d_ang, hit_lon);
+        float h_lon_plus = SampleTerrainElevation(hit_lat, hit_lon + d_ang);
+        float h_lon_minus = SampleTerrainElevation(hit_lat, hit_lon - d_ang);
+
+        float d_lat_m = d_ang * _BodyMeanRadius;
+        float d_lon_m = d_ang * _BodyMeanRadius * cos(hit_lat);
+        float grad_lat = (h_lat_plus - h_lat_minus) / (2.0 * max(1.0, d_lat_m));
+        float grad_lon = (h_lon_plus - h_lon_minus) / (2.0 * max(1.0, d_lon_m));
+        float slope_rad = atan(sqrt(grad_lat * grad_lat + grad_lon * grad_lon));
+
+        _CollisionHits[idx].has_collision = 1;
+        _CollisionHits[idx].collision_time = lerp(p0.time_s, p1.time_s, hit_t);
+        _CollisionHits[idx].collision_world_pos = hit_pos;
+        _CollisionHits[idx].latitude_rad = hit_lat;
+        _CollisionHits[idx].longitude_rad = hit_lon;
+        _CollisionHits[idx].terrain_altitude = hit_alt;
+        _CollisionHits[idx].slope_degrees = slope_rad * (180.0 / PI);
+        _CollisionHits[idx].roughness_metric = abs(grad_lat) + abs(grad_lon);
+    } else {
+        _CollisionHits[idx].has_collision = 0;
+    }
+}
+
+// Kernel 2: Evaluate Landing Slope Hazard map over a 2D bounding landing ellipse
+[numthreads(16, 16, 1)]
+void EvaluateLandingSlopeHazard(uint3 id : SV_DispatchThreadID) {
+    // Reserved for fine landing site hazard rasterization
+}

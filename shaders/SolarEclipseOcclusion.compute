@@ -1,0 +1,130 @@
+// SolarEclipseOcclusion.compute - Multi-Body Solar Eclipse Occlusion & Solar Radiation Pressure Flux
+// High-throughput analytical circular disk intersection and SRP acceleration computation.
+
+#pragma kernel ComputeMultiBodyEclipseAndSRP
+
+#define THREAD_GROUP_SIZE 64
+#define PI 3.14159265358979323846
+#define SOLAR_CONSTANT_1AU 1361.0 // W/m^2
+#define SPEED_OF_LIGHT 299792458.0 // m/s
+#define AU_METERS 149597870700.0
+
+struct OccultingBodyData {
+    float3 position_m;
+    float radius_m;
+};
+
+struct SrpEvaluationInput {
+    float3 position_m;
+    float mass_kg;
+    float cross_sectional_area_m2;
+    float reflection_coefficient; // 0 = absorbed, 1 = perfectly specular
+};
+
+struct SrpEvaluationOutput {
+    float3 acceleration_m_s2;
+    float shadow_factor; // 1.0 = full sunlight, 0.0 = total eclipse (umbra)
+    float flux_w_m2;
+    float padding;
+};
+
+cbuffer SunConfig : register(b0) {
+    float3 _SunPosition;
+    float _SunRadius;
+    uint _OccultingBodyCount;
+    uint _VesselCount;
+    float _SolarFlux1AU; // Default 1361 W/m^2
+};
+
+StructuredBuffer<OccultingBodyData> _OccultingBodies : register(t0);
+StructuredBuffer<SrpEvaluationInput> _Vessels : register(t1);
+
+RWStructuredBuffer<SrpEvaluationOutput> _SrpOutputs : register(u0);
+
+// Analytical intersection area of two overlapping circles of radii r1, r2 separated by distance d
+float CircleCircleIntersectionArea(float r1, float r2, float d) {
+    if (d >= r1 + r2) return 0.0; // Completely separated
+    if (d <= abs(r1 - r2)) {
+        float min_r = min(r1, r2);
+        return PI * min_r * min_r; // One circle completely inside the other
+    }
+
+    float r1_sq = r1 * r1;
+    float r2_sq = r2 * r2;
+    float d_sq = d * d;
+
+    float alpha = acos(clamp((d_sq + r1_sq - r2_sq) / (2.0 * d * r1), -1.0, 1.0));
+    float beta  = acos(clamp((d_sq + r2_sq - r1_sq) / (2.0 * d * r2), -1.0, 1.0));
+
+    float chord_term = 0.5 * sqrt(max(0.0, (-d + r1 + r2) * (d + r1 - r2) * (d - r1 + r2) * (d + r1 + r2)));
+    return r1_sq * alpha + r2_sq * beta - chord_term;
+}
+
+[numthreads(THREAD_GROUP_SIZE, 1, 1)]
+void ComputeMultiBodyEclipseAndSRP(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= _VesselCount) return;
+
+    SrpEvaluationInput v = _Vessels[idx];
+    float3 r_sun = _SunPosition - v.position_m;
+    float d_sun = length(r_sun);
+
+    if (d_sun < _SunRadius) {
+        // Inside Sun
+        SrpEvaluationOutput zero_out;
+        zero_out.acceleration_m_s2 = float3(0, 0, 0);
+        zero_out.shadow_factor = 0.0;
+        zero_out.flux_w_m2 = 0.0;
+        zero_out.padding = 0.0;
+        _SrpOutputs[idx] = zero_out;
+        return;
+    }
+
+    float3 u_sun = r_sun / d_sun;
+    float theta_sun = asin(clamp(_SunRadius / d_sun, 0.0, 1.0));
+    float sun_disk_area = PI * theta_sun * theta_sun;
+
+    float shadow_factor = 1.0;
+
+    for (uint b = 0; b < _OccultingBodyCount; ++b) {
+        OccultingBodyData body = _OccultingBodies[b];
+        float3 r_body = body.position_m - v.position_m;
+        float d_body = length(r_body);
+
+        // Occulting body must be between vessel and Sun
+        if (dot(r_body, u_sun) <= 0.0 || d_body >= d_sun) {
+            continue;
+        }
+
+        float theta_body = asin(clamp(body.radius_m / d_body, 0.0, 1.0));
+        float3 u_body = r_body / d_body;
+        float sep_angle = acos(clamp(dot(u_sun, u_body), -1.0, 1.0));
+
+        float inter_area = CircleCircleIntersectionArea(theta_sun, theta_body, sep_angle);
+        float body_shadow = 1.0 - clamp(inter_area / max(1.0e-12, sun_disk_area), 0.0, 1.0);
+
+        shadow_factor = min(shadow_factor, body_shadow);
+        if (shadow_factor <= 0.0) break;
+    }
+
+    // Radiation flux P = P_0 * (1 AU / d_sun)^2
+    float au_dist_ratio = AU_METERS / d_sun;
+    float local_flux = _SolarFlux1AU * au_dist_ratio * au_dist_ratio * shadow_factor;
+
+    // SRP acceleration: a = (Flux / c) * (A / m) * (1 + rho) * u_sun (directed away from Sun: -u_sun)
+    float radiation_pressure = local_flux / SPEED_OF_LIGHT;
+    float srp_mag = 0.0;
+    if (v.mass_kg > 0.001) {
+        srp_mag = radiation_pressure * (v.cross_sectional_area_m2 / v.mass_kg) * (1.0 + v.reflection_coefficient);
+    }
+
+    float3 a_srp = -u_sun * srp_mag;
+
+    SrpEvaluationOutput out_data;
+    out_data.acceleration_m_s2 = a_srp;
+    out_data.shadow_factor = shadow_factor;
+    out_data.flux_w_m2 = local_flux;
+    out_data.padding = 0.0;
+
+    _SrpOutputs[idx] = out_data;
+}

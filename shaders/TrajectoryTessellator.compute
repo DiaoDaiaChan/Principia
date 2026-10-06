@@ -1,13 +1,20 @@
-// TrajectoryTessellator.compute - Screen-Adaptive Trajectory Geometry Subdivision
-// Tessellates trajectory polylines in screen space and populates IndirectDraw arguments.
-
 #pragma kernel TessellateTrajectoryScreenAdaptive
+#pragma kernel EvaluateChebyshevSegmentClenshaw
 
 #define GROUP_SIZE 128
+#define MAX_CHEBYSHEV_DEGREE 16
 
 struct TrajectoryNode {
     float3 position_scaled;
     float time;
+};
+
+struct ChebyshevSegmentData {
+    float t_min;
+    float t_max;
+    uint degree;
+    float padding;
+    float3 coeffs[MAX_CHEBYSHEV_DEGREE + 1];
 };
 
 struct OutputVertex {
@@ -61,4 +68,39 @@ void TessellateTrajectoryScreenAdaptive(uint3 id : SV_DispatchThreadID) {
         _OutputVertices[out_idx] = v0;
         _OutputVertices[out_idx + 1] = v1;
     }
+}
+
+StructuredBuffer<ChebyshevSegmentData> _ChebyshevSegments : register(t1);
+
+// Kernel 2: Dense Clenshaw evaluation of continuous Chebyshev segments
+[numthreads(GROUP_SIZE, 1, 1)]
+void EvaluateChebyshevSegmentClenshaw(uint3 id : SV_DispatchThreadID) {
+    uint sample_idx = id.x;
+    if (sample_idx >= _MaxOutputVertices) return;
+
+    // Evaluate segment at normalized parameter tau in [-1, 1]
+    uint seg_idx = sample_idx / 32; // 32 samples per segment
+    uint in_seg_sample = sample_idx % 32;
+    float tau = lerp(-1.0f, 1.0f, (float)in_seg_sample / 31.0f);
+
+    ChebyshevSegmentData seg = _ChebyshevSegments[seg_idx];
+    uint n = min(seg.degree, (uint)MAX_CHEBYSHEV_DEGREE);
+
+    // Clenshaw recurrence: b_k = 2 * tau * b_{k+1} - b_{k+2} + c_k
+    float3 b_k1 = float3(0, 0, 0);
+    float3 b_k2 = float3(0, 0, 0);
+    float two_tau = 2.0f * tau;
+
+    for (int k = n; k >= 1; --k) {
+        float3 b_k = two_tau * b_k1 - b_k2 + seg.coeffs[k];
+        b_k2 = b_k1;
+        b_k1 = b_k;
+    }
+
+    float3 pos = tau * b_k1 - b_k2 + seg.coeffs[0];
+
+    OutputVertex v;
+    v.position = pos;
+    v.color = _BaseColor;
+    _OutputVertices[sample_idx] = v;
 }
