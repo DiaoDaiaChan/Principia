@@ -471,11 +471,7 @@ class Plotter {
         }
       }
 
-      string future_guid = main_vessel_guid;
-      if (future_guid == null && RollingEphemerisDriver.Instance != null && RollingEphemerisDriver.Instance.is_active) {
-        future_guid = RollingEphemerisDriver.Instance.carrier_vessel_guid;
-      }
-      if (future_guid != null && Plugin.HasVessel(future_guid)) {
+      if (main_vessel_guid != null && Plugin.HasVessel(main_vessel_guid)) {
         // Future trajectory: L1 RAM cache hit -> L2 Disk cache hit -> C++ reconstruction fallback
         bool can_reuse_future = future_entry.is_valid &&
             (!time_is_advancing ||
@@ -507,7 +503,7 @@ class Plotter {
             planetarium.PlanetariumPlotCelestialFutureTrajectory(
                 Plugin,
                 root.flightGlobalsIndex,
-                future_guid,
+                main_vessel_guid,
                 VertexBuffer.data,
                 VertexBuffer.size,
                 out double min_future_distance,

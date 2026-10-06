@@ -14,10 +14,6 @@ internal class RollingEphemerisDriver {
   public double lookahead_horizon = 100.0 * 86400.0;
   public double refresh_threshold = 30.0 * 86400.0;
 
-  public const string EphemerisAnchorGuid = "00000000-0000-0000-0000-000000000001";
-  public const uint EphemerisAnchorPartId = 0xEE000001;
-  public const string EphemerisAnchorName = "Principia_Ephemeris_Anchor";
-
   private readonly IntPtr plugin_;
   private readonly PrincipiaPluginAdapter adapter_;
 
@@ -42,9 +38,6 @@ internal class RollingEphemerisDriver {
   public bool is_paused { get; set; } = false;
   public bool is_prolonging { get; private set; } = false;
 
-  public static bool HasAnchor(IntPtr plugin) =>
-      plugin != IntPtr.Zero && plugin.HasVessel(EphemerisAnchorGuid);
-
   // Console log buffer
   public readonly List<string> ConsoleLogs = new List<string>();
   public const int MaxConsoleLogs = 30;
@@ -56,42 +49,6 @@ internal class RollingEphemerisDriver {
     adapter_ = adapter;
     Instance = this;
     AddLog("星历自动推演驱动器已初始化");
-  }
-
-  public bool EnsureEphemerisAnchor() {
-    if (plugin_ == IntPtr.Zero) {
-      return false;
-    }
-    if (plugin_.HasVessel(EphemerisAnchorGuid)) {
-      return true;
-    }
-    try {
-      var home = FlightGlobals.GetHomeBody() ??
-                 (FlightGlobals.Bodies != null && FlightGlobals.Bodies.Count > 0 ? FlightGlobals.Bodies[0] : null);
-      if (home == null) {
-        return false;
-      }
-      double r = home.Radius + 500000.0;
-      double v = Math.Sqrt(Math.Max(1.0, home.gravParameter) / Math.Max(1.0, r));
-      plugin_.InsertOrKeepVessel(
-          EphemerisAnchorGuid,
-          EphemerisAnchorName,
-          home.flightGlobalsIndex,
-          loaded: false,
-          out bool _);
-      plugin_.InsertUnloadedPart(
-          EphemerisAnchorPartId,
-          "EphemerisAnchorPart",
-          EphemerisAnchorGuid,
-          new QP {
-              q = (XYZ)new Vector3d(r, 0, 0),
-              p = (XYZ)new Vector3d(0, v, 0)
-          });
-      return plugin_.HasVessel(EphemerisAnchorGuid);
-    } catch (Exception e) {
-      Log.Warning($"[RollingEphemeris] Failed to initialize EphemerisAnchor: {e.Message}");
-      return false;
-    }
   }
 
   public void AddLog(string msg) {
@@ -133,9 +90,6 @@ internal class RollingEphemerisDriver {
   public static bool ShouldSuppressPlot(string vessel_guid) {
     if (string.IsNullOrEmpty(vessel_guid)) {
       return false;
-    }
-    if (vessel_guid == EphemerisAnchorGuid) {
-      return true;
     }
     return suppress_plot_on_active_ && vessel_guid == carrier_vessel_guid_;
   }
@@ -221,16 +175,15 @@ internal class RollingEphemerisDriver {
         carrier_vessel_guid_ = carrier.id.ToString();
         carrier_vessel_name = carrier.vesselName;
         AddLog($"选定推演载体: '{carrier_vessel_name}' ({carrier.vesselType})");
-      } else if (EnsureEphemerisAnchor()) {
-        carrier_vessel_guid_ = EphemerisAnchorGuid;
-        carrier_vessel_name = "星历预演锚点 (Ephemeris Anchor)";
-        AddLog("选定星历预演锚点 (无实体飞船时每时每刻常驻推演)");
       } else {
+        carrier_vessel_guid_ = null;
+        carrier_vessel_name = "None";
         AddLog("未找到可用载体飞船 (待机中)");
       }
     }
 
     if (string.IsNullOrEmpty(carrier_vessel_guid_)) {
+      is_prolonging = false;
       return;
     }
 
@@ -239,13 +192,8 @@ internal class RollingEphemerisDriver {
     double new_target = current_ut + lookahead_horizon;
     try {
       if (!plugin_.FlightPlanExists(carrier_vessel_guid_)) {
-        double mass = 1.0;
-        if (carrier_vessel_guid_ != EphemerisAnchorGuid) {
-          var vessel = FlightGlobals.FindVessel(new Guid(carrier_vessel_guid_));
-          if (vessel != null) {
-            mass = Math.Max(0.1, vessel.GetTotalMass());
-          }
-        }
+        var vessel = FlightGlobals.FindVessel(new Guid(carrier_vessel_guid_));
+        double mass = vessel != null ? Math.Max(0.1, vessel.GetTotalMass()) : 1.0;
         plugin_.FlightPlanCreate(carrier_vessel_guid_, new_target, mass);
         Log.Info($"[RollingEphemeris] Created background rolling ephemeris carrier on '{carrier_vessel_name}' (target: +{lookahead_horizon / JulianYear:F1} yr)");
         AddLog($"创建新背景飞行计划 (目标: +{lookahead_horizon / (86400.0 * 365.25):F2} 年)");
@@ -284,7 +232,12 @@ internal class RollingEphemerisDriver {
 
     for (int i = 0; i < vessels.Count; ++i) {
       var v = vessels[i];
-      if (v == null) {
+      if (v == null || v.state == Vessel.State.DEAD) {
+        continue;
+      }
+      if (v.situation != Vessel.Situations.ORBITING &&
+          v.situation != Vessel.Situations.ESCAPING &&
+          v.situation != Vessel.Situations.SUB_ORBITAL) {
         continue;
       }
       string guid = v.id.ToString();
@@ -298,7 +251,7 @@ internal class RollingEphemerisDriver {
       }
 
       int score = ScoreVessel(v);
-      if (score > best_score) {
+      if (score > best_score && score > 0) {
         best_score = score;
         best_inactive_vessel = v;
       }
@@ -311,7 +264,10 @@ internal class RollingEphemerisDriver {
 
     // Fallback: If only ActiveVessel exists in the game, check if we can use it safely.
     var active = FlightGlobals.ActiveVessel;
-    if (active != null) {
+    if (active != null && active.state != Vessel.State.DEAD &&
+        (active.situation == Vessel.Situations.ORBITING ||
+         active.situation == Vessel.Situations.ESCAPING ||
+         active.situation == Vessel.Situations.SUB_ORBITAL)) {
       string active_guid = active.id.ToString();
       if (plugin_.HasVessel(active_guid)) {
         if (!plugin_.FlightPlanExists(active_guid) ||
