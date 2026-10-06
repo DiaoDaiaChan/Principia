@@ -117,13 +117,11 @@ class Plotter {
       if (can_reuse_psychohistory) {
         psychohistory_entry_.Draw();
       } else {
-        planetarium.PlanetariumPlotPsychohistory(
-            Plugin,
+        PlotPsychohistoryDirect(
+            planetarium,
             main_vessel_guid,
             history_length,
             prediction_t_max,
-            VertexBuffer.data,
-            VertexBuffer.size,
             out int vertex_count);
         psychohistory_entry_.last_update_realtime = current_realtime;
         psychohistory_entry_.last_update_ut = current_time_ut;
@@ -149,12 +147,10 @@ class Plotter {
       if (can_reuse_prediction) {
         prediction_entry_.Draw();
       } else {
-        planetarium.PlanetariumPlotPrediction(
-            Plugin,
+        PlotPredictionDirect(
+            planetarium,
             main_vessel_guid,
             prediction_t_max,
-            VertexBuffer.data,
-            VertexBuffer.size,
             out int vertex_count);
         prediction_entry_.last_update_realtime = current_realtime;
         prediction_entry_.last_update_ut = current_time_ut;
@@ -193,13 +189,11 @@ class Plotter {
           var style = is_burn
                           ? adapter_.burn_style
                           : adapter_.flight_plan_style;
-          planetarium.PlanetariumPlotFlightPlanSegment(
-              Plugin,
+          PlotFlightPlanSegmentDirect(
+              planetarium,
               main_vessel_guid,
               i,
               flight_plan_t_max,
-              VertexBuffer.data,
-              VertexBuffer.size,
               out int vertex_count);
           entry.last_update_realtime = current_realtime;
           entry.last_update_ut = current_time_ut;
@@ -233,13 +227,11 @@ class Plotter {
       if (can_reuse_target_psychohistory) {
         target_psychohistory_entry_.Draw();
       } else {
-        planetarium.PlanetariumPlotPsychohistory(
-            Plugin,
+        PlotPsychohistoryDirect(
+            planetarium,
             target_id,
             history_length,
-            t_max: null,
-            VertexBuffer.data,
-            VertexBuffer.size,
+            prediction_t_max: null,
             out int vertex_count);
         target_psychohistory_entry_.last_update_realtime = current_realtime;
         target_psychohistory_entry_.last_update_ut = current_time_ut;
@@ -259,12 +251,10 @@ class Plotter {
       if (can_reuse_target_prediction) {
         target_prediction_entry_.Draw();
       } else {
-        planetarium.PlanetariumPlotPrediction(
-            Plugin,
+        PlotPredictionDirect(
+            planetarium,
             target_id,
-            t_max: null,
-            VertexBuffer.data,
-            VertexBuffer.size,
+            prediction_t_max: null,
             out int vertex_count);
         target_prediction_entry_.last_update_realtime = current_realtime;
         target_prediction_entry_.last_update_ut = current_time_ut;
@@ -275,6 +265,105 @@ class Plotter {
         target_prediction_entry_.Draw();
       }
     }
+  }
+
+  private void PlotPsychohistoryDirect(
+      DisposablePlanetarium planetarium,
+      string vessel_guid,
+      double history_length,
+      double? prediction_t_max,
+      out int vertex_count) {
+    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
+                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
+                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
+                         : IntPtr.Zero;
+    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
+      planetarium.PlanetariumPlotPsychohistoryDirect(
+          Plugin,
+          vessel_guid,
+          history_length,
+          prediction_t_max,
+          gpu_ptr,
+          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
+          is_d3d11_buffer: true,
+          out vertex_count);
+      if (vertex_count > 0) {
+        return;
+      }
+    }
+    planetarium.PlanetariumPlotPsychohistory(
+        Plugin,
+        vessel_guid,
+        history_length,
+        prediction_t_max,
+        VertexBuffer.data,
+        VertexBuffer.size,
+        out vertex_count);
+  }
+
+  private void PlotPredictionDirect(
+      DisposablePlanetarium planetarium,
+      string vessel_guid,
+      double? prediction_t_max,
+      out int vertex_count) {
+    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
+                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
+                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
+                         : IntPtr.Zero;
+    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
+      planetarium.PlanetariumPlotPredictionDirect(
+          Plugin,
+          vessel_guid,
+          prediction_t_max,
+          gpu_ptr,
+          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
+          is_d3d11_buffer: true,
+          out vertex_count);
+      if (vertex_count > 0) {
+        return;
+      }
+    }
+    planetarium.PlanetariumPlotPrediction(
+        Plugin,
+        vessel_guid,
+        prediction_t_max,
+        VertexBuffer.data,
+        VertexBuffer.size,
+        out vertex_count);
+  }
+
+  private void PlotFlightPlanSegmentDirect(
+      DisposablePlanetarium planetarium,
+      string vessel_guid,
+      int segment_index,
+      double? flight_plan_t_max,
+      out int vertex_count) {
+    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
+                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
+                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
+                         : IntPtr.Zero;
+    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
+      planetarium.PlanetariumPlotFlightPlanSegmentDirect(
+          Plugin,
+          vessel_guid,
+          segment_index,
+          flight_plan_t_max,
+          gpu_ptr,
+          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
+          is_d3d11_buffer: true,
+          out vertex_count);
+      if (vertex_count > 0) {
+        return;
+      }
+    }
+    planetarium.PlanetariumPlotFlightPlanSegment(
+        Plugin,
+        vessel_guid,
+        segment_index,
+        flight_plan_t_max,
+        VertexBuffer.data,
+        VertexBuffer.size,
+        out vertex_count);
   }
 
   private const int MaxCelestialReconstructionsPerFrame = 4;
@@ -642,6 +731,28 @@ class Plotter {
 
         EnsureMesh();
         if (mesh != null) {
+          if (compact_vertices != null && (mesh.vertexCount == 0 || mesh.vertexCount != vertex_count)) {
+            if (compact_colors == null || compact_colors.Length != vertex_count) {
+              compact_colors = new UnityEngine.Color[vertex_count];
+              for (int i = 0; i < vertex_count; ++i) {
+                compact_colors[i] = base_color;
+              }
+            }
+            mesh.Clear();
+            mesh.vertices = compact_vertices;
+            mesh.colors = compact_colors;
+            int index_count = style == GLLines.Style.Dashed ? vertex_count & ~1 : vertex_count;
+            int[] indices = GetSharedIndices(index_count);
+            mesh.SetIndices(indices,
+                            indicesStart: 0,
+                            indicesLength: index_count,
+                            style == GLLines.Style.Dashed
+                                ? UnityEngine.MeshTopology.Lines
+                                : UnityEngine.MeshTopology.LineStrip,
+                            submesh: 0,
+                            calculateBounds: false);
+            mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
+          }
           PerformanceProbe.RecordCacheHit();
           PerformanceProbe.RecordVertices(vertex_count);
           HeterogeneousDynamicGovernor.RecordGpuDispatch();

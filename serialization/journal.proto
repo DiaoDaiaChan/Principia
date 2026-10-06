@@ -1,4 +1,4 @@
-﻿syntax = "proto2";
+syntax = "proto2";
 
 import "serialization/options.proto";
 
@@ -1366,6 +1366,29 @@ message FutureCatchUpVessel {
   optional Return return = 3;
 }
 
+message FutureTryHarvestVesselCatchUp {
+  extend Method {
+    optional FutureTryHarvestVesselCatchUp extension = 5225;
+  }
+  message In {
+    required fixed64 plugin = 1 [(pointer_to) = "Plugin", (is_subject) = true];
+    required fixed64 future = 2 [(pointer_to) = "PileUpFuture",
+                                 (is_consumed_if) = "result"];
+  }
+  message Out {
+    required fixed64 future = 1 [(pointer_to) = "PileUpFuture"];
+    required fixed64 collided_vessels = 2 [(pointer_to) = "Iterator",
+                                           (disposable) = "DisposableIterator",
+                                           (is_produced_if) = "result"];
+  }
+  message Return {
+    required bool result = 1;
+  }
+  optional In in = 1;
+  optional Out out = 2;
+  optional Return return = 3;
+}
+
 message FutureWaitForVesselToCatchUp {
   extend Method {
     optional FutureWaitForVesselToCatchUp extension = 5140;
@@ -2404,6 +2427,30 @@ message PlanetariumPlotFlightPlanSegment {
   optional Out out = 2;
 }
 
+message PlanetariumPlotFlightPlanSegmentDirect {
+  extend Method {
+    optional PlanetariumPlotFlightPlanSegmentDirect extension = 5228;
+  }
+  message In {
+    required fixed64 planetarium = 1 [(pointer_to) = "Planetarium const",
+                                      (disposable) = "DisposablePlanetarium",
+                                      (is_subject) = true];
+    required fixed64 plugin = 2 [(pointer_to) = "Plugin const"];
+    required string vessel_guid = 4;
+    required int32 segment_index = 8;
+    optional double t_max = 7;
+    required fixed64 buffer = 5 [(pointer_to) = "ScaledSpacePoint",
+                                 (is_csharp_owned) = true];
+    required int32 buffer_size = 6 [(size_of) = "buffer"];
+    required bool is_d3d11_buffer = 9;
+  }
+  message Out {
+    required int32 vertex_count = 1;
+  }
+  optional In in = 1;
+  optional Out out = 2;
+}
+
 message PlanetariumPlotPrediction {
   extend Method {
     optional PlanetariumPlotPrediction extension = 5136;
@@ -2418,6 +2465,29 @@ message PlanetariumPlotPrediction {
     required fixed64 vertices = 5 [(pointer_to) = "ScaledSpacePoint",
                                    (is_csharp_owned) = true];
     required int32 vertices_size = 6 [(size_of) = "vertices"];
+  }
+  message Out {
+    required int32 vertex_count = 1;
+  }
+  optional In in = 1;
+  optional Out out = 2;
+}
+
+message PlanetariumPlotPredictionDirect {
+  extend Method {
+    optional PlanetariumPlotPredictionDirect extension = 5226;
+  }
+  message In {
+    required fixed64 planetarium = 1 [(pointer_to) = "Planetarium const",
+                                      (disposable) = "DisposablePlanetarium",
+                                      (is_subject) = true];
+    required fixed64 plugin = 2 [(pointer_to) = "Plugin const"];
+    required string vessel_guid = 4;
+    optional double t_max = 7;
+    required fixed64 buffer = 5 [(pointer_to) = "ScaledSpacePoint",
+                                 (is_csharp_owned) = true];
+    required int32 buffer_size = 6 [(size_of) = "buffer"];
+    required bool is_d3d11_buffer = 8;
   }
   message Out {
     required int32 vertex_count = 1;
@@ -2441,6 +2511,30 @@ message PlanetariumPlotPsychohistory {
     required fixed64 vertices = 6 [(pointer_to) = "ScaledSpacePoint",
                                    (is_csharp_owned) = true];
     required int32 vertices_size = 7 [(size_of) = "vertices"];
+  }
+  message Out {
+    required int32 vertex_count = 1;
+  }
+  optional In in = 1;
+  optional Out out = 2;
+}
+
+message PlanetariumPlotPsychohistoryDirect {
+  extend Method {
+    optional PlanetariumPlotPsychohistoryDirect extension = 5227;
+  }
+  message In {
+    required fixed64 planetarium = 1 [(pointer_to) = "Planetarium const",
+                                      (disposable) = "DisposablePlanetarium",
+                                      (is_subject) = true];
+    required fixed64 plugin = 2 [(pointer_to) = "Plugin const"];
+    required string vessel_guid = 4;
+    required double max_history_length = 8;
+    optional double t_max = 7;
+    required fixed64 buffer = 5 [(pointer_to) = "ScaledSpacePoint",
+                                 (is_csharp_owned) = true];
+    required int32 buffer_size = 6 [(size_of) = "buffer"];
+    required bool is_d3d11_buffer = 9;
   }
   message Out {
     required int32 vertex_count = 1;

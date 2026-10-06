@@ -2639,6 +2639,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         double universal_time = Planetarium.GetUniversalTime();
         time_is_advancing_ = time_is_advancing(universal_time);
         if (time_is_advancing_) {
+          if (vessel_futures_.Count > 0) {
+            HarvestVesselsAndApplyOnRails(non_blocking: false);
+          }
           using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
             plugin_.AdvanceTime(universal_time, Planetarium.InverseRotAngle);
           }
@@ -2707,33 +2710,63 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     HarvestVesselsAndApplyOnRails();
   }
 
-  private void HarvestVesselsAndApplyOnRails() {
+  private void HarvestVesselsAndApplyOnRails(bool non_blocking = false) {
     if (!PluginRunning() || vessel_futures_.Count == 0) {
       return;
     }
     using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
       collided_vessels_cache_.Clear();
+      int unready_count = 0;
+      double current_ut = Planetarium.GetUniversalTime();
+
       for (int fi = 0; fi < vessel_futures_.Count; ++fi) {
         var future = vessel_futures_[fi];
-        plugin_.FutureWaitForVesselToCatchUp(ref future,
-                                             out DisposableIterator
-                                                     collided_vessels);
-        using (collided_vessels) {
-          for (;
-               !collided_vessels.IteratorAtEnd();
-               collided_vessels.IteratorIncrement()) {
-            var vessel_guid = new Guid(collided_vessels.IteratorGetVesselGuid());
-            Vessel vessel = FlightGlobals.FindVessel(vessel_guid);
-            collided_vessels_cache_.Add(vessel);
+        if (non_blocking) {
+          if (plugin_.FutureTryHarvestVesselCatchUp(
+                  ref future,
+                  out DisposableIterator collided_vessels)) {
+            using (collided_vessels) {
+              for (;
+                   !collided_vessels.IteratorAtEnd();
+                   collided_vessels.IteratorIncrement()) {
+                var vessel_guid = new Guid(collided_vessels.IteratorGetVesselGuid());
+                Vessel vessel = FlightGlobals.FindVessel(vessel_guid);
+                collided_vessels_cache_.Add(vessel);
+              }
+            }
+          } else {
+            // Task not ready yet in background: keep future for next frame harvest!
+            vessel_futures_[unready_count++] = future;
+          }
+        } else {
+          plugin_.FutureWaitForVesselToCatchUp(ref future,
+                                               out DisposableIterator collided_vessels);
+          using (collided_vessels) {
+            for (;
+                 !collided_vessels.IteratorAtEnd();
+                 collided_vessels.IteratorIncrement()) {
+              var vessel_guid = new Guid(collided_vessels.IteratorGetVesselGuid());
+              Vessel vessel = FlightGlobals.FindVessel(vessel_guid);
+              collided_vessels_cache_.Add(vessel);
+            }
           }
         }
       }
-      vessel_futures_.Clear();
+
+      if (non_blocking) {
+        if (unready_count < vessel_futures_.Count) {
+          vessel_futures_.RemoveRange(unready_count, vessel_futures_.Count - unready_count);
+        }
+      } else {
+        vessel_futures_.Clear();
+      }
+
       foreach (var vessel in collided_vessels_cache_) {
         vessel?.Die();
       }
       collided_vessels_cache_.Clear();
-      ApplyToVesselsOnRails(Planetarium.GetUniversalTime());
+
+      ApplyToVesselsOnRails(current_ut);
       HeterogeneousDynamicGovernor.RecordStagedHarvest();
     }
   }
@@ -2929,7 +2962,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private void BetterLateThanNever() {
     using (PerformanceProbe.Measure(ProbeCategory.UnityBetterLate)) {
       if (PluginRunning()) {
-        HarvestVesselsAndApplyOnRails();
+        HarvestVesselsAndApplyOnRails(non_blocking: true);
         part_id_to_degrees_of_freedom_.Clear();
         var manageable_vessels = FlightGlobals.Vessels;
         for (int i = 0; i < manageable_vessels.Count; ++i) {

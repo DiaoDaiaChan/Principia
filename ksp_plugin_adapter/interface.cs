@@ -311,6 +311,11 @@ internal static partial class Interface {
 
   private static Symbols symbols_ = null;
 
+  internal static bool HasDirectVramSupport =>
+      symbols_?.PlanetariumPlotPredictionDirect != null;
+  internal static bool HasNonBlockingHarvestSupport =>
+      symbols_?.FutureTryHarvestVesselCatchUp != null;
+
   internal static void LoadSymbols() {
     symbols_ = new Symbols();
   }

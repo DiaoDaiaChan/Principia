@@ -26,6 +26,27 @@ PileUpFuture* __cdecl principia__FutureCatchUpVessel(
   return m.Return(future.release());
 }
 
+bool __cdecl principia__FutureTryHarvestVesselCatchUp(
+    Plugin* const plugin,
+    PileUpFuture** const future,
+    Iterator** const collided_vessels) {
+  journal::Method<journal::FutureTryHarvestVesselCatchUp> m(
+      {plugin, future}, {future, collided_vessels});
+  CHECK(plugin != nullptr);
+  CHECK(future != nullptr);
+  CHECK(*future != nullptr);
+  VesselSet collided_vessel_set;
+  if (plugin->TryHarvestVesselCatchUp(**future, collided_vessel_set)) {
+    TakeOwnership(future);
+    *collided_vessels =
+        new TypedIterator<VesselSet>(std::move(collided_vessel_set), plugin);
+    return m.Return(true);
+  } else {
+    *collided_vessels = nullptr;
+    return m.Return(false);
+  }
+}
+
 void __cdecl principia__FutureWaitForVesselToCatchUp(
     Plugin* const plugin,
     PileUpFuture** const future,

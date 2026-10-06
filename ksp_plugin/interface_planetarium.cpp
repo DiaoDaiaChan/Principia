@@ -6,6 +6,10 @@
 #include "absl/log/check.h"
 #include "absl/log/die_if_null.h"
 #include "absl/log/log.h"
+#include "base/macros.hpp"  // 🧙 For OS_WIN.
+#if OS_WIN
+#include <d3d11.h>
+#endif
 #include "geometry/affine_map.hpp"
 #include "geometry/grassmann.hpp"
 #include "geometry/orthogonal_map.hpp"
@@ -41,6 +45,77 @@ using namespace principia::physics::_discrete_trajectory_view;
 using namespace principia::physics::_trajectory_view;
 using namespace principia::quantities::_quantities;
 using namespace principia::quantities::_si;
+
+namespace {
+
+// Helper to plot a TrajectoryView directly into a D3D11 buffer or host memory.
+template<typename TrajectoryViewType>
+void PlotTrajectoryDirect(
+    Planetarium const* const planetarium,
+    TrajectoryViewType const& view,
+    bool const reverse,
+    ScaledSpacePoint* const buffer,
+    int const buffer_size,
+    bool const is_d3d11_buffer,
+    int* const vertex_count) {
+  *vertex_count = 0;
+
+#if OS_WIN
+  if (is_d3d11_buffer && buffer != nullptr) {
+    ID3D11Buffer* d3d11_buffer = reinterpret_cast<ID3D11Buffer*>(buffer);
+    ID3D11Device* device = nullptr;
+    d3d11_buffer->GetDevice(&device);
+    if (device != nullptr) {
+      ID3D11DeviceContext* context = nullptr;
+      device->GetImmediateContext(&context);
+      if (context != nullptr) {
+        D3D11_MAPPED_SUBRESOURCE mapped;
+        HRESULT const hr = context->Map(
+            d3d11_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+          ScaledSpacePoint* const dst =
+              reinterpret_cast<ScaledSpacePoint*>(mapped.pData);
+          planetarium->PlotMethod4(
+              view,
+              reverse,
+              [dst, vertex_count, buffer_size](ScaledSpacePoint const& vertex) {
+                if (*vertex_count < buffer_size) {
+                  dst[(*vertex_count)++] = vertex;
+                }
+              },
+              buffer_size);
+          context->Unmap(d3d11_buffer, 0);
+          context->Release();
+          device->Release();
+          return;
+        }
+        context->Release();
+      }
+      device->Release();
+    }
+  }
+#endif
+
+  // If is_d3d11_buffer was specified but mapping failed, do not write to COM pointer as host memory.
+  if (is_d3d11_buffer) {
+    return;
+  }
+
+  // Fallback branch: Write directly into unmanaged host memory buffer.
+  if (buffer != nullptr) {
+    planetarium->PlotMethod4(
+        view,
+        reverse,
+        [buffer, vertex_count, buffer_size](ScaledSpacePoint const& vertex) {
+          if (*vertex_count < buffer_size) {
+            buffer[(*vertex_count)++] = vertex;
+          }
+        },
+        buffer_size);
+  }
+}
+
+}  // namespace
 
 Planetarium* __cdecl principia__PlanetariumCreate(
     Plugin const* const plugin,
@@ -174,6 +249,55 @@ void __cdecl principia__PlanetariumPlotFlightPlanSegment(
   return m.Return();
 }
 
+void __cdecl principia__PlanetariumPlotFlightPlanSegmentDirect(
+    Planetarium const* const planetarium,
+    Plugin const* const plugin,
+    char const* const vessel_guid,
+    int const segment_index,
+    double const* const t_max,
+    ScaledSpacePoint* const buffer,
+    int const buffer_size,
+    bool const is_d3d11_buffer,
+    int* const vertex_count) {
+  journal::Method<journal::PlanetariumPlotFlightPlanSegmentDirect> m(
+      {planetarium,
+       plugin,
+       vessel_guid,
+       segment_index,
+       t_max,
+       buffer,
+       buffer_size,
+       is_d3d11_buffer},
+      {vertex_count});
+  CHECK(plugin != nullptr);
+  CHECK(planetarium != nullptr);
+  *vertex_count = 0;
+
+  auto const plotting_frame = plugin->renderer().GetPlottingFrame();
+  Vessel const& vessel = *plugin->GetVessel(vessel_guid);
+  auto const payload = vessel.GetPayload(plotting_frame);
+  CHECK(vessel.has_flight_plan()) << vessel_guid;
+  FlightPlan const& flight_plan = vessel.flight_plan();
+  auto const segment = flight_plan.GetSegment(segment_index);
+  if (segment_index % 2 == 0 ||
+      segment->empty() ||
+      segment->front().time >= plotting_frame->t_min()) {
+    DiscreteTrajectoryView segment_view(&flight_plan.GetAllSegments(), segment);
+    segment_view.Restrict(payload.plottable_time_interval);
+    if (t_max != nullptr) {
+      segment_view.Restrict(InfinitePast, FromGameTime(*plugin, *t_max));
+    }
+    PlotTrajectoryDirect(planetarium,
+                         segment_view,
+                         /*reverse=*/false,
+                         buffer,
+                         buffer_size,
+                         is_d3d11_buffer,
+                         vertex_count);
+  }
+  return m.Return();
+}
+
 // Fills the array of size `vertices_size` at `vertices` with vertices for the
 // rendered prediction of the vessel with the given GUID.
 void __cdecl principia__PlanetariumPlotPrediction(
@@ -207,6 +331,47 @@ void __cdecl principia__PlanetariumPlotPrediction(
         vertices[(*vertex_count)++] = vertex;
       },
       vertices_size);
+  return m.Return();
+}
+
+void __cdecl principia__PlanetariumPlotPredictionDirect(
+    Planetarium const* const planetarium,
+    Plugin const* const plugin,
+    char const* const vessel_guid,
+    double const* const t_max,
+    ScaledSpacePoint* const buffer,
+    int const buffer_size,
+    bool const is_d3d11_buffer,
+    int* const vertex_count) {
+  journal::Method<journal::PlanetariumPlotPredictionDirect> m(
+      {planetarium,
+       plugin,
+       vessel_guid,
+       t_max,
+       buffer,
+       buffer_size,
+       is_d3d11_buffer},
+      {vertex_count});
+  CHECK(plugin != nullptr);
+  CHECK(planetarium != nullptr);
+  *vertex_count = 0;
+
+  auto const plotting_frame = plugin->renderer().GetPlottingFrame();
+  Vessel const& vessel = *plugin->GetVessel(vessel_guid);
+  auto const payload = vessel.GetPayload(plotting_frame);
+  DiscreteTrajectoryView prediction_view(&vessel.trajectory(),
+                                         vessel.prediction());
+  prediction_view.Restrict(payload.plottable_time_interval);
+  if (t_max != nullptr) {
+    prediction_view.Restrict(InfinitePast, FromGameTime(*plugin, *t_max));
+  }
+  PlotTrajectoryDirect(planetarium,
+                       prediction_view,
+                       /*reverse=*/false,
+                       buffer,
+                       buffer_size,
+                       is_d3d11_buffer,
+                       vertex_count);
   return m.Return();
 }
 
@@ -270,6 +435,63 @@ void __cdecl principia__PlanetariumPlotPsychohistory(
           vertices[(*vertex_count)++] = vertex;
         },
         vertices_size);
+    return m.Return();
+  }
+}
+
+void __cdecl principia__PlanetariumPlotPsychohistoryDirect(
+    Planetarium const* const planetarium,
+    Plugin const* const plugin,
+    char const* const vessel_guid,
+    double const max_history_length,
+    double const* const t_max,
+    ScaledSpacePoint* const buffer,
+    int const buffer_size,
+    bool const is_d3d11_buffer,
+    int* const vertex_count) {
+  journal::Method<journal::PlanetariumPlotPsychohistoryDirect> m(
+      {planetarium,
+       plugin,
+       vessel_guid,
+       max_history_length,
+       t_max,
+       buffer,
+       buffer_size,
+       is_d3d11_buffer},
+      {vertex_count});
+  CHECK(plugin != nullptr);
+  CHECK(planetarium != nullptr);
+  *vertex_count = 0;
+
+  if (plugin->renderer().HasTargetVessel()) {
+    return m.Return();
+  } else {
+    auto const plotting_frame = plugin->renderer().GetPlottingFrame();
+    auto& vessel = *plugin->GetVessel(vessel_guid);
+    auto const payload = vessel.GetPayload(plotting_frame);
+    auto const& trajectory = vessel.trajectory();
+    auto const& psychohistory = vessel.psychohistory();
+
+    Instant const desired_first_time =
+        plugin->CurrentTime() - max_history_length * Second;
+
+    vessel.RequestReanimation(desired_first_time);
+
+    DiscreteTrajectoryView psychohistory_view(
+        &trajectory,
+        trajectory.lower_bound(desired_first_time),
+        psychohistory->end());
+    psychohistory_view.Restrict(payload.plottable_time_interval);
+    if (t_max != nullptr) {
+      psychohistory_view.Restrict(InfinitePast, FromGameTime(*plugin, *t_max));
+    }
+    PlotTrajectoryDirect(planetarium,
+                         psychohistory_view,
+                         /*reverse=*/true,
+                         buffer,
+                         buffer_size,
+                         is_d3d11_buffer,
+                         vertex_count);
     return m.Return();
   }
 }

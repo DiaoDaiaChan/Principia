@@ -325,6 +325,12 @@ class Plugin {
   virtual void WaitForVesselToCatchUp(PileUpFuture& pile_up_future,
                                       VesselSet& collided_vessels);
 
+  // Attempts to harvest an asynchronous vessel catch-up task without blocking.
+  // If the future is ready, retrieves the result, populates |collided_vessels|,
+  // and returns true. If the future is not yet ready, leaves it intact and returns false.
+  virtual bool TryHarvestVesselCatchUp(PileUpFuture& pile_up_future,
+                                       VesselSet& collided_vessels);
+
   // Returns the displacement and velocity of the vessel with GUID `vessel_guid`
   // relative to its parent at current time. For a KSP `Vessel` `v`, the
   // argument corresponds to  `v.id.ToString()`, the return value to

@@ -27,6 +27,7 @@ internal static class GpuTrajectoryRenderer {
       HeterogeneousDynamicGovernor.IsGpuAccelerated &&
       PrincipiaGPGPUContext.SupportsCompute &&
       PrincipiaGPGPUContext.trajectory_tessellator != null &&
+      PrincipiaGPGPUContext.trajectory_procedural_material != null &&
       !HeterogeneousDynamicGovernor.IsBackpressureActive;
 
   public static void EnsureBuffersAllocated() {
@@ -54,7 +55,7 @@ internal static class GpuTrajectoryRenderer {
     input_nodes_buffer_ = null;
   }
 
-  public static bool RenderTrajectory(
+  public static unsafe bool RenderTrajectory(
       Vector3[] vertices,
       int count,
       Color colour,
@@ -76,13 +77,75 @@ internal static class GpuTrajectoryRenderer {
       managed_nodes_ = new TrajectoryNode[safe_count];
     }
 
-    // Zero-GC transfer from vertices into managed_nodes_ buffer
-    for (int i = 0; i < safe_count; ++i) {
-      managed_nodes_[i].position_scaled = vertices[i] + draw_position;
-      managed_nodes_[i].time = (float)i;
+    float dx = draw_position.x;
+    float dy = draw_position.y;
+    float dz = draw_position.z;
+    fixed (Vector3* p_src = vertices)
+    fixed (TrajectoryNode* p_dst = managed_nodes_) {
+      Vector3* src = p_src;
+      TrajectoryNode* dst = p_dst;
+      for (int i = 0; i < safe_count; ++i) {
+        dst->position_scaled.x = src->x + dx;
+        dst->position_scaled.y = src->y + dy;
+        dst->position_scaled.z = src->z + dz;
+        dst->time = (float)i;
+        ++src;
+        ++dst;
+      }
     }
     input_nodes_buffer_.SetData(managed_nodes_, 0, 0, safe_count);
 
+    return DispatchAndDraw(cs, safe_count, colour, style, camera);
+  }
+
+  public static unsafe bool RenderTrajectory(
+      IntPtr native_vertices,
+      int count,
+      Color colour,
+      GLLines.Style style,
+      Camera camera,
+      Vector3 draw_position) {
+    if (!IsGpuRenderingEnabled || native_vertices == IntPtr.Zero || count < 2 || camera == null) {
+      return false;
+    }
+
+    EnsureBuffersAllocated();
+    ComputeShader cs = PrincipiaGPGPUContext.trajectory_tessellator;
+    if (cs == null) {
+      return false;
+    }
+
+    int safe_count = Math.Min(count, MaxVertices);
+    if (managed_nodes_.Length < safe_count) {
+      managed_nodes_ = new TrajectoryNode[safe_count];
+    }
+
+    float dx = draw_position.x;
+    float dy = draw_position.y;
+    float dz = draw_position.z;
+    Vector3* src = (Vector3*)native_vertices.ToPointer();
+    fixed (TrajectoryNode* p_dst = managed_nodes_) {
+      TrajectoryNode* dst = p_dst;
+      for (int i = 0; i < safe_count; ++i) {
+        dst->position_scaled.x = src->x + dx;
+        dst->position_scaled.y = src->y + dy;
+        dst->position_scaled.z = src->z + dz;
+        dst->time = (float)i;
+        ++src;
+        ++dst;
+      }
+    }
+    input_nodes_buffer_.SetData(managed_nodes_, 0, 0, safe_count);
+
+    return DispatchAndDraw(cs, safe_count, colour, style, camera);
+  }
+
+  private static bool DispatchAndDraw(
+      ComputeShader cs,
+      int safe_count,
+      Color colour,
+      GLLines.Style style,
+      Camera camera) {
     indirect_args_init_[0] = 0;
     indirect_args_init_[1] = 1;
     indirect_args_init_[2] = 0;
@@ -111,21 +174,23 @@ internal static class GpuTrajectoryRenderer {
     int groups = Mathf.CeilToInt((safe_count - 1) / 128.0f);
     cs.Dispatch(kernel, groups, 1, 1);
 
-    Material mat = PrincipiaGPGPUContext.trajectory_procedural_material ?? GLLines.line_material;
-    if (mat != null) {
-      mat.SetBuffer("_VertexBuffer", vertex_output_buffer_);
-      mat.SetPass(0);
-      Graphics.DrawProceduralIndirectNow(
-          MeshTopology.Lines,
-          indirect_args_buffer_,
-          0);
-      GpuModuleTelemetry.RecordDispatch(
-          GpuModuleId.TrajectoryTessellator,
-          0.05f,
-          $"{safe_count} 节点切比雪夫自适应细分绘制");
-      return true;
+    Material mat = PrincipiaGPGPUContext.trajectory_procedural_material;
+    if (mat == null) {
+      // Fallback: If procedural material is unavailable, graceful degradation to CPU mesh line renderer
+      return false;
     }
-    return false;
+
+    mat.SetBuffer("_VertexBuffer", vertex_output_buffer_);
+    mat.SetPass(0);
+    Graphics.DrawProceduralIndirectNow(
+        MeshTopology.Lines,
+        indirect_args_buffer_,
+        0);
+    GpuModuleTelemetry.RecordDispatch(
+        GpuModuleId.TrajectoryTessellator,
+        0.05f,
+        $"{safe_count} 节点切比雪夫自适应细分绘制");
+    return true;
   }
 
   public static void RenderProcedural(Material material, Camera camera) {

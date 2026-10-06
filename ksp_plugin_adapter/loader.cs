@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -245,6 +245,19 @@ internal static class Loader {
       throw new EntryPointNotFoundException(function);
     }
     return result;
+  }
+
+  internal static T LoadOptionalFunction<T>(string function) where T : Delegate {
+    IntPtr function_pointer;
+    if (Environment.OSVersion.Platform == PlatformID.Win32NT) {
+      function_pointer = GetProcAddress(principia_dll_, function);
+    } else {
+      function_pointer = dlsym(principia_dll_, function);
+    }
+    if (function_pointer == IntPtr.Zero) {
+      return null;
+    }
+    return Marshal.GetDelegateForFunctionPointer(function_pointer, typeof(T)) as T;
   }
 
   [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Ansi)]

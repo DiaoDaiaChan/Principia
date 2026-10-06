@@ -42,6 +42,27 @@ public static class NativeZeroCopyTrajectoryPipeline {
 
   public static int CurrentCapacity => current_capacity_;
 
+  public static ComputeBuffer GpuTrajectoryBuffer {
+    get {
+      EnsureGpuBuffersAllocated();
+      return gpu_trajectory_buffer_;
+    }
+  }
+
+  public static IntPtr GpuBufferNativePtr {
+    get {
+      EnsureGpuBuffersAllocated();
+      if (gpu_trajectory_buffer_ != null && gpu_trajectory_buffer_.IsValid()) {
+        try {
+          return gpu_trajectory_buffer_.GetNativeBufferPtr();
+        } catch {
+          return IntPtr.Zero;
+        }
+      }
+      return IntPtr.Zero;
+    }
+  }
+
   static NativeZeroCopyTrajectoryPipeline() {
     EnsureAllocated();
   }

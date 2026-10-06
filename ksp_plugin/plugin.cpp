@@ -1,6 +1,7 @@
 #include "ksp_plugin/plugin.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <ios>
@@ -870,6 +871,29 @@ void Plugin::WaitForVesselToCatchUp(PileUpFuture& pile_up_future,
       }
     }
   }
+}
+
+bool Plugin::TryHarvestVesselCatchUp(PileUpFuture& pile_up_future,
+                                     VesselSet& collided_vessels) {
+  auto& future = pile_up_future.future;
+  if (future.wait_for(std::chrono::nanoseconds(0)) !=
+      std::future_status::ready) {
+    return false;
+  }
+  PileUp const* const pile_up = pile_up_future.pile_up;
+  absl::Status const status = future.get();
+  if (!status.ok()) {
+    for (not_null<Part*> const part : pile_up->parts()) {
+      not_null<Vessel*> const vessel =
+          FindOrDie(part_id_to_vessel_, part->part_id());
+      if (bool const inserted = collided_vessels.insert(vessel).second;
+          inserted) {
+        LOG(WARNING) << "Vessel " << vessel->ShortDebugString()
+                     << " collided with a celestial: " << status.ToString();
+      }
+    }
+  }
+  return true;
 }
 
 RelativeDegreesOfFreedom<AliceSun> Plugin::VesselFromParent(
