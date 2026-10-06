@@ -408,6 +408,9 @@ class BurnEditor : ScalingRenderer {
                         Δv_tangent_.value = result.delta_v_tangent;
                         Δv_normal_.value = result.delta_v_normal;
                         Δv_binormal_.value = result.delta_v_binormal;
+                        if (UnityEngine.Mathf.Abs(result.delta_t) > 1e-3f) {
+                          initial_time_ += result.delta_t;
+                        }
                         ReformatΔv();
                       },
                       vessel: vessel_,

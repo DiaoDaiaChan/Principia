@@ -232,6 +232,18 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             $"<b>零分配力缓存与真空旁路:</b> 旁路载具: <b>{ZeroAllocationForceCache.VacuumBypasses:N0} 次</b> | 消除堆分配: <b>{ZeroAllocationForceCache.AllocationsSaved:N0} 次</b> (节省堆内存: <b>{saved_mb:F2} MB</b>) | 避免气动 P/Invoke: <b>{ZeroAllocationForceCache.PInvokesSaved:N0} 次</b>",
             GUILayout.ExpandWidth(true));
       }
+
+      using (new GUILayout.HorizontalScope()) {
+        string shooting_mode_badge = GpuFlightPlanShootingOptimizer.LastUsedGpu
+            ? "<color=#55ff55>[⚡ GPU 16K 并行打靶]</color>"
+            : (GpuFlightPlanShootingOptimizer.IsGpuAcceleratedSupported
+                ? "<color=#55ffff>[⚡ GPU 就绪 / CPU 备用]</color>"
+                : "<color=#ffaa55>[多核 CPU 16K 并行打靶]</color>");
+
+        GUILayout.Label(
+            $"<b>并行打靶优化 (Phase 6):</b> {shooting_mode_badge} | 总打靶: <b>{GpuFlightPlanShootingOptimizer.TotalOptimizations:N0} 次</b> (GPU: <b>{GpuFlightPlanShootingOptimizer.GpuDispatches:N0}</b>, CPU: <b>{GpuFlightPlanShootingOptimizer.CpuFallbackDispatches:N0}</b>) | 评估候选轨道: <b>{GpuFlightPlanShootingOptimizer.TotalCandidatesEvaluated:N0} 条</b> | 最近耗时: <b>{GpuFlightPlanShootingOptimizer.LastDurationMs:F2} ms</b> (均值: <b>{GpuFlightPlanShootingOptimizer.AverageDurationMs:F2} ms</b>) | 最优成本: <b>{GpuFlightPlanShootingOptimizer.LastBestCost:F2}</b> (近点距: <b>{GpuFlightPlanShootingOptimizer.LastPeriapsisDistance:N0} m</b>)",
+            GUILayout.ExpandWidth(true));
+      }
     }
   }
 

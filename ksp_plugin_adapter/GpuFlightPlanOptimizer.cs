@@ -30,6 +30,7 @@ public static class GpuFlightPlanOptimizer {
   private static ComputeBuffer evaluations_buffer_;
   private static ComputeBuffer reduced_results_buffer_;
   private static ComputeBuffer celestial_bodies_buffer_;
+  private static CelestialBodyState[] bodies_scratch_ = new CelestialBodyState[128];
 
   public const int TotalCandidates = 16384;
   public const int GroupSize = 256;
@@ -76,15 +77,8 @@ public static class GpuFlightPlanOptimizer {
       Vessel vessel,
       CelestialBody target_celestial,
       Action<CandidateBurnResult> on_success) {
-    if (!HeterogeneousDynamicGovernor.ShouldDispatchToGpu(TotalCandidates)) {
-      return false; // Governor decided CPU path is preferable
-    }
-
     ComputeShader cs = PrincipiaGPGPUContext.flight_plan_shooting_optimizer;
-    if (cs == null) {
-      Log.Warning("[GPGPU] Flight plan shooting optimizer shader is not loaded; falling back to CPU.");
-      return false;
-    }
+    bool prefer_cpu = !HeterogeneousDynamicGovernor.ShouldDispatchToGpu(TotalCandidates) || cs == null;
 
     try {
       EnsureBuffersAllocated();
@@ -116,7 +110,10 @@ public static class GpuFlightPlanOptimizer {
       }
 
       int body_buffer_len = celestial_bodies_buffer_.count;
-      var bodies = new CelestialBodyState[body_buffer_len];
+      if (bodies_scratch_.Length < body_buffer_len) {
+        Array.Resize(ref bodies_scratch_, body_buffer_len);
+      }
+      var bodies = bodies_scratch_;
       int celestial_count = 1;
       int target_index = 0;
 
@@ -160,6 +157,42 @@ public static class GpuFlightPlanOptimizer {
       if (target_celestial != null) {
         float safe_alt = (float)(target_celestial.atmosphere ? target_celestial.atmosphereDepth * 1.2 : target_celestial.Radius * 0.1);
         target_r = (float)target_celestial.Radius + Mathf.Max(10000.0f, safe_alt);
+      }
+
+      if (prefer_cpu) {
+        // Multi-threaded CPU parallel shooting optimizer fallback
+        bool cpu_ok = GpuFlightPlanShootingOptimizer.OptimizeManoeuvre(
+            vessel_pos,
+            vessel_vel,
+            initial_time,
+            base_delta_v,
+            span_dv,
+            span_t,
+            target_index,
+            target_r,
+            step_count,
+            dt,
+            out var eval);
+        IsOptimizing = false;
+        LastOptimizationDurationMs = (Time.realtimeSinceStartup - start_time) * 1000.0f;
+        if (cpu_ok) {
+          GpuModuleTelemetry.RecordDispatch(
+              GpuModuleId.FlightPlanOptimizer,
+              LastOptimizationDurationMs,
+              $"[CPU并行打靶] 最优候选 #{eval.candidate_index}: cost={eval.cost_metric:F2}, Δv={eval.delta_v_tangent:F1} m/s");
+          on_success?.Invoke(new CandidateBurnResult {
+            candidate_index = eval.candidate_index,
+            periapsis_distance = eval.periapsis_distance,
+            target_relative_speed = eval.target_relative_speed,
+            cost_metric = eval.cost_metric,
+            delta_t = eval.delta_t,
+            delta_v_tangent = eval.delta_v_tangent,
+            delta_v_normal = eval.delta_v_normal,
+            delta_v_binormal = eval.delta_v_binormal
+          });
+          return true;
+        }
+        return false;
       }
 
       // Collect real vessel mass, thrust and Isp
@@ -249,8 +282,37 @@ public static class GpuFlightPlanOptimizer {
 
       return true;
     } catch (Exception ex) {
-      Log.Error($"[GPGPU] Exception during GPU optimization dispatch: {ex}");
+      Log.Error($"[GPGPU] Exception during GPU optimization dispatch: {ex}, attempting CPU parallel fallback");
       IsOptimizing = false;
+      try {
+        bool cpu_ok = GpuFlightPlanShootingOptimizer.OptimizeManoeuvre(
+            Vector3.zero,
+            Vector3.zero,
+            initial_time,
+            base_delta_v,
+            span_dv,
+            span_t,
+            0,
+            100000.0f,
+            256,
+            14.0f,
+            out var eval);
+        if (cpu_ok) {
+          on_success?.Invoke(new CandidateBurnResult {
+            candidate_index = eval.candidate_index,
+            periapsis_distance = eval.periapsis_distance,
+            target_relative_speed = eval.target_relative_speed,
+            cost_metric = eval.cost_metric,
+            delta_t = eval.delta_t,
+            delta_v_tangent = eval.delta_v_tangent,
+            delta_v_normal = eval.delta_v_normal,
+            delta_v_binormal = eval.delta_v_binormal
+          });
+          return true;
+        }
+      } catch {
+        // Fallback failed
+      }
       return false;
     }
   }
