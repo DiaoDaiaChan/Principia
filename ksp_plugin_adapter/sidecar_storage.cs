@@ -129,7 +129,7 @@ internal static class SidecarStorage {
 
     // Clean up older unreferenced sidecars in the background
     try {
-      PruneOrphanedSidecars(save_dir);
+      PruneOrphanedSidecars(save_dir, sidecar_filename);
     } catch (Exception e) {
       Log.Warning("Non-fatal exception while pruning old sidecars: " + e);
     }
@@ -203,7 +203,7 @@ internal static class SidecarStorage {
     return true;
   }
 
-  private static void PruneOrphanedSidecars(string save_dir) {
+  private static void PruneOrphanedSidecars(string save_dir, string current_sidecar_filename) {
     if (!Directory.Exists(save_dir)) {
       return;
     }
@@ -215,6 +215,10 @@ internal static class SidecarStorage {
 
     // Collect all referenced sidecar filenames from .sfs files in save_dir
     var active_sidecars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (!string.IsNullOrEmpty(current_sidecar_filename)) {
+      active_sidecars.Add(current_sidecar_filename);
+    }
+
     string[] sfs_files = Directory.GetFiles(save_dir, "*.sfs");
     foreach (string sfs_path in sfs_files) {
       try {
@@ -234,18 +238,25 @@ internal static class SidecarStorage {
       }
     }
 
-    DateTime threshold = DateTime.UtcNow.AddDays(-2);
+    DateTime recent_threshold = DateTime.UtcNow.AddHours(-2);
+    DateTime old_threshold = DateTime.UtcNow.AddDays(-2);
+
     foreach (string cache_path in cache_files) {
       string filename = Path.GetFileName(cache_path);
-      if (!active_sidecars.Contains(filename)) {
-        DateTime last_write = File.GetLastWriteTimeUtc(cache_path);
-        if (last_write < threshold || cache_files.Length > 40) {
-          try {
-            File.Delete(cache_path);
-            Log.Info($"Pruned orphaned sidecar cache: {filename}");
-          } catch {
-            // Ignore deletion errors for locked files
-          }
+      if (active_sidecars.Contains(filename)) {
+        continue;
+      }
+      DateTime last_write = File.GetLastWriteTimeUtc(cache_path);
+      // NEVER delete files modified within the last 2 hours
+      if (last_write > recent_threshold) {
+        continue;
+      }
+      if (last_write < old_threshold || cache_files.Length > 40) {
+        try {
+          File.Delete(cache_path);
+          Log.Info($"Pruned orphaned sidecar cache: {filename}");
+        } catch {
+          // Ignore deletion errors for locked files
         }
       }
     }

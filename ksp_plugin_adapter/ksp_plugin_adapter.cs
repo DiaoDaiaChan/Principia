@@ -1525,7 +1525,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       if (loaded) {
         FinishPluginLoad();
       } else {
-        Log.Fatal("Could not load Principia state from sidecar: " + sidecar_filename);
+        Log.Warning("Could not load Principia state from sidecar: " + sidecar_filename + ", recreating state from solar system ephemeris");
+        ResetPlugin();
       }
     } else if (node.HasValue(principia_serialized_plugin)) {
       Cleanup();
