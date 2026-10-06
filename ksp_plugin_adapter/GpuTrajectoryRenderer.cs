@@ -111,7 +111,7 @@ internal static class GpuTrajectoryRenderer {
     int groups = Mathf.CeilToInt((safe_count - 1) / 128.0f);
     cs.Dispatch(kernel, groups, 1, 1);
 
-    Material mat = GLLines.line_material;
+    Material mat = PrincipiaGPGPUContext.trajectory_procedural_material ?? GLLines.line_material;
     if (mat != null) {
       mat.SetBuffer("_VertexBuffer", vertex_output_buffer_);
       mat.SetPass(0);
@@ -129,11 +129,13 @@ internal static class GpuTrajectoryRenderer {
   }
 
   public static void RenderProcedural(Material material, Camera camera) {
-    if (!IsGpuRenderingEnabled || material == null || camera == null) return;
+    if (!IsGpuRenderingEnabled || camera == null) return;
+    Material mat = material ?? PrincipiaGPGPUContext.trajectory_procedural_material ?? GLLines.line_material;
+    if (mat == null) return;
 
     EnsureBuffersAllocated();
-    material.SetBuffer("_VertexBuffer", vertex_output_buffer_);
-    material.SetPass(0);
+    mat.SetBuffer("_VertexBuffer", vertex_output_buffer_);
+    mat.SetPass(0);
 
     Graphics.DrawProceduralIndirectNow(
         MeshTopology.Lines,

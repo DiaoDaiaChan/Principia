@@ -33,6 +33,7 @@ public static class BuildPrincipiaGpuAssetBundle {
       "Assets/PrincipiaShaders/AllPairsConjunctionBroadphase.compute",
       "Assets/PrincipiaShaders/GroundTrackSwathAccumulator.compute",
       "Assets/PrincipiaShaders/AerodynamicAreaReduction.compute",
+      "Assets/PrincipiaShaders/TrajectoryProcedural.shader",
     };
 
     BuildPipeline.BuildAssetBundles(

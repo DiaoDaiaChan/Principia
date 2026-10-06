@@ -22,6 +22,10 @@ public static class PrincipiaGPGPUContext {
   public static ComputeShader ground_track_swath_accumulator { get; private set; }
   public static ComputeShader aerodynamic_area_reduction { get; private set; }
 
+  // Procedural Shaders & Materials
+  public static Shader trajectory_procedural_shader { get; private set; }
+  public static Material trajectory_procedural_material { get; private set; }
+
   // Persistent Buffers
   public static ComputeBuffer celestial_constants_buffer { get; internal set; }
   public static ComputeBuffer optimization_results_buffer { get; internal set; }
@@ -82,10 +86,18 @@ public static class PrincipiaGPGPUContext {
           all_pairs_conjunction_broadphase = gpu_bundle_.LoadAsset<ComputeShader>("AllPairsConjunctionBroadphase");
           ground_track_swath_accumulator = gpu_bundle_.LoadAsset<ComputeShader>("GroundTrackSwathAccumulator");
           aerodynamic_area_reduction = gpu_bundle_.LoadAsset<ComputeShader>("AerodynamicAreaReduction");
+          trajectory_procedural_shader = gpu_bundle_.LoadAsset<Shader>("TrajectoryProcedural");
           Log.Info("[GPGPU] principia_gpu.bundle successfully loaded.");
         }
       } else {
         Log.Info($"[GPGPU] principia_gpu.bundle not found at {bundle_path}; runtime will use CPU fallback or simulated acceleration.");
+      }
+
+      if (trajectory_procedural_shader == null) {
+        trajectory_procedural_shader = Shader.Find("Principia/TrajectoryProcedural");
+      }
+      if (trajectory_procedural_shader != null) {
+        trajectory_procedural_material = new Material(trajectory_procedural_shader);
       }
 
       IsInitialized = true;
@@ -128,6 +140,12 @@ public static class PrincipiaGPGPUContext {
     all_pairs_conjunction_broadphase = null;
     ground_track_swath_accumulator = null;
     aerodynamic_area_reduction = null;
+
+    if (trajectory_procedural_material != null) {
+      UnityEngine.Object.Destroy(trajectory_procedural_material);
+      trajectory_procedural_material = null;
+    }
+    trajectory_procedural_shader = null;
 
     IsInitialized = false;
     Log.Info("[GPGPU] Principia GPGPU Context safely disposed.");
