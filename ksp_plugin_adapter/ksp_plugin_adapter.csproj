@@ -177,6 +177,8 @@
     <Compile Include="SceneGraphDecoupler.cs" />
     <Compile Include="GpuVirtualProjection.cs" />
     <Compile Include="SmoothPlottingBridge.cs" />
+    <Compile Include="FrameBudgetCircuitBreaker.cs" />
+    <Compile Include="ZeroAllocationForceCache.cs" />
     <Compile Include="performance_probe.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />

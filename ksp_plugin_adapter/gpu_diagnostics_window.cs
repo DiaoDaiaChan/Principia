@@ -201,6 +201,37 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             $"<b>GPU 虚拟投影与平滑轨迹:</b> 投影绑定: <b>{GpuVirtualProjection.TotalProjectionsApplied:N0}</b> | 最大微偏置: <b>{GpuVirtualProjection.MaxDisplacementMagnitude:F3} m</b> | 轨迹平滑: {smooth_badge} (插值细分: {SmoothPlottingBridge.SubdivisionsPerformed:N0} 次, 生成顶点: {SmoothPlottingBridge.SubdividedVertices:N0})",
             GUILayout.ExpandWidth(true));
       }
+
+      using (new GUILayout.HorizontalScope()) {
+        string breaker_status;
+        switch (FrameBudgetCircuitBreaker.CurrentLevel) {
+          case CircuitBreakerLevel.Normal:
+            breaker_status = "<color=#55ff55>帧预算正常</color>";
+            break;
+          case CircuitBreakerLevel.SecondaryThrottled:
+            breaker_status = "<color=#ffff55>次要物理节流</color>";
+            break;
+          case CircuitBreakerLevel.ActiveExtrapolated:
+            breaker_status = "<color=#ffaa55>外推抑制</color>";
+            break;
+          case CircuitBreakerLevel.HardTripped:
+            breaker_status = "<color=#ff5555>死循环熔断</color>";
+            break;
+          default:
+            breaker_status = "<color=#55ffff>就绪</color>";
+            break;
+        }
+        GUILayout.Label(
+            $"<b>死亡循环熔断 (Phase 5):</b> {breaker_status} | 物理帧耗时: <b>{FrameBudgetCircuitBreaker.CurrentFramePhysicsElapsedMs:F2} ms</b> (均值: <b>{FrameBudgetCircuitBreaker.AverageFramePhysicsElapsedMs:F2} ms</b> / 预算: {FrameBudgetCircuitBreaker.BudgetMilliseconds:F1} ms) | 熔断次数: <b>{FrameBudgetCircuitBreaker.TotalCircuitTrips:N0}</b> (抑制步数: {FrameBudgetCircuitBreaker.TotalSubstepsSuppressed:N0})",
+            GUILayout.ExpandWidth(true));
+      }
+
+      using (new GUILayout.HorizontalScope()) {
+        double saved_mb = ZeroAllocationForceCache.EstimatedBytesSaved / (1024.0 * 1024.0);
+        GUILayout.Label(
+            $"<b>零分配力缓存与真空旁路:</b> 旁路载具: <b>{ZeroAllocationForceCache.VacuumBypasses:N0} 次</b> | 消除堆分配: <b>{ZeroAllocationForceCache.AllocationsSaved:N0} 次</b> (节省堆内存: <b>{saved_mb:F2} MB</b>) | 避免气动 P/Invoke: <b>{ZeroAllocationForceCache.PInvokesSaved:N0} 次</b>",
+            GUILayout.ExpandWidth(true));
+      }
     }
   }
 

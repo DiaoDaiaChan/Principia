@@ -2613,6 +2613,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         UnityEngine.Physics.SyncTransforms();
       }
       DualClockBridge.RecordPhysicsStep(plugin_.CurrentTime(), Δt);
+      FrameBudgetCircuitBreaker.OnPhysicsStepEnd();
       UnityEngine.Physics.autoSyncTransforms = true;
       }
     } catch (Exception e) {
@@ -2621,50 +2622,36 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private static class PhysicsCircuitBreaker {
-    public static bool EnableCircuitBreaker => HeterogeneousDynamicGovernor.EnableCircuitBreaker;
-    public static float PhysicsBudgetMs => HeterogeneousDynamicGovernor.PhysicsFrameBudgetMs;
-
-    private static int last_frame_count_ = -1;
-    private static int fixed_updates_in_frame_ = 0;
-    private static readonly System.Diagnostics.Stopwatch frame_stopwatch_ =
-        new System.Diagnostics.Stopwatch();
-
-    public static int FixedUpdatesInFrame => fixed_updates_in_frame_;
-    public static long TrippedCyclesCount => HeterogeneousDynamicGovernor.CircuitBreakerTrips;
-
-    public static void OnPhysicsStepBegin() {
-      int current_frame = UnityEngine.Time.frameCount;
-      if (current_frame != last_frame_count_) {
-        last_frame_count_ = current_frame;
-        fixed_updates_in_frame_ = 1;
-        frame_stopwatch_.Reset();
-        frame_stopwatch_.Start();
-      } else {
-        fixed_updates_in_frame_++;
-      }
+    public static bool EnableCircuitBreaker {
+      get => FrameBudgetCircuitBreaker.EnableCircuitBreaker;
+      set => FrameBudgetCircuitBreaker.EnableCircuitBreaker = value;
+    }
+    public static float PhysicsBudgetMs {
+      get => FrameBudgetCircuitBreaker.BudgetMilliseconds;
+      set => FrameBudgetCircuitBreaker.BudgetMilliseconds = value;
     }
 
-    public static int MaxAllowedFixedUpdates =>
-        UnityEngine.Mathf.Max(4, UnityEngine.Mathf.CeilToInt(UnityEngine.Time.maximumDeltaTime / UnityEngine.Mathf.Max(0.001f, UnityEngine.Time.fixedDeltaTime)));
+    public static int FixedUpdatesInFrame => FrameBudgetCircuitBreaker.FixedUpdatesInCurrentFrame;
+    public static long TrippedCyclesCount => FrameBudgetCircuitBreaker.TotalCircuitTrips;
+
+    public static void OnPhysicsStepBegin() {
+      FrameBudgetCircuitBreaker.OnPhysicsStepBegin();
+    }
+
+    public static int MaxAllowedFixedUpdates => FrameBudgetCircuitBreaker.MaxAllowedFixedUpdatesPerFrame;
 
     public static bool ShouldThrottleSecondaryPhysics() {
-      if (!EnableCircuitBreaker) {
-        return false;
-      }
-      int max_allowed = MaxAllowedFixedUpdates;
-      if (fixed_updates_in_frame_ > 1) {
-        float elapsed_ms = (float)frame_stopwatch_.Elapsed.TotalMilliseconds;
-        if (elapsed_ms >= PhysicsBudgetMs || fixed_updates_in_frame_ > max_allowed) {
-          HeterogeneousDynamicGovernor.RecordCircuitBreakerTrip();
-          return true;
-        }
-      }
-      return false;
+      return FrameBudgetCircuitBreaker.ShouldThrottleSecondaryPhysics();
+    }
+
+    public static bool ShouldSuppressCurrentFixedUpdate() {
+      return FrameBudgetCircuitBreaker.ShouldSuppressCurrentFixedUpdate();
     }
   }
 
   private void ObscenelyEarly() {
     PhysicsCircuitBreaker.OnPhysicsStepBegin();
+    ZeroAllocationForceCache.ResetFrame();
     var vessels = FlightGlobals.Vessels;
     for (int i = vessels.Count - 1; i >= 0; --i) {
       var vessel = vessels[i];
@@ -2677,6 +2664,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private void Precalc() {
     using (PerformanceProbe.Measure(ProbeCategory.UnityPrecalc)) {
       if (!PluginRunning()) {
+        return;
+      }
+      if (FrameBudgetCircuitBreaker.ShouldSuppressCurrentFixedUpdate()) {
         return;
       }
       bool throttle_secondary = PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics();
@@ -2856,6 +2846,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         if (VacuumBypassGovernor.IsVesselInStableVacuum(vessel)) {
           if (!VacuumBypassGovernor.ShouldForceCalibration(vessel.id)) {
             VacuumBypassGovernor.RecordBypassedForces();
+            ZeroAllocationForceCache.RecordVacuumBypass(vessel.parts.Count);
             continue;
           }
         }
@@ -2896,11 +2887,13 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           }
           if (part.torque != Vector3d.zero ||
               parachute_torque != Vector3d.zero) {
-            part_id_to_intrinsic_torque_.Add(part.flightID,
-                                             part.torque + parachute_torque);
+            Vector3d total_torque = part.torque + parachute_torque;
+            part_id_to_intrinsic_torque_.Add(part.flightID, total_torque);
+            ZeroAllocationForceCache.AddTorque(part.flightID, total_torque);
           }
           if (part.force != Vector3d.zero) {
             part_id_to_intrinsic_force_.Add(part.flightID, part.force);
+            ZeroAllocationForceCache.AddForce(part.flightID, part.force);
           }
           int forces_count = part.forces.Count;
           if (forces_count > 0) {
@@ -2909,7 +2902,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               part_id_to_intrinsic_forces_.Add(part.flightID, list);
             }
             for (int k = 0; k < forces_count; ++k) {
-              list.Add(PartCentredForceHolder.FromPartForceHolder(part, part.forces[k]));
+              var force_holder = PartCentredForceHolder.FromPartForceHolder(part, part.forces[k]);
+              list.Add(force_holder);
+              ZeroAllocationForceCache.AppendPointForce(part.flightID, force_holder.force, force_holder.lever_arm);
             }
           }
         }
@@ -2929,6 +2924,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           continue;
         }
         if (VacuumBypassGovernor.ShouldBypassAero(vessel)) {
+          ZeroAllocationForceCache.RecordAeroPInvokeBypass(vessel.parts.Count);
           continue;
         }
         var parts = vessel.parts;
@@ -2948,18 +2944,20 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               part_id_to_intrinsic_forces_.Add(physical_parent.flightID, list);
             }
             if (part.bodyLiftLocalVector != UnityEngine.Vector3.zero) {
-              list.Add(new PartCentredForceHolder(
-                  part.partTransform.TransformDirection(part.bodyLiftLocalVector),
-                  part.partTransform.TransformPoint(part.bodyLiftLocalPosition) - physical_parent.rb.worldCenterOfMass));
+              var force = part.partTransform.TransformDirection(part.bodyLiftLocalVector);
+              var arm = part.partTransform.TransformPoint(part.bodyLiftLocalPosition) - physical_parent.rb.worldCenterOfMass;
+              list.Add(new PartCentredForceHolder(force, arm));
+              ZeroAllocationForceCache.AppendPointForce(physical_parent.flightID, force, arm);
             }
             if (part.dragVector != UnityEngine.Vector3.zero) {
               Vector3d drag_pos = physical_parent != part &&
                                   PhysicsGlobals.ApplyDragToNonPhysicsPartsAtParentCoM
                                       ? physical_parent.rb.worldCenterOfMass
                                       : part.partTransform.TransformPoint(part.CoPOffset);
-              list.Add(new PartCentredForceHolder(
-                  -part.dragVectorDir * part.dragScalar,
-                  drag_pos - physical_parent.rb.worldCenterOfMass));
+              var force = -part.dragVectorDir * part.dragScalar;
+              var arm = drag_pos - physical_parent.rb.worldCenterOfMass;
+              list.Add(new PartCentredForceHolder(force, arm));
+              ZeroAllocationForceCache.AppendPointForce(physical_parent.flightID, force, arm);
             }
           }
 
@@ -3079,6 +3077,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     // Phase 2 & 3 Decoupled Rendering: instantaneous evaluation from lock-free triple buffer & dual-clock bridge.
     double render_ut = Planetarium.GetUniversalTime();
     DualClockBridge.RecordRenderFrame(render_ut);
+    FrameBudgetCircuitBreaker.OnRenderFrameStart();
 
     if (HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling &&
         HeterogeneousDynamicGovernor.EnableAutonomousSnapshotSampling) {
