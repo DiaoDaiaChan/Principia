@@ -2039,6 +2039,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
       double Δt = Planetarium.TimeScale * Planetarium.fetch.fixedDeltaTime;
 
+      DualClockBridge.UpdateOriginTracking(krakensbane.FrameVel, FloatingOrigin.Offset);
+      BatchStateSync.ResetFrameCounters();
+
       QP main_body_degrees_of_freedom = new QP{
           q = (XYZ)((FlightGlobals.currentMainBody ??
                      FlightGlobals.GetHomeBody()).position +
@@ -2096,25 +2099,31 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             // NOTE(egg): the physics engine does not move the celestials, so it
             // is fine to use `main_body_degrees_of_freedom` here rather than to
             // store it during `FixedUpdate` or one of its timings.
-            plugin_.InsertOrKeepLoadedPart(
-                part_id,
-                part.name,
-                part.physicsMass == 0 ? part_rb.mass : part.physicsMass,
-                (XYZ)part_rb.centerOfMass,
-                (XYZ)part_rb.inertiaTensor,
-                (WXYZ)part_rb.inertiaTensorRotation,
-                is_lit_solid_booster(part),
-                vessel_guid,
-                main_body_index,
-                main_body_degrees_of_freedom,
-                degrees_of_freedom,
-                (WXYZ)part_rb.rotation,
-                (XYZ)part_rb.angularVelocity,
-                Δt);
+            var insert_state = new PartBatchInsertState{
+                part_id = part_id,
+                mass_in_tonnes = part.physicsMass == 0 ? part_rb.mass : part.physicsMass,
+                centre_of_mass = (XYZ)part_rb.centerOfMass,
+                moments_of_inertia_in_tonnes = (XYZ)part_rb.inertiaTensor,
+                principal_axes_rotation = (WXYZ)part_rb.inertiaTensorRotation,
+                main_body_index = main_body_index,
+                main_body_world_degrees_of_freedom = main_body_degrees_of_freedom,
+                part_world_degrees_of_freedom = degrees_of_freedom,
+                part_rotation = (WXYZ)part_rb.rotation,
+                part_angular_velocity = (XYZ)part_rb.angularVelocity,
+                delta_t = Δt
+            };
+            insert_state.SetPartName(part.name);
+            insert_state.SetVesselGuid(vessel_guid);
+
+            PartBatchFlags flags = PartBatchFlags.None;
+            if (is_lit_solid_booster(part)) {
+              flags |= PartBatchFlags.SolidRocketMotor;
+            }
             if (part_id_to_intrinsic_torque_.TryGetValue(
                     part_id,
                     out Vector3d intrinsic_torque)) {
-              plugin_.PartApplyIntrinsicTorque(part_id, (XYZ)intrinsic_torque);
+              flags |= PartBatchFlags.HasIntrinsicTorque;
+              insert_state.intrinsic_torque = (XYZ)intrinsic_torque;
             }
             if (part_id_to_intrinsic_force_.TryGetValue(part_id,
                   out Vector3d intrinsic_force)) {
@@ -2124,9 +2133,12 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               // effects where doing an EVA accelerates the vessel, see #1415.
               // Just say no to stupidity.
               if (!(vessel.isEVA && vessel.evaController.OnALadder)) {
-                plugin_.PartApplyIntrinsicForce(part_id, (XYZ)intrinsic_force);
+                flags |= PartBatchFlags.HasIntrinsicForce;
+                insert_state.intrinsic_force = (XYZ)intrinsic_force;
               }
             }
+            insert_state.flags = (uint)flags;
+            BatchStateSync.AddInsertState(ref insert_state);
             if (part_id_to_intrinsic_forces_.TryGetValue(part_id,
                     out var intrinsic_forces)) {
               for (int ifi = 0; ifi < intrinsic_forces.Count; ++ifi) {
@@ -2182,6 +2194,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           Profiler.EndSample();
         }
       }
+
+      BatchStateSync.DispatchInsertBatch(plugin_);
 
       plugin_.PrepareToReportCollisions();
 
@@ -2338,9 +2352,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           if (main_body_change_countdown_ == 0 &&
               last_main_body_ == FlightGlobals.ActiveVessel?.mainBody) {
             UnityEngine.Rigidbody part_rb = part.rb;
-            plugin_.PartSetApparentRigidMotion(
+            BatchStateSync.AddApparentMotion(
                 part.flightID,
-                // TODO(egg): use the centre of mass.
                 new QP{q = (XYZ)part_rb.position,
                        p = (XYZ)part_rb.velocity},
                 (WXYZ)part_rb.rotation,
@@ -2348,6 +2361,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           }
         }
       }
+      BatchStateSync.DispatchApparentMotionBatch(plugin_);
       Profiler.EndSample();
 
       // Advance the lagging vessels and kill those which collided with a
@@ -2485,9 +2499,21 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               if (!PartIsFaithful(part)) {
                 continue;
               }
+              BatchStateSync.AddActualMotionQuery(part.flightID);
+            }
+            int actual_count = BatchStateSync.QueryActualMotionBatch(
+                plugin_,
+                origin,
+                out uint[] query_ids,
+                out QPRW[] motions);
+            int motion_idx = 0;
+            for (int vpi = 0; vpi < vessel_parts.Count; ++vpi) {
+              var part = vessel_parts[vpi];
+              if (!PartIsFaithful(part)) {
+                continue;
+              }
               UnityEngine.Rigidbody part_rb = part.rb;
-              QPRW part_actual_motion =
-                  plugin_.PartGetActualRigidMotion(part.flightID, origin);
+              QPRW part_actual_motion = motions[motion_idx++];
               QP part_actual_degrees_of_freedom = part_actual_motion.qp;
               var part_position = (Vector3d)part_actual_degrees_of_freedom.q;
               var part_velocity = (Vector3d)part_actual_degrees_of_freedom.p;
@@ -2586,6 +2612,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       if (should_sync_transforms) {
         UnityEngine.Physics.SyncTransforms();
       }
+      DualClockBridge.RecordPhysicsStep(plugin_.CurrentTime(), Δt);
       UnityEngine.Physics.autoSyncTransforms = true;
       }
     } catch (Exception e) {
@@ -3049,10 +3076,12 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private void BetterLateThanNeverLateUpdate() {
-    // Phase 2 Decoupled Rendering: instantaneous evaluation from lock-free triple buffer.
+    // Phase 2 & 3 Decoupled Rendering: instantaneous evaluation from lock-free triple buffer & dual-clock bridge.
+    double render_ut = Planetarium.GetUniversalTime();
+    DualClockBridge.RecordRenderFrame(render_ut);
+
     if (HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling &&
         HeterogeneousDynamicGovernor.EnableAutonomousSnapshotSampling) {
-      double render_ut = Planetarium.GetUniversalTime();
       var active = FlightGlobals.ActiveVessel;
       if (active != null) {
         string active_guid = GetVesselGuid(active);

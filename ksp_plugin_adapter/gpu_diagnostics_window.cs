@@ -161,6 +161,27 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             $"<b>状态通道吞吐:</b> 载具切片: <b>{TripleBufferStateBus.ActiveVesselChannels}</b> | 天体切片: <b>{TripleBufferStateBus.ActiveBodyChannels}</b> | 派发: <b>{TripleBufferStateBus.TotalSnapshotsPublished:N0}</b> | 采样消费: <b>{TripleBufferStateBus.TotalSnapshotsSampled:N0}</b> | SPSC 命令入队: <b>{SpscCommandBus.CommandsPostedCount:N0}</b> / 出队: <b>{SpscCommandBus.CommandsExecutedCount:N0}</b>",
             GUILayout.ExpandWidth(true));
       }
+
+      using (new GUILayout.HorizontalScope()) {
+        string batch_sync_badge = Interface.HasBatchSyncSupport
+            ? "<color=#55ff55>C++ 原生批处理同步 (Zero-Copy 64B Aligned)</color>"
+            : "<color=#55ffff>托管批量缓冲 (Zero-Allocation Batch Fallback)</color>";
+        GUILayout.Label(
+            $"<b>批处理状态同步 (Phase 3):</b> {batch_sync_badge}",
+            GUILayout.ExpandWidth(true));
+      }
+
+      using (new GUILayout.HorizontalScope()) {
+        GUILayout.Label(
+            $"<b>物理同步指标:</b> 部件批处理: <b>{BatchStateSync.BatchInsertDispatchedCount:N0}</b> (回退: {BatchStateSync.SequentialInsertFallbackCount:N0}) | 视在运动: <b>{BatchStateSync.BatchApparentDispatchedCount:N0}</b> (回退: {BatchStateSync.SequentialApparentFallbackCount:N0}) | 累计节省 P/Invoke: <b>{BatchStateSync.TotalPinvokesSaved:N0}</b> (本帧: {BatchStateSync.PinvokesSavedThisFrame:N0})",
+            GUILayout.ExpandWidth(true));
+      }
+
+      using (new GUILayout.HorizontalScope()) {
+        GUILayout.Label(
+            $"<b>双时钟桥 (Dual-Clock Bridge):</b> 浮点原点纪元: <b>{DualClockBridge.CurrentEpoch}</b> (重定位: {DualClockBridge.TotalOriginShifts} 次) | 相位滞后: <b>{DualClockBridge.PhaseLagMs:F2} ms</b> | 漂移补偿: <b>{DualClockBridge.CumulativeDrift.magnitude:F2} m</b> | 插值 α: <b>{DualClockBridge.InterpolationAlpha:F3}</b>",
+            GUILayout.ExpandWidth(true));
+      }
     }
   }
 

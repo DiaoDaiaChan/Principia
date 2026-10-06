@@ -172,6 +172,8 @@
     <Compile Include="DensePolynomialSlice.cs" />
     <Compile Include="TripleBufferStateBus.cs" />
     <Compile Include="SpscCommandBus.cs" />
+    <Compile Include="BatchStateSync.cs" />
+    <Compile Include="DualClockBridge.cs" />
     <Compile Include="performance_probe.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />
