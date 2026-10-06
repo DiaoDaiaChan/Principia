@@ -3140,6 +3140,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         }
 
         var all_bodies = FlightGlobals.Bodies;
+        SceneGraphDecoupler.RecordPassTierCounts(all_bodies, cached_camera_world_position_);
         for (int i = 0; i < all_bodies.Count; ++i) {
           var body = all_bodies[i];
           int idx = body.flightGlobalsIndex;
@@ -3150,9 +3151,11 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                 celestial_last_update_frame_[idx] == current_frame));
 
           // Only compute CelestialRotation across P/Invoke and update Transform when the body
-          // was actually updated this frame or is a priority body. This saves thousands of
-          // P/Invoke calls and struct allocations per second in systems with hundreds of bodies.
-          if (updated_this_frame) {
+          // was actually updated this frame or is a priority body, AND when SceneGraphDecoupler
+          // determines that the Unity GameObject Transform should be written (avoiding PQS dirty sweeps).
+          if (updated_this_frame &&
+              SceneGraphDecoupler.ShouldUpdateTransform(
+                  body, cached_camera_world_position_, current_realtime, current_frame)) {
             var swizzly_body_world_to_world =
                 ((UnityEngine.QuaternionD)plugin_.CelestialRotation(
                       body.flightGlobalsIndex)).swizzle;

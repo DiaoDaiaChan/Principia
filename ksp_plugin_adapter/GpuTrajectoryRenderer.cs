@@ -180,6 +180,7 @@ internal static class GpuTrajectoryRenderer {
       return false;
     }
 
+    GpuVirtualProjection.SynchronizeTrajectoryProjection(mat, Vector3d.zero);
     mat.SetBuffer("_VertexBuffer", vertex_output_buffer_);
     mat.SetPass(0);
     Graphics.DrawProceduralIndirectNow(

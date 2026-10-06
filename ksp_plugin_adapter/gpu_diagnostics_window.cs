@@ -182,6 +182,25 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             $"<b>双时钟桥 (Dual-Clock Bridge):</b> 浮点原点纪元: <b>{DualClockBridge.CurrentEpoch}</b> (重定位: {DualClockBridge.TotalOriginShifts} 次) | 相位滞后: <b>{DualClockBridge.PhaseLagMs:F2} ms</b> | 漂移补偿: <b>{DualClockBridge.CumulativeDrift.magnitude:F2} m</b> | 插值 α: <b>{DualClockBridge.InterpolationAlpha:F3}</b>",
             GUILayout.ExpandWidth(true));
       }
+
+      using (new GUILayout.HorizontalScope()) {
+        string decoupler_badge = SceneGraphDecoupler.PqsSweepsAvoided > 0
+            ? "<color=#55ff55>PQS 脏化拦截已激活</color>"
+            : "<color=#55ffff>场景图解耦就绪</color>";
+        double throttle_pct = SceneGraphDecoupler.ThrottleRatio * 100.0;
+        GUILayout.Label(
+            $"<b>场景图解耦 (Phase 4):</b> {decoupler_badge} | 变换节流率: <b>{throttle_pct:F1}%</b> (拦截: {SceneGraphDecoupler.UpdatesThrottled:N0} / 评估: {SceneGraphDecoupler.TotalEvaluations:N0}) | 避免 PQS 脏化重算: <b>{SceneGraphDecoupler.PqsSweepsAvoided:N0} 次</b> | 分级分布: T0:{SceneGraphDecoupler.Tier0Count} T1:{SceneGraphDecoupler.Tier1Count} T2:{SceneGraphDecoupler.Tier2Count} T3:{SceneGraphDecoupler.Tier3Count}",
+            GUILayout.ExpandWidth(true));
+      }
+
+      using (new GUILayout.HorizontalScope()) {
+        string smooth_badge = SmoothPlottingBridge.IsExternalModDetected
+            ? "<color=#55ff55>检测到 PrincipiaSmoothPlotting 模组</color>"
+            : "<color=#55ffff>内置自适应 Catmull-Rom 样条平滑</color>";
+        GUILayout.Label(
+            $"<b>GPU 虚拟投影与平滑轨迹:</b> 投影绑定: <b>{GpuVirtualProjection.TotalProjectionsApplied:N0}</b> | 最大微偏置: <b>{GpuVirtualProjection.MaxDisplacementMagnitude:F3} m</b> | 轨迹平滑: {smooth_badge} (插值细分: {SmoothPlottingBridge.SubdivisionsPerformed:N0} 次, 生成顶点: {SmoothPlottingBridge.SubdividedVertices:N0})",
+            GUILayout.ExpandWidth(true));
+      }
     }
   }
 

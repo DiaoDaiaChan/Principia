@@ -1,6 +1,9 @@
 Shader "Principia/TrajectoryProcedural" {
   Properties {
     _LineWidth ("Line Width", Float) = 1.0
+    _WorldOffset ("World Offset", Vector) = (0,0,0,0)
+    _VirtualDisplacement ("Virtual Displacement", Vector) = (0,0,0,0)
+    _EmissionMultiplier ("Emission Multiplier", Float) = 1.0
   }
   SubShader {
     Tags { "Queue"="Transparent" "RenderType"="Transparent" "IgnoreProjector"="True" }
@@ -21,6 +24,9 @@ Shader "Principia/TrajectoryProcedural" {
       };
 
       StructuredBuffer<OutputVertex> _VertexBuffer;
+      float4 _WorldOffset;
+      float4 _VirtualDisplacement;
+      float _EmissionMultiplier;
 
       struct v2f {
         float4 pos : SV_POSITION;
@@ -30,9 +36,12 @@ Shader "Principia/TrajectoryProcedural" {
       v2f vert(uint vertexID : SV_VertexID) {
         v2f o;
         OutputVertex v = _VertexBuffer[vertexID];
-        float4 worldPos = float4(v.position, 1.0);
+        // Apply GPU virtual projection displacement & world offset directly to the vertex.
+        float3 adjustedPos = v.position + _WorldOffset.xyz + _VirtualDisplacement.xyz;
+        float4 worldPos = float4(adjustedPos, 1.0);
         o.pos = mul(UNITY_MATRIX_VP, worldPos);
         o.color = v.color;
+        o.color.rgb *= max(1.0, _EmissionMultiplier);
         return o;
       }
 

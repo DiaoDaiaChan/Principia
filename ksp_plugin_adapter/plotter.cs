@@ -732,16 +732,32 @@ class Plotter {
         EnsureMesh();
         if (mesh != null) {
           if (compact_vertices != null && (mesh.vertexCount == 0 || mesh.vertexCount != vertex_count)) {
-            if (compact_colors == null || compact_colors.Length != vertex_count) {
-              compact_colors = new UnityEngine.Color[vertex_count];
-              for (int i = 0; i < vertex_count; ++i) {
+            // Smooth plotting bridge: adaptive subdivision for sparse trajectories
+            UnityEngine.Vector3[] effective_vertices = compact_vertices;
+            int effective_count = vertex_count;
+            if (SmoothPlottingBridge.SmoothInterpolationEnabled &&
+                vertex_count >= 4 && vertex_count < 1000) {
+              if (SmoothPlottingBridge.TrySmoothTrajectory(
+                      compact_vertices,
+                      vertex_count,
+                      subdivisions_per_segment: 2,
+                      out var smoothed_vertices,
+                      out int smoothed_count)) {
+                effective_vertices = smoothed_vertices;
+                effective_count = smoothed_count;
+              }
+            }
+
+            if (compact_colors == null || compact_colors.Length < effective_count) {
+              compact_colors = new UnityEngine.Color[effective_count];
+              for (int i = 0; i < effective_count; ++i) {
                 compact_colors[i] = base_color;
               }
             }
             mesh.Clear();
-            mesh.vertices = compact_vertices;
+            mesh.vertices = effective_vertices;
             mesh.colors = compact_colors;
-            int index_count = style == GLLines.Style.Dashed ? vertex_count & ~1 : vertex_count;
+            int index_count = style == GLLines.Style.Dashed ? effective_count & ~1 : effective_count;
             int[] indices = GetSharedIndices(index_count);
             mesh.SetIndices(indices,
                             indicesStart: 0,
@@ -756,6 +772,9 @@ class Plotter {
           PerformanceProbe.RecordCacheHit();
           PerformanceProbe.RecordVertices(vertex_count);
           HeterogeneousDynamicGovernor.RecordGpuDispatch();
+
+          // Phase 4: Apply GPU virtual projection & origin compensation to line material
+          GpuVirtualProjection.ApplyToMaterial(GLLines.line_material, draw_position, Vector3d.zero);
 
           UnityEngine.Graphics.DrawMesh(
               mesh,
