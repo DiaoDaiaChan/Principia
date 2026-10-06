@@ -2139,16 +2139,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             }
             insert_state.flags = (uint)flags;
             BatchStateSync.AddInsertState(ref insert_state);
-            if (part_id_to_intrinsic_forces_.TryGetValue(part_id,
-                    out var intrinsic_forces)) {
-              for (int ifi = 0; ifi < intrinsic_forces.Count; ++ifi) {
-                var part_centred_force = intrinsic_forces[ifi];
-                plugin_.PartApplyIntrinsicForceAtPosition(
-                    part_id,
-                    (XYZ)part_centred_force.force,
-                    (XYZ)part_centred_force.lever_arm);
-              }
-            }
           }
           Profiler.EndSample();
         } else if (inserted) {
@@ -2196,6 +2186,18 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       }
 
       BatchStateSync.DispatchInsertBatch(plugin_);
+
+      foreach (var pair in part_id_to_intrinsic_forces_) {
+        uint pid = pair.Key;
+        var forces = pair.Value;
+        for (int ifi = 0; ifi < forces.Count; ++ifi) {
+          var part_centred_force = forces[ifi];
+          plugin_.PartApplyIntrinsicForceAtPosition(
+              pid,
+              (XYZ)part_centred_force.force,
+              (XYZ)part_centred_force.lever_arm);
+        }
+      }
 
       plugin_.PrepareToReportCollisions();
 
@@ -2664,9 +2666,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private void Precalc() {
     using (PerformanceProbe.Measure(ProbeCategory.UnityPrecalc)) {
       if (!PluginRunning()) {
-        return;
-      }
-      if (FrameBudgetCircuitBreaker.ShouldSuppressCurrentFixedUpdate()) {
         return;
       }
       bool throttle_secondary = PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics();

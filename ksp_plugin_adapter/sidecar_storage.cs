@@ -102,7 +102,12 @@ internal static class SidecarStorage {
           break;
         }
 
-        byte[] raw_bytes = Convert.FromBase64String(serialization);
+        string standard_base64 = serialization.Replace('-', '+').Replace('_', '/');
+        switch (standard_base64.Length % 4) {
+          case 2: standard_base64 += "=="; break;
+          case 3: standard_base64 += "="; break;
+        }
+        byte[] raw_bytes = Convert.FromBase64String(standard_base64);
         writer.Write(raw_bytes.Length);
         writer.Write(raw_bytes);
         total_bytes += raw_bytes.Length;

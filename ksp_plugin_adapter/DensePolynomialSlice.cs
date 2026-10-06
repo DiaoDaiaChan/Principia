@@ -72,7 +72,52 @@ public struct DensePolynomialSlice {
       return;
     }
     double tau = Math.Max(0.0, Math.Min(1.0, (t - t_start) / duration));
-    rotation = UnityEngine.QuaternionD.Slerp(q_start, q_end, tau);
+    rotation = Slerp(q_start, q_end, tau);
+  }
+
+  [MethodImpl(MethodImplOptions.AggressiveInlining)]
+  private static UnityEngine.QuaternionD Slerp(
+      in UnityEngine.QuaternionD p,
+      in UnityEngine.QuaternionD q,
+      double t) {
+    double cos_half_theta = p.x * q.x + p.y * q.y + p.z * q.z + p.w * q.w;
+    UnityEngine.QuaternionD target = q;
+    if (cos_half_theta < 0.0) {
+      target = new UnityEngine.QuaternionD(-q.x, -q.y, -q.z, -q.w);
+      cos_half_theta = -cos_half_theta;
+    }
+    if (Math.Abs(cos_half_theta) >= 1.0) {
+      return p;
+    }
+    if (cos_half_theta > 0.9995) {
+      var result = new UnityEngine.QuaternionD(
+          p.x + t * (target.x - p.x),
+          p.y + t * (target.y - p.y),
+          p.z + t * (target.z - p.z),
+          p.w + t * (target.w - p.w));
+      double norm = Math.Sqrt(result.x * result.x + result.y * result.y + result.z * result.z + result.w * result.w);
+      if (norm > 0.0) {
+        double inv_norm = 1.0 / norm;
+        return new UnityEngine.QuaternionD(result.x * inv_norm, result.y * inv_norm, result.z * inv_norm, result.w * inv_norm);
+      }
+      return p;
+    }
+    double half_theta = Math.Acos(cos_half_theta);
+    double sin_half_theta = Math.Sqrt(1.0 - cos_half_theta * cos_half_theta);
+    if (Math.Abs(sin_half_theta) < 0.001) {
+      return new UnityEngine.QuaternionD(
+          0.5 * (p.x + target.x),
+          0.5 * (p.y + target.y),
+          0.5 * (p.z + target.z),
+          0.5 * (p.w + target.w));
+    }
+    double ratio_a = Math.Sin((1.0 - t) * half_theta) / sin_half_theta;
+    double ratio_b = Math.Sin(t * half_theta) / sin_half_theta;
+    return new UnityEngine.QuaternionD(
+        p.x * ratio_a + target.x * ratio_b,
+        p.y * ratio_a + target.y * ratio_b,
+        p.z * ratio_a + target.z * ratio_b,
+        p.w * ratio_a + target.w * ratio_b);
   }
 
   [MethodImpl(MethodImplOptions.AggressiveInlining)]

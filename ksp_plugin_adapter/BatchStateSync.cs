@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 
 namespace principia {
@@ -108,6 +109,7 @@ internal static class BatchStateSync {
 
   private static PartBatchApparentMotion[] apparent_buffer_ = new PartBatchApparentMotion[InitialCapacity];
   private static int apparent_count_ = 0;
+  private static readonly HashSet<uint> apparent_part_ids_ = new HashSet<uint>();
 
   private static uint[] actual_part_ids_ = new uint[InitialCapacity];
   private static QPRW[] actual_motion_results_ = new QPRW[InitialCapacity];
@@ -144,6 +146,7 @@ internal static class BatchStateSync {
     insert_count_ = 0;
     apparent_count_ = 0;
     actual_count_ = 0;
+    apparent_part_ids_.Clear();
   }
 
   private static void EnsureCapacity<T>(ref T[] array, int required) {
@@ -218,6 +221,9 @@ internal static class BatchStateSync {
   // --- Apparent Rigid Motion Batch Collection ---
 
   public static void AddApparentMotion(uint part_id, QP dof, WXYZ rot, XYZ ang_vel) {
+    if (!apparent_part_ids_.Add(part_id)) {
+      return;
+    }
     EnsureCapacity(ref apparent_buffer_, apparent_count_ + 1);
     apparent_buffer_[apparent_count_++] = new PartBatchApparentMotion {
       part_id = part_id,
@@ -230,6 +236,8 @@ internal static class BatchStateSync {
   public static void DispatchApparentMotionBatch(IntPtr plugin) {
     if (plugin == IntPtr.Zero || apparent_count_ == 0) {
       last_apparent_count_ = 0;
+      apparent_count_ = 0;
+      apparent_part_ids_.Clear();
       return;
     }
     last_apparent_count_ = apparent_count_;
@@ -254,6 +262,7 @@ internal static class BatchStateSync {
       }
     }
     apparent_count_ = 0;
+    apparent_part_ids_.Clear();
   }
 
   // --- Actual Rigid Motion Batch Query ---

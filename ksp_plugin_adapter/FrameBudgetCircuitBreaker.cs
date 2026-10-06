@@ -142,21 +142,11 @@ internal static class FrameBudgetCircuitBreaker {
   /// <summary>
   /// Determines whether the current FixedUpdate iteration should be suppressed
   /// to break out of a physics death spiral.
+  /// (Deprecated: In Principia, suppressing the integrator step desynchronizes
+  /// the N-body ephemeris. Throttling is applied safely via ShouldThrottleSecondaryPhysics).
   /// </summary>
   [MethodImpl(MethodImplOptions.AggressiveInlining)]
   public static bool ShouldSuppressCurrentFixedUpdate() {
-    if (!EnableCircuitBreaker) return false;
-    if (fixed_updates_in_current_frame_ <= 1) {
-      // Always allow at least the primary first substep
-      return false;
-    }
-
-    if (current_level_ >= CircuitBreakerLevel.ActiveExtrapolated) {
-      total_circuit_trips_++;
-      total_substeps_suppressed_++;
-      HeterogeneousDynamicGovernor.RecordCircuitBreakerTrip();
-      return true;
-    }
     return false;
   }
 
