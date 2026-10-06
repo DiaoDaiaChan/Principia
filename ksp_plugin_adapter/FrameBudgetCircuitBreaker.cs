@@ -22,7 +22,7 @@ internal enum CircuitBreakerLevel {
 internal static class FrameBudgetCircuitBreaker {
   // Master switch and budget settings
   public static bool EnableCircuitBreaker = true;
-  public static float BudgetMilliseconds = 8.0f; // Default 8ms frame budget (~120 FPS target)
+  public static float BudgetMilliseconds = 25.0f; // Default 25ms frame budget (appropriate for modded KSP)
   public static int MaxAllowedFixedUpdatesPerFrame = 4;
 
   // High-resolution timing
@@ -123,7 +123,7 @@ internal static class FrameBudgetCircuitBreaker {
       current_level_ = CircuitBreakerLevel.HardTripped;
     } else if (elapsed >= BudgetMilliseconds && fixed_updates_in_current_frame_ > 1) {
       current_level_ = CircuitBreakerLevel.ActiveExtrapolated;
-    } else if (elapsed >= BudgetMilliseconds * 0.5f) {
+    } else if (elapsed >= BudgetMilliseconds * 0.75f) {
       current_level_ = CircuitBreakerLevel.SecondaryThrottled;
     } else {
       current_level_ = CircuitBreakerLevel.Normal;

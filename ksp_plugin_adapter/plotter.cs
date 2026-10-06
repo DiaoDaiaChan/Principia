@@ -57,6 +57,14 @@ class Plotter {
                                double history_length,
                                double? prediction_t_max,
                                double? flight_plan_t_max) {
+    // Detect Krakensbane or FloatingOrigin shifts in ScaledSpace.
+    Vector3d current_scaled_space_origin =
+        ScaledSpace.ScaledToLocalSpace(Vector3d.zero);
+    if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1.0) {
+      InvalidateAll();
+      last_scaled_space_origin_ = current_scaled_space_origin;
+    }
+
     if (main_vessel_guid != last_main_vessel_guid_) {
       InvalidateAll();
       last_main_vessel_guid_ = main_vessel_guid;
@@ -273,24 +281,6 @@ class Plotter {
       double history_length,
       double? prediction_t_max,
       out int vertex_count) {
-    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
-                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
-                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
-                         : IntPtr.Zero;
-    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
-      planetarium.PlanetariumPlotPsychohistoryDirect(
-          Plugin,
-          vessel_guid,
-          history_length,
-          prediction_t_max,
-          gpu_ptr,
-          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
-          is_d3d11_buffer: true,
-          out vertex_count);
-      if (vertex_count > 0) {
-        return;
-      }
-    }
     planetarium.PlanetariumPlotPsychohistory(
         Plugin,
         vessel_guid,
@@ -306,23 +296,6 @@ class Plotter {
       string vessel_guid,
       double? prediction_t_max,
       out int vertex_count) {
-    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
-                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
-                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
-                         : IntPtr.Zero;
-    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
-      planetarium.PlanetariumPlotPredictionDirect(
-          Plugin,
-          vessel_guid,
-          prediction_t_max,
-          gpu_ptr,
-          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
-          is_d3d11_buffer: true,
-          out vertex_count);
-      if (vertex_count > 0) {
-        return;
-      }
-    }
     planetarium.PlanetariumPlotPrediction(
         Plugin,
         vessel_guid,
@@ -338,24 +311,6 @@ class Plotter {
       int segment_index,
       double? flight_plan_t_max,
       out int vertex_count) {
-    IntPtr gpu_ptr = GpuTrajectoryRenderer.IsGpuRenderingEnabled &&
-                     UnityEngine.SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Direct3D11
-                         ? NativeZeroCopyTrajectoryPipeline.GpuBufferNativePtr
-                         : IntPtr.Zero;
-    if (Interface.HasDirectVramSupport && gpu_ptr != IntPtr.Zero) {
-      planetarium.PlanetariumPlotFlightPlanSegmentDirect(
-          Plugin,
-          vessel_guid,
-          segment_index,
-          flight_plan_t_max,
-          gpu_ptr,
-          NativeZeroCopyTrajectoryPipeline.CurrentCapacity,
-          is_d3d11_buffer: true,
-          out vertex_count);
-      if (vertex_count > 0) {
-        return;
-      }
-    }
     planetarium.PlanetariumPlotFlightPlanSegment(
         Plugin,
         vessel_guid,
@@ -647,14 +602,6 @@ class Plotter {
           mesh_camera_forward = PlanetariumCamera.Camera.transform.forward;
         }
 
-        if (GpuTrajectoryRenderer.IsGpuRenderingEnabled) {
-          // Level 2 GPU Procedural Path:
-          // Bypasses Mesh.Clear, mesh.vertices upload, and Mesh lifecycle!
-          NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
-          is_valid = true;
-          return;
-        }
-
         EnsureMesh();
 
         // Compact color array reuse with standard UnityEngine.Color (float4).
@@ -693,9 +640,26 @@ class Plotter {
                         submesh: 0,
                         calculateBounds: false);
 
-        // In ScaledSpace, camera renders all trajectories without occlusion culling.
-        // Fast bounds assignment eliminates the O(N) scalar min/max comparison loop entirely.
-        mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
+        // Fast O(N) accurate AABB calculation in managed C#
+        // completely prevents camera culling float overflow bugs caused by cosmic-sized bounds.
+        float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
+        float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
+        for (int i = 0; i < count; ++i) {
+          var v = compact_vertices[i];
+          if (v.x < min_x) min_x = v.x;
+          if (v.x > max_x) max_x = v.x;
+          if (v.y < min_y) min_y = v.y;
+          if (v.y > max_y) max_y = v.y;
+          if (v.z < min_z) min_z = v.z;
+          if (v.z > max_z) max_z = v.z;
+        }
+        var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
+                                             (min_y + max_y) * 0.5f,
+                                             (min_z + max_z) * 0.5f);
+        var size = new UnityEngine.Vector3(Math.Max(max_x - min_x, 1.0f),
+                                           Math.Max(max_y - min_y, 1.0f),
+                                           Math.Max(max_z - min_z, 1.0f));
+        mesh.bounds = new UnityEngine.Bounds(center, size);
 
         NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
         is_valid = true;
@@ -707,78 +671,15 @@ class Plotter {
         return;
       }
       using (PerformanceProbe.Measure(ProbeCategory.GpuCompute)) {
-        // Mathematically exact ScaledSpace origin compensation:
-        // In KSP MapView, ScaledSpace moves so that the camera is centered at the origin.
-        // Drawing the mesh offset by ScaledSpace.LocalToScaledSpace(mesh_scaled_space_origin)
-        // keeps the trajectory mesh solidly pinned in 3D space with ZERO camera rotation drift.
-        UnityEngine.Vector3 draw_position =
-            (UnityEngine.Vector3)ScaledSpace.LocalToScaledSpace(mesh_scaled_space_origin);
-
-        if (GpuTrajectoryRenderer.IsGpuRenderingEnabled) {
-          if (GpuTrajectoryRenderer.RenderTrajectory(
-                  compact_vertices,
-                  vertex_count,
-                  base_color,
-                  style,
-                  PlanetariumCamera.Camera,
-                  draw_position)) {
-            PerformanceProbe.RecordCacheHit();
-            PerformanceProbe.RecordVertices(vertex_count);
-            HeterogeneousDynamicGovernor.RecordGpuDispatch();
-            return;
-          }
-        }
-
         EnsureMesh();
         if (mesh != null) {
-          if (compact_vertices != null && (mesh.vertexCount == 0 || mesh.vertexCount != vertex_count)) {
-            // Smooth plotting bridge: adaptive subdivision for sparse trajectories
-            UnityEngine.Vector3[] effective_vertices = compact_vertices;
-            int effective_count = vertex_count;
-            if (SmoothPlottingBridge.SmoothInterpolationEnabled &&
-                vertex_count >= 4 && vertex_count < 1000) {
-              if (SmoothPlottingBridge.TrySmoothTrajectory(
-                      compact_vertices,
-                      vertex_count,
-                      subdivisions_per_segment: 2,
-                      out var smoothed_vertices,
-                      out int smoothed_count)) {
-                effective_vertices = smoothed_vertices;
-                effective_count = smoothed_count;
-              }
-            }
-
-            if (compact_colors == null || compact_colors.Length < effective_count) {
-              compact_colors = new UnityEngine.Color[effective_count];
-              for (int i = 0; i < effective_count; ++i) {
-                compact_colors[i] = base_color;
-              }
-            }
-            mesh.Clear();
-            mesh.vertices = effective_vertices;
-            mesh.colors = compact_colors;
-            int index_count = style == GLLines.Style.Dashed ? effective_count & ~1 : effective_count;
-            int[] indices = GetSharedIndices(index_count);
-            mesh.SetIndices(indices,
-                            indicesStart: 0,
-                            indicesLength: index_count,
-                            style == GLLines.Style.Dashed
-                                ? UnityEngine.MeshTopology.Lines
-                                : UnityEngine.MeshTopology.LineStrip,
-                            submesh: 0,
-                            calculateBounds: false);
-            mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
-          }
           PerformanceProbe.RecordCacheHit();
           PerformanceProbe.RecordVertices(vertex_count);
           HeterogeneousDynamicGovernor.RecordGpuDispatch();
 
-          // Phase 4: Apply GPU virtual projection & origin compensation to line material
-          GpuVirtualProjection.ApplyToMaterial(GLLines.line_material, draw_position, Vector3d.zero);
-
           UnityEngine.Graphics.DrawMesh(
               mesh,
-              draw_position,
+              UnityEngine.Vector3.zero,
               UnityEngine.Quaternion.identity,
               GLLines.line_material,
               (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
@@ -824,7 +725,24 @@ class Plotter {
                           : UnityEngine.MeshTopology.LineStrip,
                       submesh: 0,
                       calculateBounds: false);
-      mesh.bounds = NativeZeroCopyTrajectoryPipeline.CosmicBounds;
+      float min_x = float.PositiveInfinity, min_y = float.PositiveInfinity, min_z = float.PositiveInfinity;
+      float max_x = float.NegativeInfinity, max_y = float.NegativeInfinity, max_z = float.NegativeInfinity;
+      for (int i = 0; i < count; ++i) {
+        var v = compact_vertices[i];
+        if (v.x < min_x) min_x = v.x;
+        if (v.x > max_x) max_x = v.x;
+        if (v.y < min_y) min_y = v.y;
+        if (v.y > max_y) max_y = v.y;
+        if (v.z < min_z) min_z = v.z;
+        if (v.z > max_z) max_z = v.z;
+      }
+      var center = new UnityEngine.Vector3((min_x + max_x) * 0.5f,
+                                           (min_y + max_y) * 0.5f,
+                                           (min_z + max_z) * 0.5f);
+      var size = new UnityEngine.Vector3(Math.Max(max_x - min_x, 1.0f),
+                                         Math.Max(max_y - min_y, 1.0f),
+                                         Math.Max(max_z - min_z, 1.0f));
+      mesh.bounds = new UnityEngine.Bounds(center, size);
       if (PlanetariumCamera.Camera != null) {
         mesh_camera_forward = PlanetariumCamera.Camera.transform.forward;
       }
@@ -885,6 +803,7 @@ class Plotter {
   private readonly CachedMeshEntry target_psychohistory_entry_ = new CachedMeshEntry();
   private readonly CachedMeshEntry target_prediction_entry_ = new CachedMeshEntry();
 
+  private Vector3d last_scaled_space_origin_ = Vector3d.zero;
   private string last_main_vessel_guid_ = null;
   private double last_history_length_ = -1.0;
   private string last_target_id_ = null;

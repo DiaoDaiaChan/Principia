@@ -377,6 +377,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private double last_prediction_integration_ut_ = -1.0;
   private string last_prediction_integration_guid_ = null;
   private string last_prediction_integration_target_guid_ = null;
+  private bool last_map_is_enabled_for_prediction_ = false;
   private ManeuverNode guidance_node_;
 
   // These need to be fields for communication between `LateUpdate` and
@@ -966,6 +967,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     plotting_frame_selector_.active_vessel = main_vessel;
 
     if (MapView.MapIsEnabled) {
+      bool map_just_enabled = !last_map_is_enabled_for_prediction_;
+      last_map_is_enabled_for_prediction_ = true;
+
       string main_vessel_guid = GetVesselGuid(main_vessel);
       string target_guid = !plotting_frame_selector_.target_frame_selected
           ? TargetVesselGuid()
@@ -979,8 +983,10 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       // In MapView, numerical prediction integration takes ~1.5-2.5 ms per call in C++.
       // When maneuvering: refresh at 10 Hz (0.100s).
       // When coasting / on rails / warping: refresh at 1 Hz (1.000s) or if UT jumped > 10s.
+      // When MapView is just opened: refresh immediately on first frame.
       double interval = is_maneuvering ? 0.100 : 1.000;
       bool should_update =
+          map_just_enabled ||
           main_vessel_guid != last_prediction_integration_guid_ ||
           target_guid != last_prediction_integration_target_guid_ ||
           (current_realtime - last_prediction_integration_realtime_ > interval &&
@@ -1017,6 +1023,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           plotter_?.InvalidatePrediction();
         }
       }
+    } else {
+      last_map_is_enabled_for_prediction_ = false;
     }
   }
 
@@ -2398,9 +2406,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         }
       }
 
-      if (!PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics()) {
-        UpdatePredictions();
-      }
+      UpdatePredictions();
 
       // We don't want to do too many things here, since all the KSP classes
       // still think they're in the preceding step.  We only nudge the Unity
@@ -2721,9 +2727,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             }
           }
         }
-        if (!throttle_secondary) {
-          SetBodyFrames();
-        }
+        SetBodyFrames();
       }
       // Unfortunately there is no way to get scheduled between Planetarium and
       // VesselPrecalculate, so we get scheduled after VesselPrecalculate, set the
@@ -2830,9 +2834,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private void Earlyish() {
-    if (PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics()) {
-      return;
-    }
     rolling_ephemeris_driver_?.Update();
   }
 
