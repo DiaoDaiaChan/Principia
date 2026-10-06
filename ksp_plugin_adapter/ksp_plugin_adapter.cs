@@ -910,6 +910,26 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     body.CBUpdate();
   }
 
+  public static bool IsVesselManeuvering(Vessel vessel) {
+    if (vessel == null || vessel.packed) {
+      return false;
+    }
+    if (vessel.ctrlState.mainThrottle > 1e-3f) {
+      return true;
+    }
+    if (vessel.geeForce_immediate > 1e-3) {
+      return true;
+    }
+    if (vessel.ActionGroups != null &&
+        vessel.ActionGroups[KSPActionGroup.RCS] &&
+        (Math.Abs(vessel.ctrlState.X) > 1e-3f ||
+         Math.Abs(vessel.ctrlState.Y) > 1e-3f ||
+         Math.Abs(vessel.ctrlState.Z) > 1e-3f)) {
+      return true;
+    }
+    return false;
+  }
+
   private void UpdatePredictions() {
     Vessel main_vessel = PredictedVessel();
     plotting_frame_selector_.active_vessel = main_vessel;
@@ -922,10 +942,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
       double current_realtime = UnityEngine.Time.realtimeSinceStartup;
       double current_ut = Planetarium.GetUniversalTime();
-      bool is_maneuvering = main_vessel != null &&
-          (!main_vessel.packed &&
-           (main_vessel.ctrlState.mainThrottle > 1e-3f ||
-            main_vessel.acceleration.sqrMagnitude > 0.01));
+      bool is_maneuvering = IsVesselManeuvering(main_vessel);
       bool is_warping = TimeWarp.CurrentRate > 1.0f;
 
       // In MapView, numerical prediction integration takes ~1.5-2.5 ms per call in C++.
@@ -961,10 +978,12 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                 new string[]{ main_vessel_guid, target_guid });
             MapMarkerEventGovernor.InvalidatePrediction();
             MapMarkerEventGovernor.InvalidateTarget();
+            plotter_?.InvalidatePrediction();
           }
         } else if (main_vessel_guid != null) {
           plugin_.UpdatePrediction(new string[]{ main_vessel_guid });
           MapMarkerEventGovernor.InvalidatePrediction();
+          plotter_?.InvalidatePrediction();
         }
       }
     }

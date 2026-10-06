@@ -179,7 +179,7 @@ public static class VacuumBypassGovernor {
 
     // 6. Throttle and power/acceleration check
     if (vessel.ctrlState.mainThrottle > 1e-4f ||
-        vessel.acceleration.sqrMagnitude > 1e-4) {
+        vessel.geeForce_immediate > 1e-3) {
       RecordExecution(vessel.id);
       return false;
     }
@@ -279,7 +279,7 @@ public static class VacuumBypassGovernor {
     }
     // Active throttle or external non-gravitational acceleration
     if (vessel.ctrlState.mainThrottle > 1e-4f ||
-        vessel.acceleration.sqrMagnitude > 1e-4) {
+        vessel.geeForce_immediate > 1e-3) {
       return false;
     }
     // Angular rotation (steady-state requires virtually zero rotation)

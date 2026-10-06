@@ -9,16 +9,24 @@ $srcPdb = "Release\GameData\Principia\ksp_plugin_adapter.pdb"
 if (-not $KspDirectory) {
     $candidatePaths = @(
         $env:KSP_PATH,
+        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod",
         "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program",
         "C:\Program Files\Steam\steamapps\common\Kerbal Space Program",
         "D:\SteamLibrary\steamapps\common\Kerbal Space Program",
-        "E:\SteamLibrary\steamapps\common\Kerbal Space Program",
-        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod"
+        "E:\SteamLibrary\steamapps\common\Kerbal Space Program"
     )
     foreach ($cand in $candidatePaths) {
-        if ($cand -and (Test-Path $cand)) {
+        if ($cand -and (Test-Path (Join-Path $cand "GameData\Principia"))) {
             $KspDirectory = $cand
             break
+        }
+    }
+    if (-not $KspDirectory) {
+        foreach ($cand in $candidatePaths) {
+            if ($cand -and (Test-Path $cand)) {
+                $KspDirectory = $cand
+                break
+            }
         }
     }
 }

@@ -66,6 +66,16 @@ class Plotter {
       target_psychohistory_entry_.Invalidate();
       last_history_length_ = history_length;
     }
+    if (prediction_t_max != last_prediction_t_max_) {
+      prediction_entry_.Invalidate();
+      last_prediction_t_max_ = prediction_t_max;
+    }
+    if (flight_plan_t_max != last_flight_plan_t_max_) {
+      for (int i = 0; i < flight_plan_segment_entries_.Count; ++i) {
+        flight_plan_segment_entries_[i].Invalidate();
+      }
+      last_flight_plan_t_max_ = flight_plan_t_max;
+    }
 
     PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
     PlotVesselTrajectories(planetarium, main_vessel_guid, history_length,
@@ -85,25 +95,24 @@ class Plotter {
         adapter_.plotting_frame_selector_.frame_type !=
             FrameType.BODY_CENTRED_NON_ROTATING ||
         adapter_.plotting_frame_selector_.target_frame_selected;
+    bool is_inertial = !is_expensive_frame;
 
     Vessel active = FlightGlobals.ActiveVessel;
-    bool is_maneuvering = active != null &&
-        (!active.packed &&
-         (active.ctrlState.mainThrottle > 1e-3 ||
-          active.acceleration.sqrMagnitude > 0.01));
+    bool is_maneuvering = PrincipiaPluginAdapter.IsVesselManeuvering(active);
     bool is_warping = TimeWarp.CurrentRate > 1.0f;
 
     if (main_vessel_guid != null) {
       // Psychohistory:
       // When maneuvering: refresh at 2 Hz (0.50s).
-      // When coasting / warping: refresh at 1 Hz (1.00s).
+      // When coasting in inertial frame: refresh every 5.0s.
+      // When coasting in rotating/L-point frame: refresh every 2.0s.
       // Decoupled from UT drift during warp to prevent per-frame C++ re-integration.
-      double psycho_interval = is_maneuvering ? 0.50 : 1.00;
+      double psycho_interval = is_maneuvering ? 0.50 : (is_inertial ? 5.00 : 2.00);
       double warp_ut_drift_allowance = is_warping ? Math.Max(60.0, TimeWarp.CurrentRate * 0.5) : 60.0;
       bool can_reuse_psychohistory = psychohistory_entry_.is_valid &&
           (!time_is_advancing ||
            (current_realtime - psychohistory_entry_.last_update_realtime < psycho_interval &&
-            (is_maneuvering || !is_warping || Math.Abs(current_time_ut - psychohistory_entry_.last_update_ut) < warp_ut_drift_allowance)));
+            (!is_warping || Math.Abs(current_time_ut - psychohistory_entry_.last_update_ut) < warp_ut_drift_allowance)));
 
       if (can_reuse_psychohistory) {
         psychohistory_entry_.Draw();
@@ -126,15 +135,16 @@ class Plotter {
       }
 
       // Prediction:
-      // When maneuvering: 20 Hz (0.050s) for responsive burn steering.
-      // When coasting / on rails: 1 Hz (1.000s) across all frames (inertial, rotating, L-point).
+      // When maneuvering: 10 Hz (0.100s) for responsive burn steering.
+      // When coasting in inertial frame: 5.0s refresh (geometry is static in space).
+      // When coasting in rotating/L-point frame: 2.0s refresh.
       // During intermediate frames (or camera rotation/browsing in MapView):
-      // Draws directly from cached GPU mesh with 0 ms CPU overhead!
-      double pred_interval = is_maneuvering ? 0.050 : 1.000;
+      // Draws directly from cached GPU mesh with 0.002 ms CPU overhead!
+      double pred_interval = is_maneuvering ? 0.100 : (is_inertial ? 5.00 : 2.00);
       bool can_reuse_prediction = prediction_entry_.is_valid &&
           (!time_is_advancing ||
            (current_realtime - prediction_entry_.last_update_realtime < pred_interval &&
-            (is_maneuvering || !is_warping || Math.Abs(current_time_ut - prediction_entry_.last_update_ut) < warp_ut_drift_allowance)));
+            (!is_warping || Math.Abs(current_time_ut - prediction_entry_.last_update_ut) < warp_ut_drift_allowance)));
 
       if (can_reuse_prediction) {
         prediction_entry_.Draw();
@@ -437,6 +447,10 @@ class Plotter {
                                 child, tan_angular_resolution);
       }
     }
+  }
+
+  public void InvalidatePrediction() {
+    prediction_entry_.Invalidate();
   }
 
   public void InvalidateAll() {
@@ -744,6 +758,8 @@ class Plotter {
   private string last_main_vessel_guid_ = null;
   private double last_history_length_ = -1.0;
   private string last_target_id_ = null;
+  private double? last_prediction_t_max_ = null;
+  private double? last_flight_plan_t_max_ = null;
 }
 
 }  // namespace ksp_plugin_adapter
