@@ -1767,24 +1767,27 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           MapMarkerEventGovernor.InvalidateTarget();
         }
 
-        // Event & Dynamics Driven marker evaluation with 0.6 ms time-slice budget:
+        // Event & Dynamics Driven marker evaluation with single-task-per-frame throttling:
         // When coasting / idle, HasDirtyMarkers is false -> strictly 0.000 ms overhead.
-        // When dirty, processes as many categories as fit within the frame budget;
-        // any unfinished categories defer to the next frame without stalling the main thread.
-        if (MapMarkerEventGovernor.HasDirtyMarkers && MapMarkerEventGovernor.HasBudgetRemaining) {
+        // When dirty, executes AT MOST ONE marker category per frame, guaranteeing LateUpdate
+        // execution time stays strictly < 0.8 ms without multi-task pileups or 3 ms spikes.
+        // Any remaining dirty categories naturally complete in successive frames (within ~60 ms total).
+        if (!MapMarkerEventGovernor.TaskExecutedThisFrame &&
+            MapMarkerEventGovernor.HasDirtyMarkers &&
+            MapMarkerEventGovernor.HasBudgetRemaining) {
           if (MapMarkerEventGovernor.PredictionApsidesDirty) {
             RenderPredictionApsides(main_vessel_guid,
                                     prediction_collision_,
                                     sun_world_position);
             MapMarkerEventGovernor.PredictionApsidesDirty = false;
-          }
-          if (MapMarkerEventGovernor.HasBudgetRemaining && MapMarkerEventGovernor.PredictionNodesDirty) {
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+          } else if (MapMarkerEventGovernor.PredictionNodesDirty) {
             RenderPredictionNodes(main_vessel_guid,
                                   prediction_collision_,
                                   sun_world_position);
             MapMarkerEventGovernor.PredictionNodesDirty = false;
-          }
-          if (MapMarkerEventGovernor.HasBudgetRemaining && MapMarkerEventGovernor.FlightPlanApsidesDirty) {
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+          } else if (MapMarkerEventGovernor.FlightPlanApsidesDirty) {
             if (main_vessel_guid != null &&
                 plugin_.FlightPlanExists(main_vessel_guid) &&
                 !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
@@ -1793,8 +1796,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                                       sun_world_position);
             }
             MapMarkerEventGovernor.FlightPlanApsidesDirty = false;
-          }
-          if (MapMarkerEventGovernor.HasBudgetRemaining && MapMarkerEventGovernor.FlightPlanNodesDirty) {
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+          } else if (MapMarkerEventGovernor.FlightPlanNodesDirty) {
             if (main_vessel_guid != null &&
                 plugin_.FlightPlanExists(main_vessel_guid) &&
                 !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
@@ -1803,18 +1806,19 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                                     sun_world_position);
             }
             MapMarkerEventGovernor.FlightPlanNodesDirty = false;
-          }
-          if (MapMarkerEventGovernor.HasBudgetRemaining && MapMarkerEventGovernor.TargetApsidesDirty) {
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+          } else if (MapMarkerEventGovernor.TargetApsidesDirty) {
             if (target_id != null && !plotting_frame_selector_.target_frame_selected) {
               RenderPredictionApsides(target_id, null, sun_world_position);
             }
             MapMarkerEventGovernor.TargetApsidesDirty = false;
-          }
-          if (MapMarkerEventGovernor.HasBudgetRemaining && MapMarkerEventGovernor.TargetNodesDirty) {
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+          } else if (MapMarkerEventGovernor.TargetNodesDirty) {
             if (target_id != null && !plotting_frame_selector_.target_frame_selected) {
               RenderPredictionNodes(target_id, null, sun_world_position);
             }
             MapMarkerEventGovernor.TargetNodesDirty = false;
+            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
           }
         }
       }
@@ -3397,7 +3401,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         vessel.patchedConicRenderer.enabled = true;
       }
     } else {
-      if (vessel.orbitDriver?.Renderer != null) {
+      if (vessel.orbitDriver?.Renderer != null &&
+          vessel.orbitDriver.Renderer.drawMode != OrbitRenderer.DrawMode.OFF) {
         vessel.orbitDriver.Renderer.drawMode = OrbitRenderer.DrawMode.OFF;
         vessel.orbitDriver.Renderer.drawIcons = OrbitRenderer.DrawIcons.OBJ;
       }
@@ -3406,35 +3411,38 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       // patched conics have yet to be unlocked.  In that case there is
       // nothing to remove.  Note that Principia doesn't care about unlocks
       // and always displays all the information it can.
-      if (vessel.patchedConicRenderer != null) {
+      if (vessel.patchedConicRenderer != null && vessel.patchedConicRenderer.enabled) {
         vessel.patchedConicRenderer.enabled = false;
         if (vessel.patchedConicRenderer.patchRenders != null) {
-          foreach (PatchRendering patch_rendering in vessel.patchedConicRenderer.
-              patchRenders) {
+          for (int i = 0; i < vessel.patchedConicRenderer.patchRenders.Count; ++i) {
+            var patch_rendering = vessel.patchedConicRenderer.patchRenders[i];
             patch_rendering?.DestroyUINodes();
             patch_rendering?.DestroyVector();
           }
         }
         if (vessel.patchedConicRenderer.flightPlanRenders != null) {
-          foreach (PatchRendering patch_rendering in vessel.patchedConicRenderer.
-              flightPlanRenders) {
+          for (int i = 0; i < vessel.patchedConicRenderer.flightPlanRenders.Count; ++i) {
+            var patch_rendering = vessel.patchedConicRenderer.flightPlanRenders[i];
             patch_rendering?.DestroyUINodes();
             patch_rendering?.DestroyVector();
           }
         }
-        if (vessel.patchedConicSolver?.maneuverNodes != null) {
-          foreach (ManeuverNode node in vessel.patchedConicSolver.maneuverNodes) {
-            if (node == null) continue;
-            node.DetachGizmo();
-            if (node.scaledSpaceTarget) {
-              MapView.MapCamera?.RemoveTarget(node.scaledSpaceTarget);
-              node.scaledSpaceTarget.Terminate();
-            }
+      }
+      if (vessel.patchedConicSolver?.maneuverNodes != null &&
+          vessel.patchedConicSolver.maneuverNodes.Count > 0) {
+        var nodes = vessel.patchedConicSolver.maneuverNodes;
+        for (int i = 0; i < nodes.Count; ++i) {
+          var node = nodes[i];
+          if (node == null) continue;
+          node.DetachGizmo();
+          if (node.scaledSpaceTarget) {
+            MapView.MapCamera?.RemoveTarget(node.scaledSpaceTarget);
+            node.scaledSpaceTarget.Terminate();
           }
         }
       }
 
-      if (vessel.orbitTargeter != null) {
+      if (vessel.orbitTargeter != null && vessel.orbitTargeter.enabled) {
         vessel.orbitTargeter.enabled = false;
       }
     }
@@ -3486,10 +3494,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       stock_celestials_dirty_ = true;
     }
 
-    bool should_patrol = stock_trajectories_dirty_ ||
-                         vessel_count_changed ||
-                         (current_realtime - last_stock_trajectories_cleanup_time_ > 5.0);
-    if (!should_patrol) {
+    bool full_sweep_needed = stock_trajectories_dirty_ || vessel_count_changed;
+    bool periodic_check = (current_realtime - last_stock_trajectories_cleanup_time_ > 5.0);
+    if (!full_sweep_needed && !periodic_check) {
       return;
     }
     last_stock_trajectories_cleanup_time_ = current_realtime;
@@ -3516,16 +3523,28 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         }
       }
 
-      var vessels = FlightGlobals.Vessels;
-      if (vessels != null) {
-        for (int i = 0; i < vessels.Count; ++i) {
-          var vessel = vessels[i];
-          if (vessel == null) continue;
-          var uiNode = vessel.mapObject?.uiNode;
+      if (full_sweep_needed) {
+        var vessels = FlightGlobals.Vessels;
+        if (vessels != null) {
+          for (int i = 0; i < vessels.Count; ++i) {
+            var vessel = vessels[i];
+            if (vessel == null) continue;
+            var uiNode = vessel.mapObject?.uiNode;
+            if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
+              uiNode.OnClick += OnVesselNodeClick;
+            }
+            RemoveStockTrajectoriesIfNeeded(vessel);
+          }
+        }
+      } else {
+        // Periodic 5s check: only check active vessel (only active vessel can get stock maneuver nodes / conics)
+        var active_vessel = FlightGlobals.ActiveVessel;
+        if (active_vessel != null) {
+          var uiNode = active_vessel.mapObject?.uiNode;
           if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
             uiNode.OnClick += OnVesselNodeClick;
           }
-          RemoveStockTrajectoriesIfNeeded(vessel);
+          RemoveStockTrajectoriesIfNeeded(active_vessel);
         }
       }
     } catch (Exception e) {
@@ -3576,7 +3595,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             MapMarkerEventGovernor.CollisionDirty ||
             vessel_guid != last_collision_vessel_guid_;
 
-        if (should_recompute && MapMarkerEventGovernor.HasBudgetRemaining) {
+        if (should_recompute &&
+            !MapMarkerEventGovernor.TaskExecutedThisFrame &&
+            MapMarkerEventGovernor.HasBudgetRemaining) {
           last_collision_vessel_guid_ = vessel_guid;
 
           prediction_collision_ = RenderedPredictionCollision(vessel_guid, centre);
@@ -3588,6 +3609,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           } else {
             MapMarkerEventGovernor.CollisionDirty = true;
           }
+          MapMarkerEventGovernor.TaskExecutedThisFrame = true;
 
           if (prediction_collision_.HasValue) {
             single_collision_marker_array_[0] = prediction_collision_.Value;

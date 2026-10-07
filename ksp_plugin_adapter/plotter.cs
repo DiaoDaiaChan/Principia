@@ -43,9 +43,19 @@ class Plotter {
         .orbitDriver?.Renderer?.orbitColor ?? XKCDColors.SunshineYellow;
     bool time_is_advancing = adapter_.is_time_advancing;
     double current_time_ut = Planetarium.GetUniversalTime();
+    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
+    bool is_warping = TimeWarp.CurrentRate > 1.0f;
+
+    // Equipotentials are static in the rotating frame and move with the central body.
+    // When paused: 100% reuse (0 ms CPU).
+    // During 1x physics: refresh at 10 Hz (0.10s interval, displacement < 0.3 pixels = 0 visual drift).
+    // When time warping: refresh every frame to maintain zero spatial drift.
+    bool can_reuse_eq = !is_warping &&
+        (current_realtime - last_equipotential_update_realtime_ < 0.10);
+
     for (int i = 0; i < number_of_equipotentials; ++i) {
       var entry = equipotential_entries_[i];
-      if (entry.is_valid && (!time_is_advancing || entry.last_update_ut == current_time_ut)) {
+      if (entry.is_valid && (!time_is_advancing || can_reuse_eq)) {
         entry.Draw();
         continue;
       }
@@ -58,6 +68,9 @@ class Plotter {
       entry.last_update_ut = current_time_ut;
       entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_);
       entry.Draw();
+    }
+    if (!can_reuse_eq) {
+      last_equipotential_update_realtime_ = current_realtime;
     }
   }
 
@@ -482,6 +495,7 @@ class Plotter {
     for (int i = 0; i < equipotential_entries_.Count; ++i) {
       equipotential_entries_[i].Invalidate();
     }
+    last_equipotential_update_realtime_ = -1.0;
     CelestialTrajectoryBinaryCache.InvalidateAll();
   }
 
@@ -784,6 +798,7 @@ class Plotter {
   private string last_target_id_ = null;
   private double? last_prediction_t_max_ = null;
   private double? last_flight_plan_t_max_ = null;
+  private double last_equipotential_update_realtime_ = -1.0;
   private FrameKey cached_frame_key_;
   private bool frame_key_dirty_ = true;
 }

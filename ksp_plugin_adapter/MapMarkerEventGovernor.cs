@@ -33,9 +33,12 @@ public static class MapMarkerEventGovernor {
       TargetNodesDirty ||
       CollisionDirty;
 
+  public static bool TaskExecutedThisFrame { get; set; } = false;
+
   public static void BeginFrame() {
     stopwatch_.Reset();
     stopwatch_.Start();
+    TaskExecutedThisFrame = false;
   }
 
   public static bool HasBudgetRemaining => stopwatch_.Elapsed.TotalMilliseconds < LateUpdateBudgetMs;
