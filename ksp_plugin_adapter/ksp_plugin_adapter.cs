@@ -1009,6 +1009,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             single_guid_array_[0] = target_guid;
             plugin_.UpdatePrediction(single_guid_array_);
             MapMarkerEventGovernor.InvalidateTarget();
+            plotter_?.InvalidateTargetPrediction();
           } else {
             AdaptiveStepParameters adaptive_step_parameters =
                 plugin_.VesselGetPredictionAdaptiveStepParameters(
@@ -1021,11 +1022,14 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             plugin_.UpdatePrediction(double_guid_array_);
             MapMarkerEventGovernor.InvalidatePrediction();
             MapMarkerEventGovernor.InvalidateTarget();
+            plotter_?.InvalidatePrediction();
+            plotter_?.InvalidateTargetPrediction();
           }
         } else if (main_vessel_guid != null) {
           single_guid_array_[0] = main_vessel_guid;
           plugin_.UpdatePrediction(single_guid_array_);
           MapMarkerEventGovernor.InvalidatePrediction();
+          plotter_?.InvalidatePrediction();
         }
       }
     } else {
@@ -1761,10 +1765,12 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           last_markers_vessel_guid_ = main_vessel_guid;
           MapMarkerEventGovernor.InvalidatePrediction();
           MapMarkerEventGovernor.InvalidateFlightPlan();
+          plotter_?.InvalidatePrediction();
         }
         if (target_id != last_markers_target_guid_) {
           last_markers_target_guid_ = target_id;
           MapMarkerEventGovernor.InvalidateTarget();
+          plotter_?.InvalidateTargetPrediction();
         }
 
         // Event & Dynamics Driven marker evaluation with single-task-per-frame throttling:
@@ -2989,6 +2995,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         flight_plan_dirty = true;
         break;
       case CommandType.SetPlottingFrame:
+        plotter_?.InvalidateAll();
         break;
       case CommandType.TriggerPrediction:
         plotter_?.InvalidateAll();

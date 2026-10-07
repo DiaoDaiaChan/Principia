@@ -31,6 +31,11 @@ class Plotter {
     }
   }
 
+  private CelestialBody CurrentReferenceAnchor =>
+      adapter_.plotting_frame_selector_.Centre() ??
+      FlightGlobals.currentMainBody ??
+      Planetarium.fetch?.Sun;
+
   private void PlotEquipotentialsInternal(DisposablePlanetarium planetarium) {
     int number_of_equipotentials = Plugin.EquipotentialCount();
     if (number_of_equipotentials == 0) {
@@ -48,10 +53,11 @@ class Plotter {
 
     // Equipotentials are static in the rotating frame and move with the central body.
     // When paused: 100% reuse (0 ms CPU).
-    // During 1x physics: refresh at 10 Hz (0.10s interval, displacement < 0.3 pixels = 0 visual drift).
-    // When time warping: refresh every frame to maintain zero spatial drift.
-    bool can_reuse_eq = !is_warping &&
-        (current_realtime - last_equipotential_update_realtime_ < 0.10);
+    // During 1x physics: refresh at 2 Hz (0.50s interval). Between intervals, 100% GPU reuse with anchor offset (0 ms CPU).
+    // When time warping: refresh at 10 Hz (0.10s interval) to maintain zero spatial drift.
+    double eq_interval = is_warping ? 0.10 : 0.50;
+    bool can_reuse_eq = !time_is_advancing ||
+        (current_realtime - last_equipotential_update_realtime_ < eq_interval);
 
     for (int i = 0; i < number_of_equipotentials; ++i) {
       var entry = equipotential_entries_[i];
@@ -66,7 +72,7 @@ class Plotter {
           VertexBuffer.size,
           out int vertex_count);
       entry.last_update_ut = current_time_ut;
-      entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_);
+      entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_, CurrentReferenceAnchor);
       entry.Draw();
     }
     if (!can_reuse_eq) {
@@ -144,13 +150,18 @@ class Plotter {
     bool time_is_advancing = adapter_.is_time_advancing;
     double current_realtime = UnityEngine.Time.realtimeSinceStartup;
     double current_time_ut = Planetarium.GetUniversalTime();
+    bool is_warping = TimeWarp.CurrentRate > 1.0f;
+    CelestialBody anchor = CurrentReferenceAnchor;
+    double psychohistory_interval = is_warping ? 0.05 : 0.20;
 
     if (main_vessel_guid != null) {
-      // Psychohistory:
-      // When paused or if UT has not advanced, reuse GPU mesh directly (0 ms CPU).
-      // When time advances, evaluate fresh from C++ to ensure zero spatial drift.
+      // Psychohistory (绿色历史轨迹):
+      // When paused: 100% reuse (0 ms CPU).
+      // During 1x physics: throttled to 5 Hz (0.20s interval). Between intervals, 100% GPU reuse with anchor offset (0 ms CPU).
+      // During time warp: throttled to 20 Hz (0.05s interval).
       bool can_reuse_psychohistory = psychohistory_entry_.is_valid &&
-          (!time_is_advancing || psychohistory_entry_.last_update_ut == current_time_ut);
+          (!time_is_advancing ||
+           current_realtime - psychohistory_entry_.last_update_realtime < psychohistory_interval);
 
       if (can_reuse_psychohistory) {
         psychohistory_entry_.Draw();
@@ -166,15 +177,20 @@ class Plotter {
         psychohistory_entry_.UpdateMesh(vertex_count,
                                         adapter_.history_colour,
                                         adapter_.history_style,
-                                        shared_indices_);
+                                        shared_indices_,
+                                        anchor);
         psychohistory_entry_.Draw();
       }
 
-      // Prediction:
-      // When paused or if UT has not advanced, reuse GPU mesh directly (0 ms CPU).
-      // When time advances, evaluate fresh from C++ to ensure zero spatial drift.
-      bool can_reuse_prediction = prediction_entry_.is_valid &&
-          (!time_is_advancing || prediction_entry_.last_update_ut == current_time_ut);
+      // Prediction (粉红色实际预测轨迹):
+      // Once calculated by C++ numerical integration, the prediction trajectory curve in 3D space
+      // is completely static! It is 100% REUSED from GPU VRAM with zero CPU overhead across all frames!
+      // Dynamically anchored to the central body via anchor offset to ensure absolute zero spatial drift.
+      // Re-evaluated ONLY when:
+      //   1. Explicitly invalidated by UpdatePredictions() (numerical integration step every 2.5s / 0.1s burn).
+      //   2. Reference frame or active vessel changes (InvalidateAll).
+      //   3. prediction_t_max changes (collision).
+      bool can_reuse_prediction = prediction_entry_.is_valid;
 
       if (can_reuse_prediction) {
         prediction_entry_.Draw();
@@ -189,7 +205,8 @@ class Plotter {
         prediction_entry_.UpdateMesh(vertex_count,
                                      adapter_.prediction_colour,
                                      adapter_.prediction_style,
-                                     shared_indices_);
+                                     shared_indices_,
+                                     anchor);
         prediction_entry_.Draw();
       }
 
@@ -205,8 +222,7 @@ class Plotter {
         bool fp_dirty = adapter_.flight_plan_dirty;
         for (int i = 0; i < number_of_segments; ++i) {
           var entry = flight_plan_segment_entries_[i];
-          bool can_reuse_fp = !fp_dirty && entry.is_valid &&
-              (!time_is_advancing || entry.last_update_ut == current_time_ut);
+          bool can_reuse_fp = !fp_dirty && entry.is_valid;
 
           if (can_reuse_fp) {
             entry.Draw();
@@ -227,7 +243,7 @@ class Plotter {
               out int vertex_count);
           entry.last_update_realtime = current_realtime;
           entry.last_update_ut = current_time_ut;
-          entry.UpdateMesh(vertex_count, colour, style, shared_indices_);
+          entry.UpdateMesh(vertex_count, colour, style, shared_indices_, anchor);
           entry.Draw();
         }
         if (fp_dirty) {
@@ -250,7 +266,8 @@ class Plotter {
 
       // Target psychohistory
       bool can_reuse_target_psychohistory = target_psychohistory_entry_.is_valid &&
-          (!time_is_advancing || target_psychohistory_entry_.last_update_ut == current_time_ut);
+          (!time_is_advancing ||
+           current_realtime - target_psychohistory_entry_.last_update_realtime < psychohistory_interval);
 
       if (can_reuse_target_psychohistory) {
         target_psychohistory_entry_.Draw();
@@ -266,13 +283,13 @@ class Plotter {
         target_psychohistory_entry_.UpdateMesh(vertex_count,
                                                adapter_.target_history_colour,
                                                adapter_.target_history_style,
-                                               shared_indices_);
+                                               shared_indices_,
+                                               anchor);
         target_psychohistory_entry_.Draw();
       }
 
       // Target prediction
-      bool can_reuse_target_prediction = target_prediction_entry_.is_valid &&
-          (!time_is_advancing || target_prediction_entry_.last_update_ut == current_time_ut);
+      bool can_reuse_target_prediction = target_prediction_entry_.is_valid;
 
       if (can_reuse_target_prediction) {
         target_prediction_entry_.Draw();
@@ -287,7 +304,8 @@ class Plotter {
         target_prediction_entry_.UpdateMesh(vertex_count,
                                             adapter_.target_prediction_colour,
                                             adapter_.target_prediction_style,
-                                            shared_indices_);
+                                            shared_indices_,
+                                            anchor);
         target_prediction_entry_.Draw();
       }
     }
@@ -357,15 +375,16 @@ class Plotter {
     bool time_is_advancing = adapter_.is_time_advancing;
     double current_time_ut = Planetarium.GetUniversalTime();
     double current_realtime = UnityEngine.Time.realtimeSinceStartup;
+    CelestialBody anchor = CurrentReferenceAnchor;
     PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
                             Planetarium.fetch.Sun, TanAngularResolution(),
                             frame_key, is_inertial_tree, time_is_advancing,
-                            current_time_ut, current_realtime);
+                            current_time_ut, current_realtime, anchor);
   }
 
   // Plots the trajectories of `root` and its natural satellites.
   // The per-frame invariants (`frame_key`, `is_inertial_tree`,
-  // `time_is_advancing`, `current_time_ut`, `current_realtime`) are hoisted to
+  // `time_is_advancing`, `current_time_ut`, `current_realtime`, `anchor`) are hoisted to
   // the caller and threaded through the recursion, since recomputing them per
   // body allocated objects on every visit and queried the universal time once
   // per celestial.
@@ -378,7 +397,8 @@ class Plotter {
                                        bool is_inertial_tree,
                                        bool time_is_advancing,
                                        double current_time_ut,
-                                       double current_realtime) {
+                                       double current_realtime,
+                                       CelestialBody anchor) {
     var past_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: false);
     var future_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: true);
 
@@ -393,15 +413,18 @@ class Plotter {
         (root.position - camera_world_position).magnitude;
 
     bool show_this_body = adapter_.show_celestial_trajectory(root);
+    bool is_warping = TimeWarp.CurrentRate > 1.0f;
+    double celestial_interval = is_warping ? 0.05 : 2.0;
 
     if (!adapter_.plotting_frame_selector_.FixesBody(root) &&
         show_this_body) {
       // Past trajectory:
-      // When paused or if UT has not advanced, reuse the existing mesh directly from L1 (0 ms CPU).
-      // When time advances, evaluate fresh from C++ ephemeris so the orbit line remains
-      // strictly anchored to the celestial body's real-time position with 0 spatial drift.
+      // When paused: 100% reuse (0 ms CPU).
+      // During 1x physics: celestial orbit is fixed relative to parent body, reuse with anchor offset (0 ms CPU).
+      // Refreshed at 0.5 Hz (2.0s interval) or 20 Hz during warp.
       bool can_reuse_past = past_entry.is_valid &&
-          (!time_is_advancing || past_entry.last_update_ut == current_time_ut);
+          (!time_is_advancing ||
+           current_realtime - past_entry.last_update_realtime < celestial_interval);
 
       if (can_reuse_past) {
         CelestialTrajectoryBinaryCache.RecordL1Hit();
@@ -427,7 +450,8 @@ class Plotter {
         past_entry.UpdateMesh(vertex_count,
                               colour,
                               GLLines.Style.Faded,
-                              shared_indices_);
+                              shared_indices_,
+                              anchor);
         past_entry.Draw();
         CelestialTrajectoryBinaryCache.RecordMiss();
       }
@@ -435,7 +459,8 @@ class Plotter {
       if (main_vessel_guid != null && Plugin.HasVessel(main_vessel_guid)) {
         // Future trajectory:
         bool can_reuse_future = future_entry.is_valid &&
-            (!time_is_advancing || future_entry.last_update_ut == current_time_ut);
+            (!time_is_advancing ||
+             current_realtime - future_entry.last_update_realtime < celestial_interval);
 
         if (can_reuse_future) {
           CelestialTrajectoryBinaryCache.RecordL1Hit();
@@ -460,7 +485,8 @@ class Plotter {
           future_entry.UpdateMesh(vertex_count,
                                   colour,
                                   GLLines.Style.Solid,
-                                  shared_indices_);
+                                  shared_indices_,
+                                  anchor);
           future_entry.Draw();
           CelestialTrajectoryBinaryCache.RecordMiss();
         }
@@ -473,13 +499,17 @@ class Plotter {
         PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
                                 child, tan_angular_resolution,
                                 frame_key, is_inertial_tree, time_is_advancing,
-                                current_time_ut, current_realtime);
+                                current_time_ut, current_realtime, anchor);
       }
     }
   }
 
   public void InvalidatePrediction() {
     prediction_entry_.Invalidate();
+  }
+
+  public void InvalidateTargetPrediction() {
+    target_prediction_entry_.Invalidate();
   }
 
   public void InvalidateAll() {
@@ -541,6 +571,9 @@ class Plotter {
     public double last_update_realtime;
     public double min_distance_from_camera;
 
+    public CelestialBody reference_body;
+    public UnityEngine.Vector3 reference_scaled_position;
+
     public Vector3d mesh_scaled_space_origin = Vector3d.zero;
     public UnityEngine.Vector3 mesh_camera_forward = UnityEngine.Vector3.forward;
     public GLLines.Style style = GLLines.Style.Solid;
@@ -557,16 +590,27 @@ class Plotter {
       }
     }
 
+    public void SetReferenceAnchor(CelestialBody body) {
+      reference_body = body;
+      if (body != null) {
+        reference_scaled_position = ScaledSpace.LocalToScaledSpace(body.position);
+      } else {
+        reference_scaled_position = UnityEngine.Vector3.zero;
+      }
+    }
+
     public void UpdateMesh(int count,
                            UnityEngine.Color colour,
                            GLLines.Style style,
-                           int[] shared_indices) {
+                           int[] shared_indices,
+                           CelestialBody anchor = null) {
       using (PerformanceProbe.Measure(ProbeCategory.MeshGeneration)) {
         PerformanceProbe.RecordCacheMiss();
         HeterogeneousDynamicGovernor.RecordCpuDispatch();
         vertex_count = count;
         this.style = style;
         this.base_color = colour;
+        SetReferenceAnchor(anchor);
 
         if (count <= 0) {
           if (mesh != null) {
@@ -666,9 +710,16 @@ class Plotter {
           PerformanceProbe.RecordVertices(vertex_count);
           HeterogeneousDynamicGovernor.RecordGpuDispatch();
 
+          UnityEngine.Vector3 draw_position = UnityEngine.Vector3.zero;
+          if (reference_body != null) {
+            UnityEngine.Vector3 current_scaled_pos =
+                ScaledSpace.LocalToScaledSpace(reference_body.position);
+            draw_position = current_scaled_pos - reference_scaled_position;
+          }
+
           UnityEngine.Graphics.DrawMesh(
               mesh,
-              UnityEngine.Vector3.zero,
+              draw_position,
               UnityEngine.Quaternion.identity,
               GLLines.line_material,
               (int)PrincipiaPluginAdapter.UnityLayers.Atmosphere,
@@ -683,7 +734,8 @@ class Plotter {
                               double min_distance,
                               double update_ut,
                               Vector3d scaled_origin,
-                              GLLines.Style style) {
+                              GLLines.Style style,
+                              CelestialBody anchor = null) {
       vertex_count = count;
       this.style = style;
       if (colors != null && colors.Length > 0) {
@@ -693,6 +745,7 @@ class Plotter {
       last_update_ut = update_ut;
       last_update_realtime = UnityEngine.Time.realtimeSinceStartup;
       mesh_scaled_space_origin = scaled_origin;
+      SetReferenceAnchor(anchor);
       EnsureMesh();
       if (count <= 0) {
         mesh.Clear();
@@ -740,6 +793,8 @@ class Plotter {
 
     public void Invalidate() {
       is_valid = false;
+      reference_body = null;
+      reference_scaled_position = UnityEngine.Vector3.zero;
     }
 
     public void Dispose() {
@@ -748,6 +803,8 @@ class Plotter {
       }
       is_valid = false;
       vertex_count = 0;
+      reference_body = null;
+      reference_scaled_position = UnityEngine.Vector3.zero;
     }
 
     public void Destroy() {
@@ -759,6 +816,8 @@ class Plotter {
       compact_colors = null;
       is_valid = false;
       vertex_count = 0;
+      reference_body = null;
+      reference_scaled_position = UnityEngine.Vector3.zero;
     }
   }
 
