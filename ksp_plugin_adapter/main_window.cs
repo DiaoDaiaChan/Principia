@@ -293,9 +293,9 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
                 $"前瞻剩余: <b>{ephem_driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{ephem_driver.refresh_threshold_years:F1} 年)";
 
             cached_rolling_cache_summary_ =
-                $"<b>天体轨迹/位置缓存:</b> L1显存: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | L2磁盘: <b>{CelestialTrajectoryBinaryCache.L2DiskFileCount}</b> 文件 | 实时星历: <b>{CelestialPositionCache.CachedBodyCount}</b> 颗 (刷新 {CelestialPositionCache.TotalRecordUpdates:N0} 次)";
+                $"<b>天体轨迹/位置缓存:</b> L1显存: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | 实时星历: <b>{CelestialPositionCache.CachedBodyCount}</b> 颗 (刷新 {CelestialPositionCache.TotalRecordUpdates:N0} 次)";
             cached_rolling_cache_metrics_ =
-                $"缓存命中统计: L1命中 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | L2载入 <b>{CelestialTrajectoryBinaryCache.L2HitCount:N0}</b> | C++重构 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
+                $"缓存命中统计: L1暂停/同UT复用 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | C++实时直出 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
 
             cached_rolling_log_title_ = $"▼ 实时推演日志 ({ephem_driver.ConsoleLogs.Count} 条)";
             if (show_ephemeris_logs_) {

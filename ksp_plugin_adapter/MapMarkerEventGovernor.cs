@@ -1,15 +1,20 @@
 using System;
+using System.Diagnostics;
 
 namespace principia {
 namespace ksp_plugin_adapter {
 
 /// <summary>
-/// Event & Dynamics Driven Marker Invalidation Governor.
+/// Event & Dynamics Driven Marker Invalidation Governor with Time-Slicing Budget.
 /// Eliminates all periodic polling and hardcoded time intervals.
 /// Markers are recomputed ONLY when physical dynamics change (integration step, burn, target/frame switch).
 /// In coasting state, execution cost in LateUpdate is strictly 0.000 ms.
+/// When dirty, computation is smoothly budgeted (<= 0.6 ms/frame) to eliminate frame spikes.
 /// </summary>
 public static class MapMarkerEventGovernor {
+  public const double LateUpdateBudgetMs = 0.6;
+  private static readonly Stopwatch stopwatch_ = new Stopwatch();
+
   // Event & Dynamics Invalidation Flags
   public static bool PredictionApsidesDirty { get; set; } = true;
   public static bool PredictionNodesDirty { get; set; } = true;
@@ -27,6 +32,15 @@ public static class MapMarkerEventGovernor {
       TargetApsidesDirty ||
       TargetNodesDirty ||
       CollisionDirty;
+
+  public static void BeginFrame() {
+    stopwatch_.Reset();
+    stopwatch_.Start();
+  }
+
+  public static bool HasBudgetRemaining => stopwatch_.Elapsed.TotalMilliseconds < LateUpdateBudgetMs;
+
+  public static double ElapsedMs => stopwatch_.Elapsed.TotalMilliseconds;
 
   /// <summary>
   /// Triggered when C++ numerical prediction integration (UpdatePrediction) executes
@@ -70,6 +84,7 @@ public static class MapMarkerEventGovernor {
 
   public static void Reset() {
     InvalidateAll();
+    stopwatch_.Reset();
   }
 }
 

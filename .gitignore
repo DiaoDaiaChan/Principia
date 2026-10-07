@@ -127,3 +127,7 @@ unity/
 
 # Nuget
 .nuget/
+
+# Telemetry & WorkBuddy
+PrincipiaTelemetry*
+.workbuddy/

@@ -2024,6 +2024,29 @@ namespace ksp_plugin_adapter {
 				[Out] QPRW[] motions_out,
 				int count);
 
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			public delegate double EphemerisGetHorizonSecondsDelegate(IntPtr plugin);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			public delegate double EphemerisGetTargetExtendedTimeDelegate(IntPtr plugin);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			[return: MarshalAs(UnmanagedType.I1)]
+			public delegate bool EphemerisIsProlongingDelegate(IntPtr plugin);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			public delegate void EphemerisForceProlongDelegate(IntPtr plugin);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			public delegate void EphemerisAdjustHorizonDelegate(IntPtr plugin, double delta_seconds);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			public delegate void EphemerisTogglePauseDelegate(IntPtr plugin);
+
+			[UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+			[return: MarshalAs(UnmanagedType.I1)]
+			public delegate bool EphemerisIsPausedDelegate(IntPtr plugin);
+
 			public ActivatePlayerDelegate ActivatePlayer = Loader.LoadFunction<ActivatePlayerDelegate>("principia__ActivatePlayer");
 
 			public ActivateRecorderDelegate ActivateRecorder = Loader.LoadFunction<ActivateRecorderDelegate>("principia__ActivateRecorder");
@@ -2399,6 +2422,20 @@ namespace ksp_plugin_adapter {
 			public BatchPartSetApparentRigidMotionDelegate BatchPartSetApparentRigidMotion = Loader.LoadOptionalFunction<BatchPartSetApparentRigidMotionDelegate>("principia__BatchPartSetApparentRigidMotion");
 
 			public BatchPartGetActualRigidMotionDelegate BatchPartGetActualRigidMotion = Loader.LoadOptionalFunction<BatchPartGetActualRigidMotionDelegate>("principia__BatchPartGetActualRigidMotion");
+
+			public EphemerisGetHorizonSecondsDelegate EphemerisGetHorizonSeconds = Loader.LoadOptionalFunction<EphemerisGetHorizonSecondsDelegate>("principia__EphemerisGetHorizonSeconds");
+
+			public EphemerisGetTargetExtendedTimeDelegate EphemerisGetTargetExtendedTime = Loader.LoadOptionalFunction<EphemerisGetTargetExtendedTimeDelegate>("principia__EphemerisGetTargetExtendedTime");
+
+			public EphemerisIsProlongingDelegate EphemerisIsProlonging = Loader.LoadOptionalFunction<EphemerisIsProlongingDelegate>("principia__EphemerisIsProlonging");
+
+			public EphemerisForceProlongDelegate EphemerisForceProlong = Loader.LoadOptionalFunction<EphemerisForceProlongDelegate>("principia__EphemerisForceProlong");
+
+			public EphemerisAdjustHorizonDelegate EphemerisAdjustHorizon = Loader.LoadOptionalFunction<EphemerisAdjustHorizonDelegate>("principia__EphemerisAdjustHorizon");
+
+			public EphemerisTogglePauseDelegate EphemerisTogglePause = Loader.LoadOptionalFunction<EphemerisTogglePauseDelegate>("principia__EphemerisTogglePause");
+
+			public EphemerisIsPausedDelegate EphemerisIsPaused = Loader.LoadOptionalFunction<EphemerisIsPausedDelegate>("principia__EphemerisIsPaused");
 		}
 
 
@@ -3353,6 +3390,46 @@ namespace ksp_plugin_adapter {
 		internal static void BatchPartGetActualRigidMotion(this IntPtr plugin, ref Origin origin, uint[] part_ids, QPRW[] motions_out, int count)
 		{
 			symbols_?.BatchPartGetActualRigidMotion?.Invoke(plugin, ref origin, part_ids, motions_out, count);
+		}
+
+		internal static bool HasNativeEphemerisPacer()
+		{
+			return symbols_?.EphemerisGetHorizonSeconds != null;
+		}
+
+		internal static double EphemerisGetHorizonSeconds(this IntPtr plugin)
+		{
+			return symbols_?.EphemerisGetHorizonSeconds != null ? symbols_.EphemerisGetHorizonSeconds(plugin) : 0.0;
+		}
+
+		internal static double EphemerisGetTargetExtendedTime(this IntPtr plugin)
+		{
+			return symbols_?.EphemerisGetTargetExtendedTime != null ? symbols_.EphemerisGetTargetExtendedTime(plugin) : 0.0;
+		}
+
+		internal static bool EphemerisIsProlonging(this IntPtr plugin)
+		{
+			return symbols_?.EphemerisIsProlonging != null && symbols_.EphemerisIsProlonging(plugin);
+		}
+
+		internal static void EphemerisForceProlong(this IntPtr plugin)
+		{
+			symbols_?.EphemerisForceProlong?.Invoke(plugin);
+		}
+
+		internal static void EphemerisAdjustHorizon(this IntPtr plugin, double delta_seconds)
+		{
+			symbols_?.EphemerisAdjustHorizon?.Invoke(plugin, delta_seconds);
+		}
+
+		internal static void EphemerisTogglePause(this IntPtr plugin)
+		{
+			symbols_?.EphemerisTogglePause?.Invoke(plugin);
+		}
+
+		internal static bool EphemerisIsPaused(this IntPtr plugin)
+		{
+			return symbols_?.EphemerisIsPaused != null && symbols_.EphemerisIsPaused(plugin);
 		}
 
 

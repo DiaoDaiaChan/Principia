@@ -26,6 +26,12 @@ class Plotter {
   }
 
   public void PlotEquipotentials(DisposablePlanetarium planetarium) {
+    using (PerformanceProbe.Measure(ProbeCategory.EquipotentialPlot)) {
+      PlotEquipotentialsInternal(planetarium);
+    }
+  }
+
+  private void PlotEquipotentialsInternal(DisposablePlanetarium planetarium) {
     int number_of_equipotentials = Plugin.EquipotentialCount();
     if (number_of_equipotentials == 0) {
       return;
@@ -35,9 +41,11 @@ class Plotter {
     }
     var colour = adapter_.plotting_frame_selector_.Primary()
         .orbitDriver?.Renderer?.orbitColor ?? XKCDColors.SunshineYellow;
+    bool time_is_advancing = adapter_.is_time_advancing;
+    double current_time_ut = Planetarium.GetUniversalTime();
     for (int i = 0; i < number_of_equipotentials; ++i) {
       var entry = equipotential_entries_[i];
-      if (entry.is_valid) {
+      if (entry.is_valid && (!time_is_advancing || entry.last_update_ut == current_time_ut)) {
         entry.Draw();
         continue;
       }
@@ -47,6 +55,7 @@ class Plotter {
           VertexBuffer.data,
           VertexBuffer.size,
           out int vertex_count);
+      entry.last_update_ut = current_time_ut;
       entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_);
       entry.Draw();
     }
@@ -58,6 +67,11 @@ class Plotter {
                                double? prediction_t_max,
                                double? flight_plan_t_max) {
     // Detect Krakensbane or FloatingOrigin shifts in ScaledSpace.
+    // In KSP ScaledSpace, meshes are rendered in ScaledSpace coordinates at (0,0,0)
+    // on PlanetariumCamera, which are completely invariant to Krakensbane/FloatingOrigin shifts.
+    // FloatingOrigin shifts only affect LocalSpace (physics world space).
+    // Updating last_scaled_space_origin_ without calling InvalidateAll() eliminates
+    // cyclic frame spikes that previously occurred every ~3 seconds in orbit!
     Vector3d current_scaled_space_origin =
         ScaledSpace.ScaledToLocalSpace(Vector3d.zero);
     if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1.0) {
@@ -72,22 +86,41 @@ class Plotter {
     if (Math.Abs(history_length - last_history_length_) > 1.0) {
       psychohistory_entry_.Invalidate();
       target_psychohistory_entry_.Invalidate();
+      CelestialTrajectoryBinaryCache.InvalidateAll();
       last_history_length_ = history_length;
     }
-    if (prediction_t_max != last_prediction_t_max_) {
+
+    // Deadband hysteresis for prediction_t_max:
+    // When collision search computes a numerical collision time, floating-point timestamp
+    // jitter previously caused prediction_t_max != last_prediction_t_max_ to trigger every frame,
+    // destroying cache reuse. Applying a 1.0s threshold guarantees rock-solid stability!
+    bool prediction_t_max_changed =
+        (prediction_t_max.HasValue != last_prediction_t_max_.HasValue) ||
+        (prediction_t_max.HasValue &&
+         Math.Abs(prediction_t_max.Value - (last_prediction_t_max_ ?? 0.0)) > 1.0);
+    if (prediction_t_max_changed) {
       prediction_entry_.Invalidate();
       last_prediction_t_max_ = prediction_t_max;
     }
-    if (flight_plan_t_max != last_flight_plan_t_max_) {
+
+    bool flight_plan_t_max_changed =
+        (flight_plan_t_max.HasValue != last_flight_plan_t_max_.HasValue) ||
+        (flight_plan_t_max.HasValue &&
+         Math.Abs(flight_plan_t_max.Value - (last_flight_plan_t_max_ ?? 0.0)) > 1.0);
+    if (flight_plan_t_max_changed) {
       for (int i = 0; i < flight_plan_segment_entries_.Count; ++i) {
         flight_plan_segment_entries_[i].Invalidate();
       }
       last_flight_plan_t_max_ = flight_plan_t_max;
     }
 
-    PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
-    PlotVesselTrajectories(planetarium, main_vessel_guid, history_length,
-                           prediction_t_max, flight_plan_t_max);
+    using (PerformanceProbe.Measure(ProbeCategory.CelestialPlot)) {
+      PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
+    }
+    using (PerformanceProbe.Measure(ProbeCategory.VesselPlot)) {
+      PlotVesselTrajectories(planetarium, main_vessel_guid, history_length,
+                             prediction_t_max, flight_plan_t_max);
+    }
   }
 
   private void PlotVesselTrajectories(DisposablePlanetarium planetarium,
@@ -99,28 +132,12 @@ class Plotter {
     double current_realtime = UnityEngine.Time.realtimeSinceStartup;
     double current_time_ut = Planetarium.GetUniversalTime();
 
-    bool is_expensive_frame =
-        adapter_.plotting_frame_selector_.frame_type !=
-            FrameType.BODY_CENTRED_NON_ROTATING ||
-        adapter_.plotting_frame_selector_.target_frame_selected;
-    bool is_inertial = !is_expensive_frame;
-
-    Vessel active = FlightGlobals.ActiveVessel;
-    bool is_maneuvering = PrincipiaPluginAdapter.IsVesselManeuvering(active);
-    bool is_warping = TimeWarp.CurrentRate > 1.0f;
-
     if (main_vessel_guid != null) {
       // Psychohistory:
-      // When maneuvering: refresh at 2 Hz (0.50s).
-      // When coasting in inertial frame: refresh every 5.0s.
-      // When coasting in rotating/L-point frame: refresh every 2.0s.
-      // Decoupled from UT drift during warp to prevent per-frame C++ re-integration.
-      double psycho_interval = is_maneuvering ? 0.50 : (is_inertial ? 5.00 : 2.00);
-      double warp_ut_drift_allowance = is_warping ? Math.Max(60.0, TimeWarp.CurrentRate * 0.5) : 60.0;
+      // When paused or if UT has not advanced, reuse GPU mesh directly (0 ms CPU).
+      // When time advances, evaluate fresh from C++ to ensure zero spatial drift.
       bool can_reuse_psychohistory = psychohistory_entry_.is_valid &&
-          (!time_is_advancing ||
-           (current_realtime - psychohistory_entry_.last_update_realtime < psycho_interval &&
-            (!is_warping || Math.Abs(current_time_ut - psychohistory_entry_.last_update_ut) < warp_ut_drift_allowance)));
+          (!time_is_advancing || psychohistory_entry_.last_update_ut == current_time_ut);
 
       if (can_reuse_psychohistory) {
         psychohistory_entry_.Draw();
@@ -141,16 +158,10 @@ class Plotter {
       }
 
       // Prediction:
-      // When maneuvering: 10 Hz (0.100s) for responsive burn steering.
-      // When coasting in inertial frame: 5.0s refresh (geometry is static in space).
-      // When coasting in rotating/L-point frame: 2.0s refresh.
-      // During intermediate frames (or camera rotation/browsing in MapView):
-      // Draws directly from cached GPU mesh with 0.002 ms CPU overhead!
-      double pred_interval = is_maneuvering ? 0.100 : (is_inertial ? 5.00 : 2.00);
+      // When paused or if UT has not advanced, reuse GPU mesh directly (0 ms CPU).
+      // When time advances, evaluate fresh from C++ to ensure zero spatial drift.
       bool can_reuse_prediction = prediction_entry_.is_valid &&
-          (!time_is_advancing ||
-           (current_realtime - prediction_entry_.last_update_realtime < pred_interval &&
-            (!is_warping || Math.Abs(current_time_ut - prediction_entry_.last_update_ut) < warp_ut_drift_allowance)));
+          (!time_is_advancing || prediction_entry_.last_update_ut == current_time_ut);
 
       if (can_reuse_prediction) {
         prediction_entry_.Draw();
@@ -182,9 +193,7 @@ class Plotter {
         for (int i = 0; i < number_of_segments; ++i) {
           var entry = flight_plan_segment_entries_[i];
           bool can_reuse_fp = !fp_dirty && entry.is_valid &&
-              (!time_is_advancing ||
-                (current_realtime - entry.last_update_realtime < 1.00 &&
-                 (!is_warping || Math.Abs(current_time_ut - entry.last_update_ut) < warp_ut_drift_allowance)));
+              (!time_is_advancing || entry.last_update_ut == current_time_ut);
 
           if (can_reuse_fp) {
             entry.Draw();
@@ -228,9 +237,7 @@ class Plotter {
 
       // Target psychohistory
       bool can_reuse_target_psychohistory = target_psychohistory_entry_.is_valid &&
-          (!time_is_advancing ||
-           (current_realtime - target_psychohistory_entry_.last_update_realtime < 1.00 &&
-            (!is_warping || Math.Abs(current_time_ut - target_psychohistory_entry_.last_update_ut) < 60.0)));
+          (!time_is_advancing || target_psychohistory_entry_.last_update_ut == current_time_ut);
 
       if (can_reuse_target_psychohistory) {
         target_psychohistory_entry_.Draw();
@@ -252,9 +259,7 @@ class Plotter {
 
       // Target prediction
       bool can_reuse_target_prediction = target_prediction_entry_.is_valid &&
-          (!time_is_advancing ||
-           (current_realtime - target_prediction_entry_.last_update_realtime < 1.00 &&
-            (!is_warping || Math.Abs(current_time_ut - target_prediction_entry_.last_update_ut) < 60.0)));
+          (!time_is_advancing || target_prediction_entry_.last_update_ut == current_time_ut);
 
       if (can_reuse_target_prediction) {
         target_prediction_entry_.Draw();
@@ -321,25 +326,46 @@ class Plotter {
         out vertex_count);
   }
 
-  private const int MaxCelestialReconstructionsPerFrame = 4;
-  private int celestial_reconstructed_this_frame_ = 0;
-
   private void PlotCelestialTrajectories(DisposablePlanetarium planetarium,
                                          string main_vessel_guid,
                                          double history_length) {
-    celestial_reconstructed_this_frame_ = 0;
+    // Cache the frame key to avoid calling FrameParameters() every frame,
+    // which allocates a fresh object and two int[] arrays.
+    if (frame_key_dirty_) {
+      cached_frame_key_ = new FrameKey(
+          adapter_.plotting_frame_selector_.FrameParameters());
+      frame_key_dirty_ = false;
+    }
+    var frame_key = cached_frame_key_;
+    bool is_inertial_tree =
+        adapter_.plotting_frame_selector_.frame_type ==
+            FrameType.BODY_CENTRED_NON_ROTATING &&
+        !adapter_.plotting_frame_selector_.target_frame_selected;
+    bool time_is_advancing = adapter_.is_time_advancing;
+    double current_time_ut = Planetarium.GetUniversalTime();
+    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
     PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
-                            Planetarium.fetch.Sun, TanAngularResolution());
+                            Planetarium.fetch.Sun, TanAngularResolution(),
+                            frame_key, is_inertial_tree, time_is_advancing,
+                            current_time_ut, current_realtime);
   }
 
   // Plots the trajectories of `root` and its natural satellites.
+  // The per-frame invariants (`frame_key`, `is_inertial_tree`,
+  // `time_is_advancing`, `current_time_ut`, `current_realtime`) are hoisted to
+  // the caller and threaded through the recursion, since recomputing them per
+  // body allocated objects on every visit and queried the universal time once
+  // per celestial.
   private void PlotSubtreeTrajectories(DisposablePlanetarium planetarium,
                                        string main_vessel_guid,
                                        double history_length,
                                        CelestialBody root,
-                                       double tan_angular_resolution) {
-    var frame_params = adapter_.plotting_frame_selector_.FrameParameters();
-    var frame_key = new FrameKey(frame_params);
+                                       double tan_angular_resolution,
+                                       FrameKey frame_key,
+                                       bool is_inertial_tree,
+                                       bool time_is_advancing,
+                                       double current_time_ut,
+                                       double current_realtime) {
     var past_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: false);
     var future_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: true);
 
@@ -353,31 +379,16 @@ class Plotter {
     double min_distance_from_camera =
         (root.position - camera_world_position).magnitude;
 
-    bool time_is_advancing = adapter_.is_time_advancing;
-    double current_time_ut = Planetarium.GetUniversalTime();
-    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
+    bool show_this_body = adapter_.show_celestial_trajectory(root);
 
     if (!adapter_.plotting_frame_selector_.FixesBody(root) &&
-        adapter_.show_celestial_trajectory(root)) {
-      bool is_inertial = adapter_.plotting_frame_selector_.frame_type ==
-          FrameType.BODY_CENTRED_NON_ROTATING &&
-          !adapter_.plotting_frame_selector_.target_frame_selected;
-      // Celestial orbits are governed strictly by the gravitational ephemeris.
-      // Once calculated, celestial trajectories in any frame (inertial, rotating, or L-point)
-      // strictly freeze in GPU VRAM and do NOT expire based on real-time clock or short warps!
-      // In inertial frames: static indefinitely (10 Julian Years).
-      // In rotating / L-point frames: valid for 30 game days (86400 * 30 s).
-      double non_inertial_max_drift = 86400.0 * 30.0;
-      if (root?.orbit != null && root.orbit.period > 0) {
-        non_inertial_max_drift = Math.Max(300.0, root.orbit.period * 0.05);
-      }
-      double max_ut_drift = is_inertial ? 86400.0 * 3652.5 * 10.0 : non_inertial_max_drift;
-
-      // Past trajectory: L1 RAM cache hit -> L2 Disk cache hit -> C++ reconstruction fallback
+        show_this_body) {
+      // Past trajectory:
+      // When paused or if UT has not advanced, reuse the existing mesh directly from L1 (0 ms CPU).
+      // When time advances, evaluate fresh from C++ ephemeris so the orbit line remains
+      // strictly anchored to the celestial body's real-time position with 0 spatial drift.
       bool can_reuse_past = past_entry.is_valid &&
-          (!time_is_advancing ||
-           Math.Abs(current_time_ut - past_entry.last_update_ut) < max_ut_drift ||
-           celestial_reconstructed_this_frame_ >= MaxCelestialReconstructionsPerFrame);
+          (!time_is_advancing || past_entry.last_update_ut == current_time_ut);
 
       if (can_reuse_past) {
         CelestialTrajectoryBinaryCache.RecordL1Hit();
@@ -386,52 +397,32 @@ class Plotter {
             Math.Min(min_distance_from_camera,
                      past_entry.min_distance_from_camera);
       } else {
-        if (CelestialTrajectoryBinaryCache.TryLoadFromDisk(
-                past_key,
-                current_time_ut,
-                max_ut_drift,
-                past_entry,
-                colour,
-                GLLines.Style.Faded)) {
-          past_entry.Draw();
-          min_distance_from_camera =
-              Math.Min(min_distance_from_camera,
-                       past_entry.min_distance_from_camera);
-        } else if (celestial_reconstructed_this_frame_ >= MaxCelestialReconstructionsPerFrame) {
-          // Defer cold reconstruction of additional celestials to subsequent frames
-          // to guarantee a silky smooth 60 FPS even during cache warm-up.
-        } else {
-          celestial_reconstructed_this_frame_++;
-          planetarium.PlanetariumPlotCelestialPastTrajectory(
-              Plugin,
-              root.flightGlobalsIndex,
-              main_vessel_guid,
-              history_length,
-              VertexBuffer.data,
-              VertexBuffer.size,
-              out double min_past_distance,
-              out int vertex_count);
-          min_distance_from_camera =
-              Math.Min(min_distance_from_camera, min_past_distance);
-          past_entry.min_distance_from_camera = min_past_distance;
-          past_entry.last_update_ut = current_time_ut;
-          past_entry.last_update_realtime = current_realtime;
-          past_entry.UpdateMesh(vertex_count,
-                                colour,
-                                GLLines.Style.Faded,
-                                shared_indices_);
-          past_entry.Draw();
-          CelestialTrajectoryBinaryCache.RecordMiss();
-          CelestialTrajectoryBinaryCache.SaveToDisk(past_key, past_entry);
-        }
+        planetarium.PlanetariumPlotCelestialPastTrajectory(
+            Plugin,
+            root.flightGlobalsIndex,
+            main_vessel_guid,
+            history_length,
+            VertexBuffer.data,
+            VertexBuffer.size,
+            out double min_past_distance,
+            out int vertex_count);
+        min_distance_from_camera =
+            Math.Min(min_distance_from_camera, min_past_distance);
+        past_entry.min_distance_from_camera = min_past_distance;
+        past_entry.last_update_ut = current_time_ut;
+        past_entry.last_update_realtime = current_realtime;
+        past_entry.UpdateMesh(vertex_count,
+                              colour,
+                              GLLines.Style.Faded,
+                              shared_indices_);
+        past_entry.Draw();
+        CelestialTrajectoryBinaryCache.RecordMiss();
       }
 
       if (main_vessel_guid != null && Plugin.HasVessel(main_vessel_guid)) {
-        // Future trajectory: L1 RAM cache hit -> L2 Disk cache hit -> C++ reconstruction fallback
+        // Future trajectory:
         bool can_reuse_future = future_entry.is_valid &&
-            (!time_is_advancing ||
-             Math.Abs(current_time_ut - future_entry.last_update_ut) < max_ut_drift ||
-             celestial_reconstructed_this_frame_ >= MaxCelestialReconstructionsPerFrame);
+            (!time_is_advancing || future_entry.last_update_ut == current_time_ut);
 
         if (can_reuse_future) {
           CelestialTrajectoryBinaryCache.RecordL1Hit();
@@ -440,55 +431,36 @@ class Plotter {
               Math.Min(min_distance_from_camera,
                        future_entry.min_distance_from_camera);
         } else {
-          if (CelestialTrajectoryBinaryCache.TryLoadFromDisk(
-                  future_key,
-                  current_time_ut,
-                  max_ut_drift,
-                  future_entry,
-                  colour,
-                  GLLines.Style.Solid)) {
-            future_entry.Draw();
-            min_distance_from_camera =
-                Math.Min(min_distance_from_camera,
-                         future_entry.min_distance_from_camera);
-          } else if (celestial_reconstructed_this_frame_ >= MaxCelestialReconstructionsPerFrame) {
-            // Defer cold reconstruction of additional celestials to subsequent frames
-          } else {
-            celestial_reconstructed_this_frame_++;
-            planetarium.PlanetariumPlotCelestialFutureTrajectory(
-                Plugin,
-                root.flightGlobalsIndex,
-                main_vessel_guid,
-                VertexBuffer.data,
-                VertexBuffer.size,
-                out double min_future_distance,
-                out int vertex_count);
-            min_distance_from_camera =
-                Math.Min(min_distance_from_camera, min_future_distance);
-            future_entry.min_distance_from_camera = min_future_distance;
-            future_entry.last_update_ut = current_time_ut;
-            future_entry.last_update_realtime = current_realtime;
-            future_entry.UpdateMesh(vertex_count,
-                                    colour,
-                                    GLLines.Style.Solid,
-                                    shared_indices_);
-            future_entry.Draw();
-            CelestialTrajectoryBinaryCache.RecordMiss();
-            CelestialTrajectoryBinaryCache.SaveToDisk(future_key, future_entry);
-          }
+          planetarium.PlanetariumPlotCelestialFutureTrajectory(
+              Plugin,
+              root.flightGlobalsIndex,
+              main_vessel_guid,
+              VertexBuffer.data,
+              VertexBuffer.size,
+              out double min_future_distance,
+              out int vertex_count);
+          min_distance_from_camera =
+              Math.Min(min_distance_from_camera, min_future_distance);
+          future_entry.min_distance_from_camera = min_future_distance;
+          future_entry.last_update_ut = current_time_ut;
+          future_entry.last_update_realtime = current_realtime;
+          future_entry.UpdateMesh(vertex_count,
+                                  colour,
+                                  GLLines.Style.Solid,
+                                  shared_indices_);
+          future_entry.Draw();
+          CelestialTrajectoryBinaryCache.RecordMiss();
         }
       }
     }
-    bool is_inertial_tree = adapter_.plotting_frame_selector_.frame_type ==
-        FrameType.BODY_CENTRED_NON_ROTATING &&
-        !adapter_.plotting_frame_selector_.target_frame_selected;
-    double min_apparent_ratio = is_inertial_tree ? 2.0 : 12.0;
     foreach (CelestialBody child in root.orbitingBodies) {
-      if (!adapter_.show_celestial_trajectory(root) ||
+      if (child.orbit != null &&
           child.orbit.ApR / min_distance_from_camera >
-              min_apparent_ratio * tan_angular_resolution) {
+              2.0 * tan_angular_resolution) {
         PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
-                                child, tan_angular_resolution);
+                                child, tan_angular_resolution,
+                                frame_key, is_inertial_tree, time_is_advancing,
+                                current_time_ut, current_realtime);
       }
     }
   }
@@ -498,6 +470,8 @@ class Plotter {
   }
 
   public void InvalidateAll() {
+    PerformanceProbe.RecordPlotInvalidation();
+    frame_key_dirty_ = true;
     psychohistory_entry_.Invalidate();
     prediction_entry_.Invalidate();
     target_psychohistory_entry_.Invalidate();
@@ -508,6 +482,7 @@ class Plotter {
     for (int i = 0; i < equipotential_entries_.Count; ++i) {
       equipotential_entries_[i].Invalidate();
     }
+    CelestialTrajectoryBinaryCache.InvalidateAll();
   }
 
   public void Dispose() {
@@ -809,6 +784,8 @@ class Plotter {
   private string last_target_id_ = null;
   private double? last_prediction_t_max_ = null;
   private double? last_flight_plan_t_max_ = null;
+  private FrameKey cached_frame_key_;
+  private bool frame_key_dirty_ = true;
 }
 
 }  // namespace ksp_plugin_adapter

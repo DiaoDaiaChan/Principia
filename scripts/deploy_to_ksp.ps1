@@ -6,86 +6,108 @@ param(
 $srcDll = "Release\GameData\Principia\ksp_plugin_adapter.dll"
 $srcPdb = "Release\GameData\Principia\ksp_plugin_adapter.pdb"
 
-if (-not $KspDirectory) {
-    $candidatePaths = @(
-        $env:KSP_PATH,
-        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod",
-        "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program",
-        "C:\Program Files\Steam\steamapps\common\Kerbal Space Program",
-        "D:\SteamLibrary\steamapps\common\Kerbal Space Program",
-        "E:\SteamLibrary\steamapps\common\Kerbal Space Program"
-    )
-    foreach ($cand in $candidatePaths) {
-        if ($cand -and (Test-Path (Join-Path $cand "GameData\Principia"))) {
-            $KspDirectory = $cand
-            break
-        }
-    }
-    if (-not $KspDirectory) {
-        foreach ($cand in $candidatePaths) {
-            if ($cand -and (Test-Path $cand)) {
-                $KspDirectory = $cand
-                break
-            }
-        }
-    }
-}
-
-if (-not $KspDirectory -or -not (Test-Path $KspDirectory)) {
-    Write-Error "KSP installation directory not found. Please pass -KspDirectory or set the KSP_DIRECTORY environment variable."
-    exit 1
-}
-
-$targetDir1 = Join-Path $KspDirectory "GameData\Principia"
-$targetDir2 = Join-Path $KspDirectory "Principia"
-
 if (-not (Test-Path $srcDll)) {
     Write-Error "Source DLL not found at $srcDll. Please build first."
     exit 1
 }
 
-$kspProcess = Get-Process -Name "KSP_x64" -ErrorAction SilentlyContinue
+$candidateDirs = @()
+if ($KspDirectory) {
+    $candidateDirs += $KspDirectory
+}
 
-if ($kspProcess) {
-    if ($Wait) {
-        Write-Host "KSP_x64 (PID $($kspProcess.Id)) is currently running. Waiting for KSP to exit..." -ForegroundColor Yellow
-        $kspProcess.WaitForExit()
-        Write-Host "KSP exited. Continuing deployment." -ForegroundColor Green
-    } else {
-        Write-Warning "KSP_x64 (PID $($kspProcess.Id)) is currently running and has memory-mapped the DLL."
-        Write-Warning "Please save and close KSP, then re-run this script to deploy."
-        exit 2
+# 1. If KSP_x64 is running, detect its exact active directory
+$runningKsp = Get-Process -Name "KSP_x64" -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($runningKsp) {
+    try {
+        $runningDir = Split-Path $runningKsp.MainModule.FileName -Parent
+        if ($runningDir -and (Test-Path (Join-Path $runningDir "GameData\Principia"))) {
+            $candidateDirs += $runningDir
+            Write-Host "Detected actively running KSP instance (PID $($runningKsp.Id)): $runningDir" -ForegroundColor Cyan
+        }
+    } catch {
+        # Ignore permission error
     }
 }
 
-Write-Host "Deploying latest Principia binaries to KSP directories..." -ForegroundColor Cyan
+# 2. Known standard paths
+$standardPaths = @(
+    $env:KSP_PATH,
+    "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod",
+    "C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program",
+    "C:\Program Files\Steam\steamapps\common\Kerbal Space Program_newmod",
+    "C:\Program Files\Steam\steamapps\common\Kerbal Space Program",
+    "D:\SteamLibrary\steamapps\common\Kerbal Space Program",
+    "E:\SteamLibrary\steamapps\common\Kerbal Space Program"
+)
 
-Copy-Item -Path $srcDll -Destination "$targetDir1\ksp_plugin_adapter.dll" -Force
-Copy-Item -Path $srcPdb -Destination "$targetDir1\ksp_plugin_adapter.pdb" -Force
+foreach ($cand in $standardPaths) {
+    if ($cand -and (Test-Path $cand) -and (Test-Path (Join-Path $cand "GameData\Principia"))) {
+        if (-not ($candidateDirs -contains $cand)) {
+            $candidateDirs += $cand
+        }
+    }
+}
+
+if ($candidateDirs.Count -eq 0) {
+    Write-Error "No KSP installation directory with GameData\Principia found. Please pass -KspDirectory."
+    exit 1
+}
+
+function Copy-FileAtomic([string]$source, [string]$destination) {
+    try {
+        Copy-Item -Path $source -Destination $destination -Force -ErrorAction Stop
+    } catch {
+        # If file is memory-mapped by a running process, NTFS permits renaming the file
+        $oldDest = "$destination.old"
+        if (Test-Path $oldDest) {
+            Remove-Item $oldDest -Force -ErrorAction SilentlyContinue
+        }
+        Move-Item -Path $destination -Destination $oldDest -Force
+        Copy-Item -Path $source -Destination $destination -Force
+    }
+}
 
 $shadersSrc = "Release\GameData\Principia\shaders"
 if (-not (Test-Path $shadersSrc)) {
     $shadersSrc = "shaders"
 }
-if (Test-Path $shadersSrc) {
-    $shadersDst = Join-Path $targetDir1 "shaders"
-    if (-not (Test-Path $shadersDst)) {
-        New-Item -ItemType Directory -Path $shadersDst -Force | Out-Null
+
+foreach ($dir in $candidateDirs) {
+    Write-Host "`nDeploying to KSP directory: $dir" -ForegroundColor Cyan
+    $targetDir1 = Join-Path $dir "GameData\Principia"
+    $targetDir2 = Join-Path $dir "Principia"
+
+    $dstDll = Join-Path $targetDir1 "ksp_plugin_adapter.dll"
+    $dstPdb = Join-Path $targetDir1 "ksp_plugin_adapter.pdb"
+
+    Copy-FileAtomic $srcDll $dstDll
+    if (Test-Path $srcPdb) {
+        Copy-FileAtomic $srcPdb $dstPdb
     }
-    Copy-Item -Path "$shadersSrc\*" -Destination $shadersDst -Recurse -Force
-    Write-Host "Synced shaders to $shadersDst" -ForegroundColor Green
-}
 
-if (Test-Path $targetDir2) {
-    Copy-Item -Path $srcDll -Destination "$targetDir2\ksp_plugin_adapter.dll" -Force
-    Copy-Item -Path $srcPdb -Destination "$targetDir2\ksp_plugin_adapter.pdb" -Force
-}
+    if (Test-Path $shadersSrc) {
+        $shadersDst = Join-Path $targetDir1 "shaders"
+        if (-not (Test-Path $shadersDst)) {
+            New-Item -ItemType Directory -Path $shadersDst -Force | Out-Null
+        }
+        Copy-Item -Path "$shadersSrc\*" -Destination $shadersDst -Recurse -Force
+        Write-Host "Synced shaders to $shadersDst" -ForegroundColor Green
+    }
 
-$hashSrc = (Get-FileHash -Path $srcDll -Algorithm SHA256).Hash
-$hashDst = (Get-FileHash -Path "$targetDir1\ksp_plugin_adapter.dll" -Algorithm SHA256).Hash
+    if (Test-Path $targetDir2) {
+        Copy-FileAtomic $srcDll (Join-Path $targetDir2 "ksp_plugin_adapter.dll")
+        if (Test-Path $srcPdb) {
+            Copy-FileAtomic $srcPdb (Join-Path $targetDir2 "ksp_plugin_adapter.pdb")
+        }
+    }
 
-if ($hashSrc -eq $hashDst) {
-    Write-Host "SUCCESS: Deployed and verified! SHA256: $hashDst" -ForegroundColor Green
-} else {
-    Write-Error "HASH MISMATCH: Deployment failed verification."
+    $hashSrc = (Get-FileHash -Path $srcDll -Algorithm SHA256).Hash
+    $hashDst = (Get-FileHash -Path $dstDll -Algorithm SHA256).Hash
+
+    if ($hashSrc -eq $hashDst) {
+        Write-Host "SUCCESS: Deployed and verified to $dir! SHA256: $hashDst" -ForegroundColor Green
+    } else {
+        Write-Error "HASH MISMATCH on $($dir): Deployment failed verification."
+    }
 }

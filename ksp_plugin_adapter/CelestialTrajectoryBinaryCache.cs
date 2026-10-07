@@ -180,128 +180,26 @@ internal static class CelestialTrajectoryBinaryCache {
     return entry;
   }
 
+  public static void InvalidateAll() {
+    foreach (var pair in l1_cache_) {
+      pair.Value.Invalidate();
+    }
+  }
+
   public static bool TryLoadFromDisk(TrajectoryCacheKey key,
                                      double current_ut,
                                      double max_drift,
                                      Plotter.CachedMeshEntry target_entry,
                                      Color colour,
                                      GLLines.Style style) {
-    try {
-      string dir = GetCacheDirectory();
-      string file_path = Path.Combine(dir, key.ToFileName());
-      if (!File.Exists(file_path)) {
-        return false;
-      }
-
-      using (var fs = new FileStream(file_path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 65536))
-      using (var reader = new BinaryReader(fs)) {
-        long magic = reader.ReadInt64();
-        if (magic != MagicHeaderLong) {
-          return false;
-        }
-        int version = reader.ReadInt32();
-        if (version != CurrentVersion) {
-          return false;
-        }
-
-        int ext = reader.ReadInt32();
-        int centre = reader.ReadInt32();
-        int prim = reader.ReadInt32();
-        int sec = reader.ReadInt32();
-        int body = reader.ReadInt32();
-        bool is_fut = reader.ReadBoolean();
-        double update_ut = reader.ReadDouble();
-        double min_dist = reader.ReadDouble();
-        int count = reader.ReadInt32();
-        double origin_x = reader.ReadDouble();
-        double origin_y = reader.ReadDouble();
-        double origin_z = reader.ReadDouble();
-
-        // Expire if game time has drifted beyond maximum threshold
-        if (Math.Abs(current_ut - update_ut) >= max_drift) {
-          return false;
-        }
-
-        if (count <= 0 || count > 262144) {
-          return false;
-        }
-
-        var vertices = new Vector3[count];
-        for (int i = 0; i < count; ++i) {
-          vertices[i] = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-        }
-
-        var colors = new Color[count];
-        for (int i = 0; i < count; ++i) {
-          colors[i] = new Color(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
-        }
-
-        target_entry.SetMeshDirect(vertices, colors, count, min_dist, update_ut,
-                                   new Vector3d(origin_x, origin_y, origin_z), style);
-        RecordL2Hit();
-        PerformanceProbe.RecordCacheHit();
-        return true;
-      }
-    } catch (Exception e) {
-      Log.Warning($"[CelestialCache] Failed to load binary cache for {key}: {e.Message}");
-      return false;
-    }
+    // Disk persistence for dynamic celestial trajectories is disabled:
+    // Celestial trajectories are time-dependent trails anchored to live Ephemeris positions.
+    // Loading stale meshes from disk causes spatial detachment and ghost orbits.
+    return false;
   }
 
   public static void SaveToDisk(TrajectoryCacheKey key, Plotter.CachedMeshEntry entry) {
-    if (entry == null || !entry.is_valid || entry.vertex_count <= 0 || entry.compact_vertices == null) {
-      return;
-    }
-
-    try {
-      string dir = GetCacheDirectory();
-      if (!Directory.Exists(dir)) {
-        Directory.CreateDirectory(dir);
-      }
-
-      string file_path = Path.Combine(dir, key.ToFileName());
-      bool is_new_file = !File.Exists(file_path);
-      using (var fs = new FileStream(file_path, FileMode.Create, FileAccess.Write, FileShare.None, bufferSize: 65536))
-      using (var writer = new BinaryWriter(fs)) {
-        writer.Write(MagicHeaderLong);
-        writer.Write(CurrentVersion);
-        writer.Write(key.frame_key.extension);
-        writer.Write(key.frame_key.centre_index);
-        writer.Write(key.frame_key.primary_index);
-        writer.Write(key.frame_key.secondary_index);
-        writer.Write(key.body_index);
-        writer.Write(key.is_future);
-        writer.Write(entry.last_update_ut);
-        writer.Write(entry.min_distance_from_camera);
-        writer.Write(entry.vertex_count);
-        writer.Write(entry.mesh_scaled_space_origin.x);
-        writer.Write(entry.mesh_scaled_space_origin.y);
-        writer.Write(entry.mesh_scaled_space_origin.z);
-
-        int count = entry.vertex_count;
-        for (int i = 0; i < count; ++i) {
-          var v = entry.compact_vertices[i];
-          writer.Write(v.x);
-          writer.Write(v.y);
-          writer.Write(v.z);
-        }
-
-        for (int i = 0; i < count; ++i) {
-          var c = (entry.compact_colors != null && i < entry.compact_colors.Length)
-              ? entry.compact_colors[i]
-              : Color.white;
-          writer.Write(c.r);
-          writer.Write(c.g);
-          writer.Write(c.b);
-          writer.Write(c.a);
-        }
-      }
-      if (is_new_file && cached_l2_disk_file_count_ >= 0) {
-        cached_l2_disk_file_count_++;
-      }
-    } catch (Exception e) {
-      Log.Warning($"[CelestialCache] Failed to save binary cache for {key}: {e.Message}");
-    }
+    // Disk persistence disabled to eliminate disk I/O on the render thread.
   }
 
   public static void ClearL1() {

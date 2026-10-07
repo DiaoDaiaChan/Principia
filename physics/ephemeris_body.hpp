@@ -312,6 +312,19 @@ void Ephemeris<Frame>::AwaitReanimation(Instant const& desired_t_min) {
 template<typename Frame>
 absl::Status Ephemeris<Frame>::Prolong(Instant const& t,
                                        std::int64_t const max_ephemeris_steps) {
+  // Fast path: if the ephemeris already covers |t|, no integration is needed.
+  // This is the common case when a background rolling prolongation (e.g. the
+  // multi-level caching pipeline's carrier flight plan) has already advanced
+  // the ephemeris past the requested time.  Taking the writer lock here would
+  // contend with the background integrator, which holds it while advancing,
+  // and block the main thread even though this call is a no-op.  |t_max| is
+  // monotonically nondecreasing, so a single reader-locked check suffices.
+  {
+    absl::ReaderMutexLock l(&lock_);
+    if (t_max_locked() >= t) {
+      return absl::OkStatus();
+    }
+  }
   absl::MutexLock l(&lock_);
   Instant const instance_time = this->instance_time_locked();
 

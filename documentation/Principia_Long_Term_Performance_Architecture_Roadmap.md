@@ -1,5 +1,20 @@
 # Principia 新一代高性能架构长期演化规划纲要 (Next-Gen Performance Architecture Roadmap)
 
+## ⚠️ 编号体系说明 (Phase Numbering Map)
+
+本纲要使用 **Roadmap 编号（Phase 0~4）** 描述长期演化的宏观阶段；而 `feature/multi-level-caching-pipeline` 分支的提交信息与 `plan/phase1~6_*.md` 计划书使用另一套**实施编号（Phase 1~6）**描述落地批次。两套编号**不重合、语义不同**，对应关系如下：
+
+| Roadmap 编号（本纲要） | 实施编号（commit / plan/） | 对应提交 |
+| :--- | :--- | :--- |
+| Phase 0: 快速战术止血 | —（散布于早期 feat/fix 提交） | `a73031434`、`d99b3a5f2`、`392e99dce` 等 |
+| Phase 1: 物理分级与真空旁路 | Stage 3 Phase 1（天体/轨迹 GPU 解耦） | `2c6704ad2` |
+| Phase 2: 主时钟劫持与帧率熔断 | **实施 Phase 5**（死循环熔断器 + 零分配力缓存） | `ff126fe6d` |
+| Phase 3: 异步双时钟状态总线 | **实施 Phase 2**（三缓冲总线 + SPSC 命令队列）<br/>**实施 Phase 3**（批量状态同步 + 双时钟桥） | `55223397e`、`3cc9ccf9d` |
+| Phase 4: 场景图解耦与 GPU 虚拟投影 | **实施 Phase 4**（场景图解耦 + 虚拟投影） | `31e9a72f0` |
+| —（不在本纲要内） | **实施 Phase 6**（GPGPU 并行打靶优化器，属 GPGPU 规格） | `caa3cb2c3` |
+
+> 引用 "Phase N" 时必须注明出处体系（Roadmap 或实施编号），避免歧义。实施进度的唯一事实来源为 `GPGPU_Implementation_TODO.md`。
+
 ## 一、愿景与架构核心哲学
 
 ### 1. 从“宿主脚本”向“自治伴生引擎”转变

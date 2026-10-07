@@ -1,8 +1,14 @@
-# Principia 低精度大规模 GPGPU 加速落地实施追踪表 (TODO List)
-## (GPGPU Low-Precision & High-Throughput Implementation Tracker)
+# Principia GPGPU 与多级缓存管线落地实施追踪表 (Implementation Tracker)
 
-最后更新时间: 2026-10-05
-当前开发分支: `feature/multi-level-caching-pipeline`
+## (GPGPU Low-Precision & Multi-Level Caching Pipeline Tracker)
+
+最后更新时间: 2026-10-07
+当前开发分支: `feature/multi-level-caching-pipeline`（领先 `master` 30 commits）
+
+> **⚠️ 2026-10-07 状态校准说明**
+> 本表在 2026-10-05/06 期间的旧版本曾将"猪排图扫描、DEM 碰撞、球谐体素、日食 SRP、碎片对撞、幅宽覆盖、气动截面"等 8 个模块标记为"已完成"。
+> 这些模块的 C# 封装与 Compute Shader 已在清理提交 **`e4163820f`（chore(cleanup): remove unused compute shaders…）** 中**整体移除**。
+> 本表已按当前代码树的真实状态重写。被移除模块的记录见第四节，供后续评估是否重启。
 
 ---
 
@@ -18,84 +24,151 @@
    - 所有 GPU 交互采用预分配 ComputeBuffer 与 RenderTexture，杜绝一帧一配。
    - 采用 `AsyncGPUReadback` 消除主线程阻塞等待。
 4. **统筹监控与全模块透明感知 (Unified Telemetry & Diagnostics)**:
-   - 集中监控中心（`GpuDiagnosticsWindow` + `GpuModuleTelemetry`）统一统筹全 Mod 12 大 GPU 计算模块的调用次数、单次耗时、平均耗时、显存资源与就绪状态，支持独立单项压测与一键全模块综合压测。
+   - 集中监控中心（`GpuDiagnosticsWindow` + `GpuModuleTelemetry`）统一统筹 GPU 计算模块的调用次数、单次耗时、平均耗时、显存资源与就绪状态，支持独立单项压测与一键全模块综合压测。
 
 ---
 
-### 二、 模块落地全景任务清单 (Panoramic Task Checklist)
+### 二、 当前落实现状快照 (Current Reality Snapshot)
 
-| 序号 | 模块名称与目标 | 核心着色器 / C# / C++ 文件 | 当前状态 | 验证标准 |
+> 以 `GpuModuleTelemetry.cs` 注册表与 `tools/BuildPrincipiaGpuAssetBundle.cs` 打包清单为准。
+
+| 项 | 当前状态 |
+| :--- | :--- |
+| **已注册 GPU 模块数** | **3**（`GpuModuleId`: FlightPlanOptimizer / TrajectoryTessellator / BatchOrbitIntegrator） |
+| **C# 封装文件** | `GpuFlightPlanOptimizer.cs`、`GpuFlightPlanShootingOptimizer.cs`、`GpuTrajectoryRenderer.cs`、`GpuVirtualProjection.cs` |
+| **着色器资产（5）** | `FlightPlanShootingOptimizer.compute`、`BatchOrbitIntegrator.compute`、`TrajectoryTessellator.compute`、`TrajectoryProcedural.shader`（以上 4 个进 AssetBundle）、`DoubleSingle.hlsl`（被 include 的公共库） |
+| **AssetBundle** | `principia_gpu.bundle`，含上述 4 个着色器 |
+| **上下文管理** | `PrincipiaGPGPUContext.cs`：bundle 加载 + `Shader.Find` 兜底 |
+| **诊断中心** | `gpu_diagnostics_window.cs`：模块遥测表、单项/全模块压测、Phase 5 熔断器实时面板 |
+
+---
+
+### 三、 在役模块任务清单 (Active Module Checklist)
+
+| 序号 | 模块名称与目标 | 核心着色器 / C# 文件 | 当前状态 | 验证标准 |
 | :---: | :--- | :--- | :---: | :--- |
-| **基础** | **原生双精度隔离与 GUI 热切换底座** | `HeterogeneousDynamicGovernor.cs`<br/>`main_window.cs`<br/>`burn_editor.cs` | <font color="lime">✔ [已完成]</font> | MainWindow 与 BurnEditor 提供原生/GPU 双通道切换，保存/加载持久化，原生模式纯 CPU 运行。 |
-| **0** | **机动规划 16K 并行打靶优化器** | `shaders/FlightPlanShootingOptimizer.compute`<br/>`GpuFlightPlanOptimizer.cs`<br/>`burn_editor.cs` | <font color="lime">✔ [已完成]</font> | 16,384 轨道并行生成与两级规约，异步回读写入 BurnEditor，提供原生对比按钮。 |
-| **1** | **猪排图 (Porkchop) 百万网格 Lambert 转移扫描** | `shaders/PorkchopLambertScanner.compute`<br/>`GpuPorkchopScanner.cs`<br/>`flight_planner.cs` | <font color="lime">✔ [已完成]</font> | 512×512/1024×1024 网格并行求解 Lambert 转移，<3ms 生成 2D 热力图，原生模式安全旁路。 |
-| **2** | **行星地表 DEM 光线步进碰撞求交与坡度场** | `shaders/TerrainCollisionRaymarcher.compute`<br/>`GpuTerrainCollisionDetector.cs`<br/>`ksp_plugin_adapter.cs` | <font color="lime">✔ [已完成]</font> | DEM 高程双线性插值与 GPU 二分光线步进求交，消灭 P/Invoke 往返等待，原生模式走原 PushPullExecutor。 |
-| **3** | **高阶球谐引力场 (Geopotential) 体素网格** | `shaders/HighDegreeGeopotentialGrid.compute`<br/>`GpuGeopotentialGrid.cs`<br/>`main_window.cs` | <font color="lime">✔ [已完成]</font> | 突破 C++ 30 阶限制，GPU 并行展开 70~150 阶勒让德多项式体素场，结合 Marching Cubes 绘制等势面。 |
-| **4** | **多天体掩星日食因子与光压 (SRP) 通量** | `shaders/SolarEclipseOcclusion.compute`<br/>`GpuSolarRadiationPressure.cs` | <font color="lime">✔ [已完成]</font> | 万级载具/微元视圆盘重叠解析求积与遮挡衰减，直接计算 SRP 摄动加速度。 |
-| **5** | **空间态势感知碎片全域对撞初筛** | `shaders/AllPairsConjunctionBroadphase.compute`<br/>`GpuConjunctionMonitor.cs` | <font color="lime">✔ [已完成]</font> | 万级在轨碎片 5000 万对撞宽相剪枝，Tiled 共享内存粗筛潜在碰撞对，回传 C++ 做窄相精算。 |
-| **6** | **轨道分析器：全球地表覆盖度与视线遮挡** | `shaders/GroundTrackSwathAccumulator.compute`<br/>`orbit_analyser.cs` | <font color="lime">✔ [已完成]</font> | 650 万球面像元累加曝光，快速计算传感器星下点刈幅覆盖度与侧视遮挡。 |
-| **7** | **切比雪夫/Hermite 流形密集求值与投射** | `shaders/TrajectoryTessellator.compute`<br/>`GpuTrajectoryRenderer.cs`<br/>`plotter.cs` | <font color="lime">✔ [已完成]</font> | GPU 硬件 Clenshaw 递推直接展开切比雪夫多项式，与 GpuTrajectoryRenderer 间接无拷贝绘制打通。 |
-| **8** | **正交深度微投影部件迎角受风截面统计** | `shaders/AerodynamicOcclusionRasterizer.shader`<br/>`shaders/AerodynamicAreaReduction.compute` | <font color="lime">✔ [已完成]</font> | 正交微光栅化 + 直方图归约，GPU 实时投影计算多部件迎风截面积与遮挡衰减。 |
-| **9** | **GPGPU 异构加速诊断中心与全模块遥测注册表** | `GpuModuleTelemetry.cs`<br/>`gpu_diagnostics_window.cs`<br/>`main_window.cs`<br/>`ksp_plugin_adapter.cs` | <font color="lime">✔ [已完成]</font> | 集中统筹 12 大 GPU 模块，提供原生双精度锁定横幅、各模块状态/耗时表格、单项压测、一键全模块压测与诊断日志。 |
+| **0** | **机动规划 16K 并行打靶优化器（Phase 6 重构版）** | `shaders/FlightPlanShootingOptimizer.compute`<br/>`GpuFlightPlanShootingOptimizer.cs`<br/>`GpuFlightPlanOptimizer.cs`<br/>`burn_editor.cs` | <font color="lime">✔ [已完成]</font> | 16,384 轨道并行打靶演化与两级规约，异步回读写入 BurnEditor，原生模式安全旁路。 |
+| **7** | **切比雪夫/Hermite 流形密集求值与投射** | `shaders/TrajectoryTessellator.compute`<br/>`shaders/TrajectoryProcedural.shader`<br/>`GpuTrajectoryRenderer.cs`<br/>`plotter.cs` | <font color="lime">✔ [已完成]</font> | GPU 硬件 Clenshaw 递推直接展开切比雪夫多项式，与 GpuTrajectoryRenderer 间接无拷贝绘制打通。 |
+| **11** | **批量轨道积分管线（Phase 6）** | `shaders/BatchOrbitIntegrator.compute`<br/>`GpuModuleTelemetry.cs` | <font color="lime">✔ [已完成]</font> | 多轨道批传播 GPU 流水线，遥测注册与压测入口齐备。 |
 
 ---
 
-### 三、 详细进度与迭代记录 (Changelog & Step Log)
+### 四、 已移除模块档案 (Removed Modules Archive)
 
-* **2026-10-05 (里程碑 0 & 基础底座)**:
-  - 确立 `ComputationPipelineMode` 双精度/异构模式切换枚举。
-  - 在 `main_window.cs` 与 `burn_editor.cs` 实现 GUI 精度选择器，物理保真模式下锁定纯原生 C++ 双精度经典管线。
-  - 实现 `FlightPlanShootingOptimizer.compute`（16K 候选打靶与两级归约）并接入 `burn_editor.cs`。
-  - 创建全景审计与架构分层报告 `Principia_Low_Precision_GPGPU_Architecture_Audit.md`。
-* **2026-10-05 (里程碑 1 ~ 8 全场景加速管线与着色器落地)**:
-  - **场景 1 (猪排图扫描)**: 完成 `PorkchopLambertScanner.compute` + `GpuPorkchopScanner.cs` + `flight_planner.cs` 转移窗口热力图渲染与原生双精度旁路。
-  - **场景 2 (地表 DEM 碰撞求交)**: 完成 `TerrainCollisionRaymarcher.compute` + `GpuTerrainCollisionDetector.cs`，消除跨语言 P/Invoke 往返，原生模式走原 `PushPullExecutor`。
-  - **场景 3 (高阶球谐引力场体素网格)**: 完成 `HighDegreeGeopotentialGrid.compute` + `GpuGeopotentialGrid.cs`，突破 30 阶限制，GPU 并行展开 70~150 阶勒让德多项式体素场。
-  - **场景 4 (多天体日食与 SRP 光压)**: 完成 `SolarEclipseOcclusion.compute` + `GpuSolarRadiationPressure.cs`，实现视圆盘交集解析求积与万级光压通量直接求解。
-  - **场景 5 (空间态势感知碎片对撞初筛)**: 完成 `AllPairsConjunctionBroadphase.compute` + `GpuConjunctionMonitor.cs`，实现 5000 万对撞 Tiled 共享内存宽相剪枝。
-  - **场景 6 (全球地表覆盖度与视线遮挡)**: 完成 `GroundTrackSwathAccumulator.compute`，实现 650 万球面像元刈幅累加曝光与覆盖率归约。
-  - **场景 7 (切比雪夫流形密集求值)**: 完成 `TrajectoryTessellator.compute` Clenshaw 递推流形密集展开，与间接无拷贝绘制打通。
-  - **场景 8 (迎角受风截面统计)**: 完成 `AerodynamicAreaReduction.compute` 正交微光栅化像素统计与直方图归约。
-  - 在 `PrincipiaGPGPUContext.cs` 完成全部 8 类新 Compute Shader 的安全生命周期管控、自动加载与安全释放。
-* **2026-10-05 (里程碑 9 全模块统筹与 GPGPU 诊断中心上线)**:
-  - 创建 `GpuModuleTelemetry.cs`：统一注册表管理 12 大 GPU 模块（16K 机动打靶、Porkchop 扫描、DEM 光线步进、球谐重力场、太阳光压、碎片态势筛选、曲率自适应细分、幅宽覆盖、气动截面积、WSB 低能转移束、等势面提取、辛积分批传播）。
-  - 零 GC 实时采集每次调度的耗时、最大/最小耗时、累计调用次数、吞吐指标与结果摘要。
-  - 实现独立安全单项压测与一键全模块综合压测（`ExecuteAllBenchmarks`）。
-  - 创建 `gpu_diagnostics_window.cs`（`SupervisedWindowRenderer`）：
-    - 硬件 Banner（GPU 型号、VRAM 容量、图形 API、Compute Shader 与 AsyncReadback 特性支持）。
-    - 物理精度安全锁定横幅：明确显示原生双精度状态（`旧实现 100% 运行，GPU 硬件级旁路`）与异构模式状态。
-    - 12 模块动态遥测大表：展示类别、状态 Badge（`[FP64 旁路]`、`[待机]`、`[活跃]`、`[反压]`、`[CPU 降级]`）、调用量、最近耗时、平均耗时、显存资源与 `[⚡ 压测]` 按钮。
-    - 底部全局控制栏：`[⚡ 一键全模块综合压测]`、`[🔄 重置统计]`、`[🗑 释放显存缓冲区]` 与可折叠诊断日志框。
-  - 将 `GpuDiagnosticsWindow` 接入 `PrincipiaPluginAdapter` 生命周期与 `MainWindow` 工具栏（`[⚡ GPU 诊断]`）。
-  - 全工程 Release 编译通过，**0 警告、0 错误**。
-* **2026-10-06 (里程碑 10 硬编码与魔法数字深度清洗，物理定律、内核签名与真实遥测全面对齐)**:
-  - **类别 1 (P0 物理规律与星系兼容性)**:
-    - 彻底废除 Kerbin GM 硬编码，动态取母星/目标天体 `gravParameter`；
-    - 废除 1 AU 太阳常数宏定义，动态推导恒星光度辐射通量，消除 121 倍光压失真；
-    - 废除地球带谐 $J_2\sim J_4$ 硬编码，引入 Clairaut 动力学扁率自适应理论；
-    - 修复母星半径回退至 600 km。
-  - **类别 2 (打靶寻优与数值积分)**:
-    - 寻优时域自适应（1800s ~ 365天，256步），着色器内所有引力天体引入 Velocity-Verlet 双精度真实运动模拟；
-    - 打靶搜索域依据机动大小与轨道周期动态缩放；
-    - 4D 打靶网格分解参数化为 `_GridDimensions`；
-    - 猪排图窗口与最短飞行时间根据霍曼转移几何动态解算，消除 1 天/10 天硬编码。
-  - **类别 3 (物理调度与旁路治理)**:
-    - 废除在箱飞船 4 帧错峰更新，恢复每物理帧均匀同步；
-    - 动态物理帧校准，真空稳态门限收紧，子部件实现刚体四元数姿态与角速度物理回写，彻底根除部件撕裂；
-    - 物理追赶熔断器预算放宽至 30ms，追赶步数自适应 Unity 物理配置；
-    - 轨迹冻结期自适应旋转系，网格单帧重建上限提至 4，初始相位采用 Weyl 黄金分割低差异序列；
-    - 载具宿主打分权重重构为强类型静态字典。
-  - **类别 4 (缓冲区与参数规范化)**:
-    - 天体缓冲区容量动态自适应星系体量（支持 RSS 百天体）；
-    - 统一宇宙级虚拟包围盒尺寸为 2e9m，避免视锥远景剔除；
-    - 地图节点安全边距提取常量；
-    - DEM 光线步进高程动态读取 `radiusMax - Radius`，着色器循环步数解除写死；
-    - 修复气动微光栅化原子累加越界，改用组内内存屏障；
-    - WSB 逃逸与捕获半径动态参数化。
-  - **类别 5 (工程与部署环境解耦)**:
-    - 部署脚本支持环境变量与参数传导，移除个人私有 Steam 路径；
-    - AssetBundle 打包工具完整覆盖 12 个 Compute Shader，输出与缓存目录支持环境变量覆盖。
-  - **类别 6 (诊断内核对齐与真实遥测基线)**:
-    - 11 个测速内核与 HLSL 真实名称、缓冲区布局 100% 对齐；
-    - 废除伪造基准指标与 `Mathf.Sin` 假数据，CPU 降级分支全面重构为真实天体物理数学（开普勒方程、双冲量 Lambert、克莱罗球谐积分、CR3BP 雅可比能、Verlet 辛积分）。
-  - **基线固化**: 建立棘轮底线 Commit `614b2ccd5`，编译构建 0 错误 0 警告。
+以下模块曾于 2026-10-05 里程碑 1~8 期间落地，后经审计确认存在硬编码、mock 遥测与物理失真问题，在 **`e4163820f`（2026-10-06）** 中整体移除（-2,617 行）。相关审计结论沉淀于 `Principia_GPGPU_Native_Acceleration_Specification.md`，若重启须按新规格重写：
+
+| 原序号 | 模块 | 已删除文件 | 移除原因摘要 | 新规格章节 |
+| :---: | :--- | :--- | :--- | :--- |
+| 1 | 猪排图 Lambert 扫描 | `PorkchopLambertScanner.compute` 等 | 物理口径未对齐原生实现 | OPT_DIFF 关联 |
+| 2 | 地表 DEM 光线步进碰撞 | `TerrainCollisionRaymarcher.compute` 等 | 高程数据路径与原生 PushPullExecutor 不一致 | — |
+| 3 | 高阶球谐引力场体素 | `HighDegreeGeopotentialGrid.compute` 等 | 递推基与 C++ `GeneralSphericalHarmonicsAcceleration` 未对齐 | GEOPOT_REC（未落地） |
+| 4 | 日食遮挡与 SRP 光压 | `SolarEclipseOcclusion.compute` 等 | 恒星光度与视圆盘求积失真 | — |
+| 5 | 碎片全域对撞初筛 | `AllPairsConjunctionBroadphase.compute` 等 | 无真实数据源接入 | — |
+| 6 | 全球地表覆盖度统计 | `GroundTrackSwathAccumulator.compute` 等 | 无真实数据源接入 | ORBIT_ANAL（未落地） |
+| 8 | 迎角受风截面统计 | `AerodynamicAreaReduction.compute` 等 | 微光栅化原子越界等工程缺陷 | — |
+| — | WSB 低能转移束 / 等势面 Marching Cubes | `WSBBundleEvaluator.compute`、`EquipotentialMarchingCubes.compute` | 未接通真实调用链 | EQUIPOT_2D（未落地） |
+
+> 上述模块在本追踪表旧版本中的"已完成"记录**作废**。`Principia_Low_Precision_GPGPU_Architecture_Audit.md` 与 `Principia_GPU_Implementation_Code_Audit.md` 中对这些文件的描述为历史快照，仅供考古。
+
+---
+
+### 五、 已知问题与待办 (Known Issues & Backlog)
+
+1. **"0 警告 0 错误"声明的上下文**：里程碑 10 基线（`614b2ccd5`）构建通过后，实际又出现了 5 个运行时崩溃（见第七节修复记录）。**构建零告警 ≠ 运行时稳定**，后续里程碑的验收应附 KSP 实机冒烟测试结论，而非仅编译结果。
+2. **`ScaledSpaceDisplacement.shader` 死资产**：无任何 C# 引用、不在 AssetBundle 打包列表。Phase 4 的 `GpuVirtualProjection.cs` 只设置 `_WorldOffset`/`_VirtualDisplacement` 材质属性，真正消费这些属性的是 `TrajectoryProcedural.shader`（轨迹线）。若要给 ScaledSpace 天体球启用顶点偏移，需将其加入打包并替换天体材质；否则应删除。（已于 2026-10-07 移除，见第八节）
+3. **`deploy_to_ksp.ps1` 个人路径**：候选列表中曾含 `"Kerbal Space Program_newmod"` 私有 Steam 路径。（已于 2026-10-07 清理）
+4. 提交 `ff126fe6d`（Phase 5）的 message 含字面 `\n` 而非真实换行，历史已深处，不做 rebase 重写，仅记录警示：**多行提交信息必须用真实换行**。
+
+---
+
+### 六、 里程碑总览 (Milestone Log)
+
+> 完整细节见各 commit body 与 `plan/` 目录下的分阶段计划书。
+
+* **2026-10-05**
+  - `ffd3da904` 多级缓存架构与无缝滚动星历管线（L2/L3，`rolling_ephemeris_driver`、`sidecar_storage` 首版）。
+  - `52823a038` GPGPU 异构加速管线、compute shader 家族与 `HeterogeneousDynamicGovernor` 首版（含后来被移除的 8 模块）。
+  - `2c6704ad2` Stage 3 Phase 1 天体与轨迹 GPU 解耦、分段收获。
+  - `614b2ccd5` **里程碑 10**：硬编码与魔法数字深度清洗（动态 gravParameter、Clairaut 扁率、动态缓冲容量等），基线固化。
+* **2026-10-06**
+  - `a046da838` `TrajectoryProcedural.shader` 原生程序化线材质管线。
+  - `8671d4cb9` 预测轨迹缓存修复（geeForce 对齐 + 多秒 coasting mesh 复用）。
+  - `e4163820f` **冗余模块清理**：移除 8 个未达标模块与 9 个 compute shader，重写 `GpuModuleTelemetry` 为 3 模块注册表，沉淀 `Principia_GPGPU_Native_Acceleration_Specification.md`。
+  - `2250ee0b4` loader 支持可选原生符号与预编译二进制安全兜底。
+  - `55223397e` **Phase 2**（实施编号）：无锁三缓冲状态总线 + SPSC 命令队列（`ksp_plugin/triple_buffer_channel.hpp`、`spsc_command_buffer.hpp`、`TripleBufferStateBus.cs`）。
+  - `3cc9ccf9d` **Phase 3**（实施编号）：批量状态同步 + 双时钟物理桥（`BatchStateSync.cs`、`DualClockBridge.cs`、`interface_batch.cpp`）。
+  - `31e9a72f0` **Phase 4**（实施编号）：场景图解耦 + GPU 虚拟投影（`SceneGraphDecoupler.cs`、`GpuVirtualProjection.cs`、`SmoothPlottingBridge.cs`）。
+  - `ff126fe6d` **Phase 5**（实施编号）：物理死循环熔断器 + 零分配力缓存（`FrameBudgetCircuitBreaker.cs`、`ZeroAllocationForceCache.cs`，接入完整 Unity 生命周期钩子与诊断面板）。
+  - `caa3cb2c3` **Phase 6**（实施编号）：GPGPU 并行打靶飞行计划优化器 + 批量轨道管线（`GpuFlightPlanShootingOptimizer.cs` 重构，594 行新增）。
+* **2026-10-06 ~ 10-07**（稳定性修复，详见第七节）
+  - `b5053b882`、`44bbc8e97`、`803c94edb`、`e812c2a0b`、`b540a29be`。
+
+---
+
+### 七、 运行时崩溃修复记录 (Crash-Fix Log)
+
+> 里程碑 10 之后连续 5 个提交均为实机崩溃修复，印证第五节 #1 的警示。
+
+| Commit | 症状 | 根因与修复 |
+| :--- | :--- | :--- |
+| `b5053b882` | 从跟踪站进入飞行场景崩溃 | `DensePolynomialSlice` 边界缺陷 + 熔断器状态污染；补齐空态校验与生命周期重置 |
+| `44bbc8e97` | 存档保存时活动 sidecar 被误删，加载即丢缓存 | 保存前修剪逻辑误伤活动文件；加载路径损坏时优雅恢复而非崩溃 |
+| `803c94edb` | sidecar base64 反序列化损坏 | 读写编解码不对称；顺带落地 `CelestialTrajectoryBinaryCache` 天体位置连续缓存 |
+| `e812c2a0b` | `RollingEphemerisDriver` 构造函数无限递归栈溢出 | 移除自引用构造路径 |
+| `b540a29be` | `EphemerisAnchor` 崩溃、standby carrier 选择异常 | 重构锚点生命周期，恢复干净待机载波选择 |
+
+---
+
+### 八、 2026-10-07 文档与工程卫生批次 (Docs & Hygiene Pass)
+
+- 重写本追踪表：与代码树对齐（3 模块 + 4+1 着色器），补录 Phase 2~6 与崩溃修复记录。
+- 在 `Principia_Long_Term_Performance_Architecture_Roadmap.md` 中声明 Roadmap 编号与实施编号的映射（消除两套 "Phase N" 歧义）。
+- `Principia_GPGPU_Native_Acceleration_Specification.md` 实施矩阵增加"落地状态"列。
+- 新建 `documentation/README.md` 文档索引，确立单一事实来源；移除 `fix/` 下 6 份与 `documentation/` 完全重复的文档副本。
+- 删除死资产 `shaders/ScaledSpaceDisplacement.shader`（无引用、未打包）。
+- 清理 `scripts/deploy_to_ksp.ps1` 个人 Steam 路径。
+
+---
+
+### 九、 2026-10-07 Precalc 性能优化批次 (Probe-Driven Performance Pass)
+
+**触发数据**（实机探针，平滑值）：Precalc 0.98ms（峰值 1.5）为最大单项 | FixedUpdate 0.02 | WaitedForFixed 0.61 | BetterLate 0.45 | LateUpdate 0.13。预期"星历有缓存应接近零"，实测不符，逐层定位出两个根因：
+
+1. **`Ephemeris::Prolong` 无条件独占写锁（C++ 根因，`physics/ephemeris_body.hpp`）**：
+   即使后台滚动星历（载体飞行计划）已覆盖当前时刻、无需积分，主线程 `AdvanceTime → Prolong` 仍要拿写锁排队，后台积分持锁期间主线程被阻塞。
+   **修复**：新增读锁快速路径——`t_max ≥ t` 时直接返回 `OkStatus`（t_max 单调不减，单次读锁校验安全；行为与原 while 循环空转严格等价）。
+2. **`Precalc` 阻塞收割与 staged harvesting 设计矛盾（C#，`ksp_plugin_adapter.cs`）**：
+   本分支在 Precalc 中加入的 `HarvestVesselsAndApplyOnRails(non_blocking: false)`（上游无此调用）会在物理线程上阻塞等待上一帧残留 futures；而 staged harvesting 的设计意图（见 `Early()` 注释）是收割全部推迟到 BetterLateThanNever (+8008) 非阻塞执行。
+   **修复**：`EnableStagedHarvesting == true` 时 Precalc 收割改为非阻塞，残留 futures 由同帧 BetterLate 阶段收割；关闭 staged harvesting 时保留原阻塞语义作为兜底。
+3. **探针细分（`performance_probe.cs`）**：新增 `VesselHarvest`（收割，含 ApplyToVesselsOnRails）与 `BodyFramesUpdate`（SetBodyFrames）两个独立桶；`PhysicsAdvance` 现在只测 `AdvanceTime` 本身，HUD 核心子系统区新增两行。**下次实测即可精确定位 Precalc 剩余开销构成。**
+4. **顺带**：`ksp_plugin_adapter.csproj` 中 `KSPManaged` 兜底链的 `Kerbal Space Program_newmod` 个人路径替换为通用路径（已核实两处安装的 Assembly-CSharp.dll 字节级一致，构建不受影响）。
+
+> **验证状态**：C# 侧改动已于 2026-10-07 通过 `dotnet build -c Release`（0 警告 0 错误，见第十节）；C++ 侧 `ephemeris_body.hpp` 的读锁快速路径仍为人工复核，需随原生库一并构建。实机复测：Precalc 中 `AdvanceTime` **已确认降至 0.01 ms**（见第十节第二轮探针），on-rails 船舶位置需继续观察。
+
+---
+
+### 十、 2026-10-07 轨迹绘制开销定位与递归退化修复 (Trajectory Plotting Pass)
+
+**第二轮探针数据**（实机，平滑 / 峰值）：
+
+| 桶 | 平滑 | 峰值 | 备注 |
+| :--- | ---: | ---: | :--- |
+| 物理推进 (AdvanceTime) | **0.01 ms** | 0.0 | 第九节根因 1 修复完全生效（原 0.98 ms） |
+| 载体收割 (Harvest) | 0.44 ms | 0.6 | 非阻塞收割后的纯工作量 |
+| 天体框架 (BodyFrames) | 0.57 ms | 1.0 | `SetBodyFrames`（已有 LOD + 帧门控） |
+| **轨迹绘制 (Plotting)** | **2.89 ms** | 4.0 | **新的头号开销** |
+| 网格细分 (Mesh Gen) | 0.00 ms | 0.0 | — |
+| GPU 绘制直出 | 0.00 ms | 0.0 | — |
+| Unity 生命周期 | Precalc 1.46 / WaitedForFixed 0.69 / BetterLate 0.58 / LateUpdate 0.34（峰值 **7.6**） | | |
+
+**分析**：`MeshGeneration` 与 `GpuCompute` 两桶均为 0，而它们只覆盖 `UpdateMesh`（原生缓冲 → `mesh.vertices`）与 `Draw`（`Graphics.DrawMesh`）——说明网格生成与绘制几乎不耗时。`TrajectoryPlotting` 桶还包含 C++ 侧 `PlanetariumPlot*` 的 P/Invoke 重算，这是 2.89 ms 的主要候选。
+
+**本轮改动**：
+
+1. **探针再细分**：新增 `CelestialPlot`（天体轨迹）、`VesselPlot`（飞船轨迹）、`EquipotentialPlot`（等势线）三个子桶，把 2.89 ms 拆到可归因粒度（HUD 核心子系统区缩进三行）。
+2. **失效计数器**：`PlotTrajectories` 开头的 `ScaledToLocalSpace` 位移检测一旦越过阈值即调用 `InvalidateAll()`，会强制下一帧对**全部**缓存网格经 C++ 重算。新增 `PerformanceProbe.PlotInvalidations` 累计计数，并在 HUD「3D 网格多级缓存」行显示。**若该值以约"每帧 1 次"的速率攀升，说明缓存从未生效、多级缓存被完全绕过**（当前仅诊断，未改阈值，以免破坏 FloatingOrigin 重置的正确性）。
+3. **消除递归退化（确定性优化）**：`PlotSubtreeTrajectories` 原先在**每个天体的递归访问**中重新计算 `FrameParameters()`、`GetUniversalTime()`、`is_time_advancing`、`realtime` 与 `frame_type`。其中 `FrameParameters()` 返回 `ReferenceFrameParameters`，再经 `interface.cs` 的隐式转换构造 `FrameKey` 所需的 `PlottingFrameParameters`——**每次转换分配 1 个对象 + 2 个 `int[]`**，即每帧每天体约 4 次分配。现全部逐帧不变量提升至 `PlotCelestialTrajectories` 顶层只算一次并递归传参；`show_celestial_trajectory(root)` 也改为每层只求值一次（原为 2 次）。
+
+**验证**：`dotnet build -c Release -p:PreBuildEvent=` **编译通过，0 警告 0 错误**（`-p:PreBuildEvent=` 用于绕过沙箱中会失败的 PowerShell 前置生成步骤；`Properties/AssemblyInfo.cs` 已存在，故不影响）。
+
+> **下一步（需实机复跑探针）**：① 若 `CelestialPlot` 主导 → 属 C++ 细分密度问题，可调 `RenderTrajectories` 的 `resolution_multiplier`（当前 0.75）；② 若 `VesselPlot` 主导且失效计数每帧攀升 → 修正 `PlotTrajectories` 的失效检测阈值/条件。

@@ -69,7 +69,6 @@
   <PropertyGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'Debug'">
     <KSPManaged Condition="Exists('..\..\KSP Assemblies\1.12.5')">..\..\KSP Assemblies\1.12.5</KSPManaged>
     <KSPManaged Condition="!Exists('..\..\KSP Assemblies\1.12.5') And Exists('..\..\KSP Assemblies\1.12.4')">..\..\KSP Assemblies\1.12.4</KSPManaged>
-    <KSPManaged Condition="'$(KSPManaged)' == '' And Exists('C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod\KSP_x64_Data\Managed')">C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program_newmod\KSP_x64_Data\Managed</KSPManaged>
     <KSPManaged Condition="'$(KSPManaged)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed</KSPManaged>
   </PropertyGroup>
   <ItemGroup Condition="'$(Configuration)' == 'Release' Or '$(Configuration)' == 'Debug'">
@@ -181,6 +180,7 @@
     <Compile Include="ZeroAllocationForceCache.cs" />
     <Compile Include="GpuFlightPlanShootingOptimizer.cs" />
     <Compile Include="performance_probe.cs" />
+    <Compile Include="TelemetryLogger.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />
     <Compile Include="mono_marshaler.cs" />

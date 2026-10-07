@@ -298,6 +298,9 @@ void Plugin::EndInitialization() {
               sun_->body()));
 
   geometric_potential_plotter_.emplace(ephemeris_.get());
+  ephemeris_pacer_ =
+      std::make_unique<ephemeris_pacer::EphemerisPacer>(ephemeris_.get());
+  ephemeris_pacer_->Start();
 
   // Log the serialized ephemeris.
   serialization::Ephemeris ephemeris_message;
@@ -791,6 +794,9 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
   current_time_ = t;
   planetarium_rotation_ = planetarium_rotation;
   ephemeris_->Prolong(current_time_).IgnoreError();
+  if (ephemeris_pacer_ != nullptr) {
+    ephemeris_pacer_->NotifyCurrentTime(current_time_);
+  }
   UpdatePlanetariumRotation();
   loaded_vessels_.clear();
 }
@@ -1038,21 +1044,36 @@ void Plugin::ComputeAndRenderApsides(
     int const max_points,
     DistinguishedPoints<World>& apoapsides,
     DistinguishedPoints<World>& periapsides) const {
-  DistinguishedPoints<Barycentric> barycentric_apoapsides;
-  DistinguishedPoints<Barycentric> barycentric_periapsides;
-  ComputeApsides(FindOrDie(celestials_, celestial_index)->trajectory(),
-                 trajectory,
-                 max_points,
-                 barycentric_apoapsides,
-                 barycentric_periapsides);
+  if (trajectory.empty()) {
+    apoapsides.clear();
+    periapsides.clear();
+    return;
+  }
+  Instant const t_min = trajectory.t_min();
+  Instant const t_max = trajectory.t_max();
+  std::int64_t const size = trajectory.size();
+
+  auto& entry = apsides_cache_[celestial_index];
+  if (entry.size != size || entry.t_min != t_min || entry.t_max != t_max) {
+    entry.apoapsides.clear();
+    entry.periapsides.clear();
+    ComputeApsides(FindOrDie(celestials_, celestial_index)->trajectory(),
+                   trajectory,
+                   max_points,
+                   entry.apoapsides,
+                   entry.periapsides);
+    entry.t_min = t_min;
+    entry.t_max = t_max;
+    entry.size = size;
+  }
   apoapsides = renderer_->RenderDistinguishedPointsInWorld(
                    current_time_,
-                   barycentric_apoapsides,
+                   entry.apoapsides,
                    sun_world_position,
                    PlanetariumRotation());
   periapsides = renderer_->RenderDistinguishedPointsInWorld(
                     current_time_,
-                    barycentric_periapsides,
+                    entry.periapsides,
                     sun_world_position,
                     PlanetariumRotation());
 }
@@ -1065,24 +1086,36 @@ Plugin::ComputeAndRenderFirstCollision(
     int max_points,
     std::function<Length(Angle const& latitude,
                          Angle const& longitude)> const& radius) const {
+  if (trajectory.empty()) {
+    return std::nullopt;
+  }
   auto const& celestial = FindOrDie(celestials_, celestial_index);
   auto const& celestial_body = *celestial->body();
   auto const& celestial_trajectory = celestial->trajectory();
 
-  // TODO(phl): We should cache the apsides.
-  DistinguishedPoints<Barycentric> apoapsides;
-  DistinguishedPoints<Barycentric> periapsides;
-  ComputeApsides(celestial_trajectory,
-                 trajectory,
-                 max_points,
-                 apoapsides,
-                 periapsides);
+  Instant const t_min = trajectory.t_min();
+  Instant const t_max = trajectory.t_max();
+  std::int64_t const size = trajectory.size();
+
+  auto& entry = apsides_cache_[celestial_index];
+  if (entry.size != size || entry.t_min != t_min || entry.t_max != t_max) {
+    entry.apoapsides.clear();
+    entry.periapsides.clear();
+    ComputeApsides(celestial_trajectory,
+                   trajectory,
+                   max_points,
+                   entry.apoapsides,
+                   entry.periapsides);
+    entry.t_min = t_min;
+    entry.t_max = t_max;
+    entry.size = size;
+  }
 
   const auto intervals = ComputeCollisionIntervals(celestial_body,
                                                    celestial_trajectory,
                                                    trajectory,
-                                                   apoapsides,
-                                                   periapsides);
+                                                   entry.apoapsides,
+                                                   entry.periapsides);
 
   VLOG(1) << "Found " << intervals.size() << " collision intervals";
   for (auto const& interval : intervals) {
@@ -1119,17 +1152,37 @@ void Plugin::ComputeAndRenderClosestApproaches(
     DistinguishedPoints<World>& closest_approaches) const {
   CHECK(renderer_->HasTargetVessel());
 
-  DistinguishedPoints<Barycentric> apoapsides;
-  DistinguishedPoints<Barycentric> periapsides;
-  ComputeApsides(*renderer_->GetTargetVessel().prediction(),
-                 trajectory,
-                 max_points,
-                 apoapsides,
-                 periapsides);
+  if (trajectory.empty()) {
+    closest_approaches.clear();
+    return;
+  }
+  Instant const t_min = trajectory.t_min();
+  Instant const t_max = trajectory.t_max();
+  std::int64_t const size = trajectory.size();
+
+  if (!closest_approaches_cache_.has_value() ||
+      closest_approaches_cache_->size != size ||
+      closest_approaches_cache_->t_min != t_min ||
+      closest_approaches_cache_->t_max != t_max) {
+    DistinguishedPoints<Barycentric> apoapsides;
+    DistinguishedPoints<Barycentric> periapsides;
+    ComputeApsides(*renderer_->GetTargetVessel().prediction(),
+                   trajectory,
+                   max_points,
+                   apoapsides,
+                   periapsides);
+    closest_approaches_cache_ = ClosestApproachesCacheEntry{
+        .t_min = t_min,
+        .t_max = t_max,
+        .size = size,
+        .closest_approaches = std::move(periapsides),
+    };
+  }
+
   closest_approaches =
       renderer_->RenderDistinguishedPointsInWorld(
           current_time_,
-          periapsides,
+          closest_approaches_cache_->closest_approaches,
           sun_world_position,
           PlanetariumRotation());
 }
@@ -1140,42 +1193,67 @@ void Plugin::ComputeAndRenderNodes(
     int const max_points,
     std::vector<Renderer::Node>& ascending,
     std::vector<Renderer::Node>& descending) const {
-  auto const trajectory_in_plotting =
-      renderer_->RenderBarycentricTrajectoryInPlotting(trajectory);
+  if (trajectory.empty()) {
+    ascending.clear();
+    descending.clear();
+    return;
+  }
+  Instant const t_min = trajectory.t_min();
+  Instant const t_max = trajectory.t_max();
+  std::int64_t const size = trajectory.size();
+  PlottingFrame const* const current_frame = &*renderer_->GetPlottingFrame();
 
-  auto const* const cast_plotting_frame = dynamic_cast<
-      BodyCentredNonRotatingReferenceFrame<Barycentric, Navigation> const*>(
-      &*renderer_->GetPlottingFrame());
-  // The body-centred non rotating frame does not rotate; its reference plane is
-  // not an inherent dynamical property.  When using this frame, discard the
-  // nodes if they are far enough from the central body that its equator is
-  // irrelevant.
-  Length const threshold =
-      cast_plotting_frame == nullptr
-          ? Infinity<Length>
-          : EquatorRelevanceThreshold(
-                *dynamic_cast_not_null<RotatingBody<Barycentric> const*>(
-                    cast_plotting_frame->centre()));
-  auto const show_node = [threshold](DegreesOfFreedom<Navigation> const& dof) {
-    return (dof.position() - Navigation::origin).Norm() < threshold;
-  };
+  if (!nodes_cache_.has_value() ||
+      nodes_cache_->size != size ||
+      nodes_cache_->t_min != t_min ||
+      nodes_cache_->t_max != t_max ||
+      nodes_cache_->plotting_frame != current_frame) {
+    auto const trajectory_in_plotting =
+        renderer_->RenderBarycentricTrajectoryInPlotting(trajectory);
 
-  DistinguishedPoints<Navigation> plotting_ascending;
-  DistinguishedPoints<Navigation> plotting_descending;
-  // The so-called North is orthogonal to the plane of the trajectory.
-  ComputeNodes(DiscreteTrajectoryView(&trajectory_in_plotting),
-               Vector<double, Navigation>({0, 0, 1}),
-               max_points,
-               plotting_ascending,
-               plotting_descending,
-               show_node).IgnoreError();
+    auto const* const cast_plotting_frame = dynamic_cast<
+        BodyCentredNonRotatingReferenceFrame<Barycentric, Navigation> const*>(
+        current_frame);
+    // The body-centred non rotating frame does not rotate; its reference plane is
+    // not an inherent dynamical property.  When using this frame, discard the
+    // nodes if they are far enough from the central body that its equator is
+    // irrelevant.
+    Length const threshold =
+        cast_plotting_frame == nullptr
+            ? Infinity<Length>
+            : EquatorRelevanceThreshold(
+                  *dynamic_cast_not_null<RotatingBody<Barycentric> const*>(
+                      cast_plotting_frame->centre()));
+    auto const show_node = [threshold](DegreesOfFreedom<Navigation> const& dof) {
+      return (dof.position() - Navigation::origin).Norm() < threshold;
+    };
+
+    DistinguishedPoints<Navigation> plotting_ascending;
+    DistinguishedPoints<Navigation> plotting_descending;
+    // The so-called North is orthogonal to the plane of the trajectory.
+    ComputeNodes(DiscreteTrajectoryView(&trajectory_in_plotting),
+                 Vector<double, Navigation>({0, 0, 1}),
+                 max_points,
+                 plotting_ascending,
+                 plotting_descending,
+                 show_node).IgnoreError();
+
+    nodes_cache_ = NodesCacheEntry{
+        .t_min = t_min,
+        .t_max = t_max,
+        .size = size,
+        .plotting_frame = current_frame,
+        .ascending = std::move(plotting_ascending),
+        .descending = std::move(plotting_descending),
+    };
+  }
 
   ascending = renderer_->RenderNodes(current_time_,
-                                     plotting_ascending,
+                                     nodes_cache_->ascending,
                                      sun_world_position,
                                      PlanetariumRotation());
   descending = renderer_->RenderNodes(current_time_,
-                                      plotting_descending,
+                                      nodes_cache_->descending,
                                       sun_world_position,
                                       PlanetariumRotation());
 }
@@ -1477,6 +1555,10 @@ GeometricPotentialPlotter const& Plugin::geometric_potential_plotter() const {
   return *geometric_potential_plotter_;
 }
 
+ephemeris_pacer::EphemerisPacer* Plugin::ephemeris_pacer() const {
+  return ephemeris_pacer_.get();
+}
+
 void Plugin::WriteToMessage(
     not_null<serialization::Plugin*> const message) const {
   LOG(INFO) << __FUNCTION__;
@@ -1612,6 +1694,11 @@ not_null<std::unique_ptr<Plugin>> Plugin::ReadFromMessage(
   plugin->ephemeris_->Prolong(plugin->game_epoch_).IgnoreError();
   plugin->ephemeris_->Prolong(plugin->current_time_).IgnoreError();
   CHECK_LE(plugin->ephemeris_->t_min(), plugin->current_time_);
+  plugin->ephemeris_pacer_ =
+      std::make_unique<ephemeris_pacer::EphemerisPacer>(
+          plugin->ephemeris_.get());
+  plugin->ephemeris_pacer_->NotifyCurrentTime(plugin->current_time_);
+  plugin->ephemeris_pacer_->Start();
 
   ReadCelestialsFromMessages(*plugin->ephemeris_,
                              message.celestial(),

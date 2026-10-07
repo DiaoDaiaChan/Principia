@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A3F94607-2666-408F-AF98-0E47D61C98BB}</ProjectGuid>
@@ -31,6 +31,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="celestial.hpp" />
+    <ClInclude Include="ephemeris_pacer.hpp" />
     <ClInclude Include="equator_relevance_threshold.hpp" />
     <ClInclude Include="flight_plan_optimization_driver.hpp" />
     <ClInclude Include="flight_plan_optimizer.hpp" />
@@ -67,6 +68,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="celestial.cpp" />
+    <ClCompile Include="ephemeris_pacer.cpp" />
     <ClCompile Include="equator_relevance_threshold.cpp" />
     <ClCompile Include="flight_plan.cpp" />
     <ClCompile Include="flight_plan_optimization_driver.cpp" />
@@ -77,6 +79,7 @@
     <ClCompile Include="interface.cpp" />
     <ClCompile Include="interface_celestial.cpp" />
     <ClCompile Include="interface_collision.cpp" />
+    <ClCompile Include="interface_ephemeris.cpp" />
     <ClCompile Include="interface_flight_plan.cpp" />
     <ClCompile Include="interface_future.cpp" />
     <ClCompile Include="interface_graph.cpp" />

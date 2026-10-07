@@ -27,6 +27,7 @@
 #include "geometry/space.hpp"
 #include "integrators/integrators.hpp"
 #include "ksp_plugin/celestial.hpp"
+#include "ksp_plugin/ephemeris_pacer.hpp"
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/geometric_potential_plotter.hpp"
 #include "ksp_plugin/identification.hpp"
@@ -407,6 +408,7 @@ class Plugin {
   virtual bool HasCelestial(Index index) const;
   virtual Celestial const& GetCelestial(Index index) const;
   virtual std::vector<not_null<Celestial const*>> GetAllCelestials() const;
+  virtual ephemeris_pacer::EphemerisPacer* ephemeris_pacer() const;
 
   virtual bool HasVessel(GUID const& vessel_guid) const;
   virtual not_null<Vessel*> GetVessel(GUID const& vessel_guid) const;
@@ -609,6 +611,35 @@ class Plugin {
   zombie_prediction_adaptive_step_parameters_;
 
   std::optional<GeometricPotentialPlotter> geometric_potential_plotter_;
+
+  struct ApsidesCacheEntry {
+    Instant t_min;
+    Instant t_max;
+    std::int64_t size{0};
+    DistinguishedPoints<Barycentric> apoapsides;
+    DistinguishedPoints<Barycentric> periapsides;
+  };
+
+  struct NodesCacheEntry {
+    Instant t_min;
+    Instant t_max;
+    std::int64_t size{0};
+    PlottingFrame const* plotting_frame{nullptr};
+    DistinguishedPoints<Navigation> ascending;
+    DistinguishedPoints<Navigation> descending;
+  };
+
+  struct ClosestApproachesCacheEntry {
+    Instant t_min;
+    Instant t_max;
+    std::int64_t size{0};
+    DistinguishedPoints<Barycentric> closest_approaches;
+  };
+
+  mutable absl::flat_hash_map<Index, ApsidesCacheEntry> apsides_cache_;
+  mutable std::optional<NodesCacheEntry> nodes_cache_;
+  mutable std::optional<ClosestApproachesCacheEntry> closest_approaches_cache_;
+  std::unique_ptr<ephemeris_pacer::EphemerisPacer> ephemeris_pacer_;
 
   friend class NavballFrameField;
   friend class ksp_plugin::TestablePlugin;

@@ -17,7 +17,12 @@ public enum ProbeCategory {
   UnityBetterLate = 9,
   UnityLateUpdate = 10,
   TotalFrame = 11,
-  Count = 12
+  VesselHarvest = 12,
+  BodyFramesUpdate = 13,
+  CelestialPlot = 14,
+  VesselPlot = 15,
+  EquipotentialPlot = 16,
+  Count = 17
 }
 
 public static class PerformanceProbe {
@@ -85,6 +90,14 @@ public static class PerformanceProbe {
   public static void RecordCacheMiss() => CacheMisses++;
   public static void RecordVertices(int count) => frame_vertices_accumulator_ += count;
 
+  // Trajectory plot invalidations.  Every InvalidateAll() forces the next frame
+  // to re-derive every cached mesh through the C++ planetarium (P/Invoke), so a
+  // value that climbs at roughly one per frame means the cache never holds and
+  // the whole multi-level cache is being bypassed.
+  private static long plot_invalidations_ = 0;
+  public static long PlotInvalidations => plot_invalidations_;
+  public static void RecordPlotInvalidation() => plot_invalidations_++;
+
   public static float GetSmoothedMs(ProbeCategory category) => smoothed_ms_[(int)category];
   public static float GetPeakMs(ProbeCategory category) => peak_ms_[(int)category];
 
@@ -105,6 +118,7 @@ public static class PerformanceProbe {
       }
     }
     last_gc_memory_ = current_mem;
+    TelemetryLogger.Update();
   }
 
   // Telemetry 10 Hz string cache
@@ -193,8 +207,8 @@ public static class PerformanceProbe {
       cached_ephem_progress_str_ = $"<b>前瞻余量进度:</b> {bar_color}{bar_str}</color> (+{driver.current_horizon_years:F2}Y / 目标: {driver.lookahead_horizon_years:F1}Y)";
       cached_ephem_remaining_str_ = $"前瞻剩余时间: <b>{driver.current_horizon_seconds:N0}</b> 秒 (刷新阈值: <{driver.refresh_threshold_years:F1} 年)";
 
-      cached_celestial_cache_str1_ = $"<b>天体轨迹二进制缓存:</b> L1显存: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | L2磁盘: <b>{CelestialTrajectoryBinaryCache.L2DiskFileCount}</b> 文件 | 命中率: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
-      cached_celestial_cache_str2_ = $"缓存吞吐: L1显存命中 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | L2磁盘直出 <b>{CelestialTrajectoryBinaryCache.L2HitCount:N0}</b> | C++重构 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
+      cached_celestial_cache_str1_ = $"<b>天体轨迹零时漂显存缓存:</b> L1显存: <b>{CelestialTrajectoryBinaryCache.L1CachedMeshCount}</b> 条 | 命中率: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
+      cached_celestial_cache_str2_ = $"缓存吞吐: L1暂停/同UT复用 <b>{CelestialTrajectoryBinaryCache.L1HitCount:N0}</b> | C++实时直出 <b>{CelestialTrajectoryBinaryCache.MissCount:N0}</b>";
     }
 
     string decouple_status = HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling
@@ -217,7 +231,7 @@ public static class PerformanceProbe {
     cached_vertices_str_ = $"在屏顶点总数: <b>{TotalVerticesRendered:N0}</b> 顶点 (整帧全轨道汇总)";
     cached_zc_direct_str_ = $"直通提交次数: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)";
     cached_zc_pool_str_ = $"非托管显存池: <b>{NativeZeroCopyTrajectoryPipeline.CurrentCapacity:N0}</b> 顶点 ({NativeZeroCopyTrajectoryPipeline.CurrentCapacity * 12 / 1024} KB 独立池)";
-    cached_cache_hit_str_ = $"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0}) | 天体轨迹命中: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
+    cached_cache_hit_str_ = $"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0} | 失效: {PlotInvalidations:N0}) | 天体轨迹命中: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
 
     string mode_str = HeterogeneousDynamicGovernor.Affinity switch {
       HeterogeneousAffinity.AutoAdaptive => "Auto (动态自适应)",
@@ -249,6 +263,11 @@ public static class PerformanceProbe {
     UpdateMetricBarCache(ProbeCategory.MeshGeneration, 3.0f);
     UpdateMetricBarCache(ProbeCategory.FlightPlanEvaluation, 15.0f);
     UpdateMetricBarCache(ProbeCategory.GpuCompute, 5.0f);
+    UpdateMetricBarCache(ProbeCategory.VesselHarvest, 2.0f);
+    UpdateMetricBarCache(ProbeCategory.BodyFramesUpdate, 2.0f);
+    UpdateMetricBarCache(ProbeCategory.CelestialPlot, 2.0f);
+    UpdateMetricBarCache(ProbeCategory.VesselPlot, 3.0f);
+    UpdateMetricBarCache(ProbeCategory.EquipotentialPlot, 1.0f);
   }
 
   private static void UpdateMetricBarCache(ProbeCategory cat, float warning_threshold_ms) {
@@ -281,6 +300,18 @@ public static class PerformanceProbe {
         GUILayout.Label(cached_gc_str_);
       }
       GUILayout.Label("<color=grey><i>(Principia 零拷贝轨迹通道产生 GC: 0 B/f)</i></color>");
+      using (new GUILayout.HorizontalScope()) {
+        string log_status = TelemetryLogger.IsLoggingEnabled
+            ? "<color=lime>● 记录中 (1 Hz)</color>"
+            : "<color=grey>○ 已暂停</color>";
+        GUILayout.Label($"<b>实时遥测:</b> {log_status}");
+        if (GUILayout.Button(TelemetryLogger.IsLoggingEnabled ? "暂停" : "记录", GUILayout.Width(50))) {
+          TelemetryLogger.IsLoggingEnabled = !TelemetryLogger.IsLoggingEnabled;
+        }
+        if (GUILayout.Button("导出快照", GUILayout.Width(70))) {
+          TelemetryLogger.ForceFlushSnapshot();
+        }
+      }
 
       GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
 
@@ -376,8 +407,13 @@ public static class PerformanceProbe {
 
       // 6. Core Subsystem Latency Breakdown
       GUILayout.Label("<b>核心子系统延迟 (Smoothed / Peak):</b>");
-      DrawMetricBar("• 物理推进 (Physics):", ProbeCategory.PhysicsAdvance);
+      DrawMetricBar("• 物理推进 (AdvanceTime):", ProbeCategory.PhysicsAdvance);
+      DrawMetricBar("• 载体收割 (Harvest):", ProbeCategory.VesselHarvest);
+      DrawMetricBar("• 天体框架 (BodyFrames):", ProbeCategory.BodyFramesUpdate);
       DrawMetricBar("• 轨迹绘制 (Plotting):", ProbeCategory.TrajectoryPlotting);
+      DrawMetricBar("    ◦ 天体轨迹 (Celestial):", ProbeCategory.CelestialPlot);
+      DrawMetricBar("    ◦ 飞船轨迹 (Vessel):", ProbeCategory.VesselPlot);
+      DrawMetricBar("    ◦ 等势线 (Equipotential):", ProbeCategory.EquipotentialPlot);
       DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration);
       DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation);
       DrawMetricBar("• GPU绘制直出 (GPU Pass):", ProbeCategory.GpuCompute);

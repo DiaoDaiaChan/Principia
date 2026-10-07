@@ -22,14 +22,16 @@
 
 ## 1. 工程全景与实施矩阵
 
-| 优先级 | 模块代号 | 核心算法与原版实现文件 | 原版 CPU 核心瓶颈 | GPGPU 加速范式 | 预期指标与延迟目标 |
-| :---: | :--- | :--- | :--- | :--- | :--- |
-| **P0** | **TRAJ_PLOT** | `ksp_plugin/planetarium_body.hpp`<br/>`PlotMethod4` | 主线程阻塞 2~8ms；4 点高斯求积步长自适应坍缩 | 屏幕空间曲率自适应细分 + `DrawProceduralIndirect` | 主线程消耗降至 **< 0.1 ms**，消灭视角旋转掉帧 |
-| **P0** | **POLY_EVAL** | `physics/continuous_trajectory_body.hpp`<br/>`EstrinEvaluator` (单项式基) | 跨语言每帧批量查询坐标；现有分支着色器误用切比雪夫基 | 单项式基 Estrin 树展开 + 3 次 Hermite 并行基函数 | 彻底纠正坐标失真，实现 **0 拷贝流式展开** |
-| **P1** | **EQUIPOT_2D** | `physics/lagrange_equipotentials_body.hpp`<br/>`physics/equipotential_body.hpp` | 鞍点 $L_1/L_2$ 处正交梯度步进坍缩，10 飞米极值积分超时断裂 | 2D 真实脉动势场网格 + 2D Marching Squares 线段直出 | 耗时从 100~500ms 降至 **< 0.2 ms**，拓扑 100% 闭合 |
-| **P1** | **GEOPOT_REC** | `physics/geopotential_body.hpp`<br/>`GeneralSphericalHarmonicsAcceleration` | CPU 强制硬编码 30 阶上限，高阶展开占单步积分 60%~80% 耗时 | 寄存器级 Clenshaw/Pines 递推，FMA 密集多极矩展开 | 支持 **150 阶** 全球精细引力异常，吞吐提升 **50~150×** |
-| **P1** | **ORBIT_ANAL** | `astronomy/orbital_elements_body.hpp`<br/>`physics/apsides_body.hpp` | 滑动平根数 8 维 ODE 指数制动卡死；地面交点标量 Brent 迭代 | 单线程局部高斯求积 + Cardano 三次方程解析闭式解 | 消除 100% 卡死，万级离散点交点耗时 **< 0.05 ms** |
-| **P2** | **OPT_DIFF** | `ksp_plugin/flight_plan_optimizer.cpp`<br/>BFGS 前向有限差分与线搜索 | 每次偏导全量重新积分后续多航段，调参交互顿挫 2~5 秒 | 16K 并行打靶定位吸引子 + 64 路扰动与 Armijo 并发积分 | 拟牛顿步进整体响应耗时 **< 50 ms**，拖拽实时响应 |
+> 落地状态以 2026-10-07 代码树为准；实施进度唯一事实来源：`GPGPU_Implementation_TODO.md`。
+
+| 优先级 | 模块代号 | 核心算法与原版实现文件 | 原版 CPU 核心瓶颈 | GPGPU 加速范式 | 预期指标与延迟目标 | 落地状态 |
+| :---: | :--- | :--- | :--- | :--- | :--- | :--- |
+| **P0** | **TRAJ_PLOT** | `ksp_plugin/planetarium_body.hpp`<br/>`PlotMethod4` | 主线程阻塞 2~8ms；4 点高斯求积步长自适应坍缩 | 屏幕空间曲率自适应细分 + `DrawProceduralIndirect` | 主线程消耗降至 **< 0.1 ms**，消灭视角旋转掉帧 | ✅ 已落地（`TrajectoryTessellator.compute` + `GpuTrajectoryRenderer` + `TrajectoryProcedural.shader`） |
+| **P0** | **POLY_EVAL** | `physics/continuous_trajectory_body.hpp`<br/>`EstrinEvaluator` (单项式基) | 跨语言每帧批量查询坐标；现有分支着色器误用切比雪夫基 | 单项式基 Estrin 树展开 + 3 次 Hermite 并行基函数 | 彻底纠正坐标失真，实现 **0 拷贝流式展开** | ⚠️ 部分落地（`TrajectoryProcedural.shader` + `NativeZeroCopyTrajectoryPipeline` 管线已通；多项式基与 Estrin 展开的对齐**待验证**） |
+| **P1** | **EQUIPOT_2D** | `physics/lagrange_equipotentials_body.hpp`<br/>`physics/equipotential_body.hpp` | 鞍点 $L_1/L_2$ 处正交梯度步进坍缩，10 飞米极值积分超时断裂 | 2D 真实脉动势场网格 + 2D Marching Squares 线段直出 | 耗时从 100~500ms 降至 **< 0.2 ms**，拓扑 100% 闭合 | ❌ 未落地（原 `EquipotentialMarchingCubes.compute` 已随 `e4163820f` 移除） |
+| **P1** | **GEOPOT_REC** | `physics/geopotential_body.hpp`<br/>`GeneralSphericalHarmonicsAcceleration` | CPU 强制硬编码 30 阶上限，高阶展开占单步积分 60%~80% 耗时 | 寄存器级 Clenshaw/Pines 递推，FMA 密集多极矩展开 | 支持 **150 阶** 全球精细引力异常，吞吐提升 **50~150×** | ❌ 未落地（原 `HighDegreeGeopotentialGrid.compute` 已随 `e4163820f` 移除，重启须按本规格重写） |
+| **P1** | **ORBIT_ANAL** | `astronomy/orbital_elements_body.hpp`<br/>`physics/apsides_body.hpp` | 滑动平根数 8 维 ODE 指数制动卡死；地面交点标量 Brent 迭代 | 单线程局部高斯求积 + Cardano 三次方程解析闭式解 | 消除 100% 卡死，万级离散点交点耗时 **< 0.05 ms** | ❌ 未落地 |
+| **P2** | **OPT_DIFF** | `ksp_plugin/flight_plan_optimizer.cpp`<br/>BFGS 前向有限差分与线搜索 | 每次偏导全量重新积分后续多航段，调参交互顿挫 2~5 秒 | 16K 并行打靶定位吸引子 + 64 路扰动与 Armijo 并发积分 | 拟牛顿步进整体响应耗时 **< 50 ms**，拖拽实时响应 | ✅ 已落地（`FlightPlanShootingOptimizer.compute` + `GpuFlightPlanShootingOptimizer`，实施 Phase 6 重构，`caa3cb2c3`） |
 
 ---
 
