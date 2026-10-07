@@ -39,9 +39,9 @@ public static class HeterogeneousDynamicGovernor {
     set => VacuumBypassGovernor.EnableVacuumBypass = value;
   }
   public static bool EnableCircuitBreaker = true;           // Frame-time circuit breaker
-  public static bool EnableRigidMotionBypass = true;        // Stable vacuum rigid motion P/Invoke & Transform bypass
+  public static bool EnableRigidMotionBypass = false;       // Stable vacuum rigid motion P/Invoke & Transform bypass (disabled for joint stability)
   public static bool EnableSceneGraphThrottling = true;     // Celestial body Transform update throttling
-  public static bool EnableAutonomousSnapshotSampling = true; // Lock-free snapshot sampling in rendering/LateUpdate
+  public static bool EnableAutonomousSnapshotSampling = false; // Lock-free snapshot sampling in rendering/LateUpdate
 
   // Additional Telemetry counters
   public static long RigidMotionBypassedPartCount { get; private set; }

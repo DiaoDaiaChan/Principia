@@ -6,7 +6,7 @@ namespace principia.ksp_plugin_adapter {
 
 public static class VacuumBypassGovernor {
   // Master toggle for Smart Vacuum Bypass
-  public static bool EnableVacuumBypass = true;
+  public static bool EnableVacuumBypass = false;
 
   // Dynamic calibration interval in physics frames (~1 second based on actual physics timestep)
   public static long CalibrationIntervalFrames =>

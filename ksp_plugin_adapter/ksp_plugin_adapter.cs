@@ -2231,7 +2231,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       // yielded.
       // Here, the `CollisionReporter.collisions` are the collisions that occurred
       // in the physics simulation.
-      bool had_collisions_this_step = false;
       var report_vessels = FlightGlobals.Vessels;
       for (int vi = 0; vi < report_vessels.Count; ++vi) {
         var vessel1 = report_vessels[vi];
@@ -2243,7 +2242,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           if (vessel1.isEVA &&
               (vessel1.evaController.OnALadder ||
                is_clambering(vessel1.evaController))) {
-            had_collisions_this_step = true;
             var vessel2 = vessel1.evaController.LadderPart?.vessel;
             if (vessel2 != null && !vessel2.packed && is_manageable(vessel2)) {
               Log.Info("Reporting climbing a ladder");
@@ -2278,7 +2276,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               }
             }
             if (wheel_grounded) {
-              had_collisions_this_step = true;
               Log.Info("Reporting grounded wheel");
               plugin_.ReportGroundCollision(
                   closest_physical_parent(part1).flightID);
@@ -2297,7 +2294,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               continue;
             }
             foreach (var collision in collision_reporter.collisions) {
-              had_collisions_this_step = true;
               var collider = collision.collider;
               if (collider == null) {
                 // This happens, albeit quite rarely, see #1447.  When it happens,
@@ -2443,83 +2439,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
           }
 
           var vessel_parts = vessel.parts;
-          bool bypass_child_parts = HeterogeneousDynamicGovernor.EnableRigidMotionBypass &&
-                                    VacuumBypassGovernor.IsVesselInStableVacuum(vessel) &&
-                                    !VacuumBypassGovernor.ShouldForceCalibration(vessel.id) &&
-                                    vessel.rootPart != null;
-
-          Vector3d vessel_q_correction = Vector3d.zero;
-          Vector3d vessel_v_correction = Vector3d.zero;
-
-          if (bypass_child_parts) {
-            Part vessel_root = vessel.rootPart;
-            Vector3d old_root_pos = Vector3d.zero;
-            UnityEngine.QuaternionD old_root_rot = UnityEngine.QuaternionD.identity;
-            var root_pos = Vector3d.zero;
-            var root_vel = Vector3d.zero;
-            var root_rot = UnityEngine.QuaternionD.identity;
-            var root_ang_vel = Vector3d.zero;
-
-            if (PartIsFaithful(vessel_root)) {
-              UnityEngine.Rigidbody root_rb = vessel_root.rb;
-              old_root_pos = root_rb.position;
-              old_root_rot = root_rb.rotation;
-
-              QPRW root_motion = plugin_.PartGetActualRigidMotion(vessel_root.flightID, origin);
-              QP root_dof = root_motion.qp;
-              root_pos = (Vector3d)root_dof.q;
-              root_vel = (Vector3d)root_dof.p;
-              root_rot = (UnityEngine.QuaternionD)root_motion.r;
-              root_ang_vel = (Vector3d)root_motion.w;
-
-              vessel_q_correction = root_pos - old_root_pos;
-              vessel_v_correction = root_vel - root_rb.velocity;
-
-              if (vessel_root == root_part) {
-                q_correction_at_root_part = vessel_q_correction;
-                v_correction_at_root_part = vessel_v_correction;
-              }
-
-              root_rb.position = root_pos;
-              root_rb.rotation = root_rot;
-              root_rb.transform.SetPositionAndRotation(root_pos, root_rot);
-              root_rb.velocity = root_vel;
-              root_rb.angularVelocity = root_ang_vel;
-              if (HeterogeneousDynamicGovernor.EnableAutonomousPhysicsDecoupling) {
-                NativeStateSnapshotChannel.PublishSnapshot(
-                    motion_vessel_guid,
-                    new MotionSnapshot{
-                        time_ut = plugin_.CurrentTime(),
-                        position = root_pos,
-                        velocity = root_vel,
-                        rotation = root_rot,
-                        angular_velocity = root_ang_vel
-                    });
-              }
-              HeterogeneousDynamicGovernor.RecordRigidMotionExecution(1);
-            }
-
-            UnityEngine.QuaternionD delta_rot = root_rot * UnityEngine.QuaternionD.Inverse(old_root_rot);
-            for (int vpi = 0; vpi < vessel_parts.Count; ++vpi) {
-              var part = vessel_parts[vpi];
-              if (!PartIsFaithful(part) || part == vessel_root) {
-                continue;
-              }
-              UnityEngine.Rigidbody part_rb = part.rb;
-              Vector3d r_rel = (Vector3d)part_rb.position - old_root_pos;
-              Vector3d r_rel_rot = delta_rot * r_rel;
-              Vector3d new_part_pos = root_pos + r_rel_rot;
-              UnityEngine.QuaternionD new_part_rot = delta_rot * (UnityEngine.QuaternionD)part_rb.rotation;
-
-              part_rb.position = new_part_pos;
-              part_rb.rotation = new_part_rot;
-              part_rb.transform.SetPositionAndRotation(new_part_pos, new_part_rot);
-              part_rb.angularVelocity = root_ang_vel;
-              part_rb.velocity = root_vel + Vector3d.Cross(root_ang_vel, r_rel_rot);
-              HeterogeneousDynamicGovernor.RecordRigidMotionBypass(1);
-            }
-          } else {
-            for (int vpi = 0; vpi < vessel_parts.Count; ++vpi) {
+          for (int vpi = 0; vpi < vessel_parts.Count; ++vpi) {
               var part = vessel_parts[vpi];
               if (!PartIsFaithful(part)) {
                 continue;
@@ -2571,8 +2491,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
               HeterogeneousDynamicGovernor.RecordRigidMotionExecution(1);
             }
           }
-        }
-        Profiler.EndSample();
         Profiler.EndSample();
 
         var phys_objects = FlightGlobals.physicalObjects;
@@ -2620,23 +2538,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         --main_body_change_countdown_;
       }
 
-      bool should_sync_transforms = true;
-      Vessel active = FlightGlobals.ActiveVessel;
-      if (VacuumBypassGovernor.EnableVacuumBypass &&
-          active != null &&
-          !active.LandedOrSplashed &&
-          !had_collisions_this_step &&
-          VacuumBypassGovernor.IsVesselInStableVacuum(active)) {
-        should_sync_transforms = (UnityEngine.Time.frameCount % VacuumBypassGovernor.CalibrationIntervalFrames == 0);
-      }
-
-      if (PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics()) {
-        should_sync_transforms = false;
-      }
-
-      if (should_sync_transforms) {
-        UnityEngine.Physics.SyncTransforms();
-      }
+      UnityEngine.Physics.SyncTransforms();
       DualClockBridge.RecordPhysicsStep(plugin_.CurrentTime(), Δt);
       FrameBudgetCircuitBreaker.OnPhysicsStepEnd();
       UnityEngine.Physics.autoSyncTransforms = true;
@@ -2680,7 +2582,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     var vessels = FlightGlobals.Vessels;
     for (int i = vessels.Count - 1; i >= 0; --i) {
       var vessel = vessels[i];
-      if (vessel.loaded && vessel.precalc != null) {
+      if (vessel != null && vessel.precalc != null) {
         vessel.precalc.enabled = false;
       }
     }
@@ -2691,7 +2593,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       if (!PluginRunning()) {
         return;
       }
-      bool throttle_secondary = PhysicsCircuitBreaker.ShouldThrottleSecondaryPhysics();
       if (FlightGlobals.ActiveVessel?.situation == Vessel.Situations.PRELAUNCH &&
           FlightGlobals.ActiveVessel?.orbitDriver?.lastMode ==
           OrbitDriver.UpdateMode.TRACK_Phys &&
@@ -2704,7 +2605,13 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         time_is_advancing_ = time_is_advancing(universal_time);
         if (time_is_advancing_) {
           if (vessel_futures_.Count > 0) {
-            HarvestVesselsAndApplyOnRails(non_blocking: false);
+            // Under staged harvesting, never block the main thread here: any
+            // futures not yet completed by the C++ worker pool are retried
+            // (non-blocking) at BetterLateThanNever (+8008), per the design
+            // documented in Early().  Blocking here would stall the physics
+            // thread on background stragglers from the previous frame.
+            HarvestVesselsAndApplyOnRails(
+                non_blocking: HeterogeneousDynamicGovernor.EnableStagedHarvesting);
           }
           using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
             plugin_.AdvanceTime(universal_time, Planetarium.InverseRotAngle);
@@ -2727,7 +2634,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             }
           }
         }
-        SetBodyFrames();
+        using (PerformanceProbe.Measure(ProbeCategory.BodyFramesUpdate)) {
+          SetBodyFrames();
+        }
       }
       // Unfortunately there is no way to get scheduled between Planetarium and
       // VesselPrecalculate, so we get scheduled after VesselPrecalculate, set the
@@ -2738,21 +2647,13 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       var all_vessels = FlightGlobals.Vessels;
       for (int i = all_vessels.Count - 1; i >= 0; --i) {
         var vessel = all_vessels[i];
-        if (vessel.precalc == null) {
-          continue;
-        }
-        if (vessel.loaded) {
-          if (throttle_secondary && vessel != FlightGlobals.ActiveVessel) {
-            continue;
-          }
-          if (!VacuumBypassGovernor.ShouldBypassPrecalc(vessel)) {
-            vessel.precalc.enabled = true;
-            // In stock this is equivalent to `FixedUpdate()`.  With
-            // ModularFlightIntegrator's ModularVesselPrecalculate, which gets run
-            // in TimingPre like us, this comes with a flag that ensures it only gets
-            // run once.
-            vessel.precalc.MainPhysics(true);
-          }
+        if (vessel != null && vessel.precalc != null) {
+          vessel.precalc.enabled = true;
+          // In stock this is equivalent to `FixedUpdate()`.  With
+          // ModularFlightIntegrator's ModularVesselPrecalculate, which gets run
+          // in TimingPre like us, this comes with a flag that ensures it only gets
+          // run once.
+          vessel.precalc.MainPhysics(true);
         }
       }
     }
@@ -2776,7 +2677,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     if (!PluginRunning() || vessel_futures_.Count == 0) {
       return;
     }
-    using (PerformanceProbe.Measure(ProbeCategory.PhysicsAdvance)) {
+    using (PerformanceProbe.Measure(ProbeCategory.VesselHarvest)) {
       collided_vessels_cache_.Clear();
       int unready_count = 0;
       double current_ut = Planetarium.GetUniversalTime();
@@ -2860,14 +2761,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         if (vessel.packed || !is_manageable(vessel)) {
           continue;
         }
-        if (VacuumBypassGovernor.IsVesselInStableVacuum(vessel)) {
-          if (!VacuumBypassGovernor.ShouldForceCalibration(vessel.id)) {
-            VacuumBypassGovernor.RecordBypassedForces();
-            ZeroAllocationForceCache.RecordVacuumBypass(vessel.parts.Count);
-            continue;
-          }
-        }
-        VacuumBypassGovernor.RecordExecutedForces();
         var parts = vessel.parts;
         for (int j = 0; j < parts.Count; ++j) {
           var part = parts[j];
@@ -2938,10 +2831,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       for (int i = 0; i < vessels.Count; ++i) {
         var vessel = vessels[i];
         if (vessel.packed || !is_manageable(vessel)) {
-          continue;
-        }
-        if (VacuumBypassGovernor.ShouldBypassAero(vessel)) {
-          ZeroAllocationForceCache.RecordAeroPInvokeBypass(vessel.parts.Count);
           continue;
         }
         var parts = vessel.parts;
