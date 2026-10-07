@@ -362,11 +362,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private readonly MapNodePool map_node_pool_;
   private readonly HashSet<KSP.UI.Screens.Mapview.MapNode> hooked_map_nodes_ =
       new HashSet<KSP.UI.Screens.Mapview.MapNode>();
-  private double last_stock_trajectories_cleanup_time_ = 0.0;
-  private bool stock_trajectories_dirty_ = true;
-  private bool stock_celestials_dirty_ = true;
-  private bool last_display_patched_conics_ = false;
-  private int last_known_vessel_count_ = -1;
   private readonly string[] single_guid_array_ = new string[1];
   private readonly string[] double_guid_array_ = new string[2];
   private string last_collision_vessel_guid_ = null;
@@ -2044,13 +2039,11 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   }
 
   private void OnVesselChange(Vessel vessel) {
-    stock_trajectories_dirty_ = true;
     MapMarkerEventGovernor.InvalidateAll();
     map_node_pool_.Clear();
   }
 
   private void OnVesselSOIChanged(GameEvents.HostedFromToAction<Vessel, CelestialBody> e) {
-    stock_trajectories_dirty_ = true;
     MapMarkerEventGovernor.InvalidateAll();
     map_node_pool_.Clear();
   }
@@ -3490,79 +3483,47 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
   }
 
-  private void PatrolStockTrajectories() {
-    double current_realtime = UnityEngine.Time.realtimeSinceStartup;
-    int current_vessel_count = FlightGlobals.Vessels?.Count ?? 0;
-    bool vessel_count_changed = current_vessel_count != last_known_vessel_count_;
-    bool conics_changed = main_window_.display_patched_conics != last_display_patched_conics_;
-    if (conics_changed) {
-      last_display_patched_conics_ = main_window_.display_patched_conics;
-      stock_trajectories_dirty_ = true;
-      stock_celestials_dirty_ = true;
-    }
-
-    bool full_sweep_needed = stock_trajectories_dirty_ || vessel_count_changed;
-    bool periodic_check = (current_realtime - last_stock_trajectories_cleanup_time_ > 5.0);
-    if (!full_sweep_needed && !periodic_check) {
-      return;
-    }
-    last_stock_trajectories_cleanup_time_ = current_realtime;
-    last_known_vessel_count_ = current_vessel_count;
-    stock_trajectories_dirty_ = false;
-
+  private void RemoveStockTrajectories() {
     try {
-      // Celestial nodes and trajectory renderers: only need updating when dirty
-      // (scene start, frame type switch, display_patched_conics toggle).
-      if (stock_celestials_dirty_) {
-        stock_celestials_dirty_ = false;
-        var bodies = FlightGlobals.Bodies;
-        if (bodies != null) {
-          for (int i = 0; i < bodies.Count; ++i) {
-            var celestial = bodies[i];
-            var uiNode = celestial?.MapObject?.uiNode;
-            if (uiNode != null) {
-              if (hooked_map_nodes_.Add(uiNode)) {
-                uiNode.OnClick += OnCelestialNodeClick;
-              }
-              RemoveStockTrajectoriesIfNeeded(celestial);
-            }
+      var bodies = FlightGlobals.Bodies;
+      if (bodies != null) {
+        for (int i = 0; i < bodies.Count; ++i) {
+          var celestial = bodies[i];
+          if (celestial == null) continue;
+          var uiNode = celestial.MapObject?.uiNode;
+          if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
+            uiNode.OnClick += OnCelestialNodeClick;
           }
+          RemoveStockTrajectoriesIfNeeded(celestial);
         }
       }
 
-      if (full_sweep_needed) {
-        var vessels = FlightGlobals.Vessels;
-        if (vessels != null) {
-          for (int i = 0; i < vessels.Count; ++i) {
-            var vessel = vessels[i];
-            if (vessel == null) continue;
-            var uiNode = vessel.mapObject?.uiNode;
-            if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
-              uiNode.OnClick += OnVesselNodeClick;
-            }
-            RemoveStockTrajectoriesIfNeeded(vessel);
-          }
-        }
-      } else {
-        // Periodic 5s check: only check active vessel (only active vessel can get stock maneuver nodes / conics)
-        var active_vessel = FlightGlobals.ActiveVessel;
-        if (active_vessel != null) {
-          var uiNode = active_vessel.mapObject?.uiNode;
+      var vessels = FlightGlobals.Vessels;
+      if (vessels != null) {
+        for (int i = 0; i < vessels.Count; ++i) {
+          var vessel = vessels[i];
+          if (vessel == null) continue;
+          var uiNode = vessel.mapObject?.uiNode;
           if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
             uiNode.OnClick += OnVesselNodeClick;
           }
-          RemoveStockTrajectoriesIfNeeded(active_vessel);
+          RemoveStockTrajectoriesIfNeeded(vessel);
         }
       }
     } catch (Exception e) {
-      Log.Error($"[PatrolStockTrajectories] Error: {e}");
+      Log.Error($"[RemoveStockTrajectories] Error: {e}");
     }
+  }
+
+  private void PatrolStockTrajectories() {
+    RemoveStockTrajectories();
   }
 
   private void RenderTrajectories() {
     if (!PluginRunning()) {
       return;
     }
+    RemoveStockTrajectories();
     string main_vessel_guid = GetVesselGuid(PredictedVessel());
     if (MapView.MapIsEnabled) {
       XYZ sun_world_position = (XYZ)Planetarium.fetch.Sun.position;
@@ -4089,8 +4050,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     navball_changed_ = true;
     reset_rsas_target_ = true;
     planetarium_camera_adjuster_.should_transfer_camera_coordinates = true;
-    stock_trajectories_dirty_ = true;
-    stock_celestials_dirty_ = true;
     map_node_pool_.Clear();
     MapMarkerEventGovernor.InvalidateAll();
     plotter_?.InvalidateAll();
