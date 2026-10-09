@@ -168,9 +168,11 @@ void Planetarium::PlotMethod4(
           *plotting_frame_, trajectory, previous_time);
   Position<Navigation> previous_position =
       initial_degrees_of_freedom.position();
+  Vector<double, Navigation> previous_direction_from_camera =
+      Normalize(previous_position - perspective_.camera());
   Vector<AngularFrequency, Navigation> previous_projected_velocity =
       ProperMotion(initial_degrees_of_freedom) *
-          Normalize(previous_position - perspective_.camera());
+          previous_direction_from_camera;
 
   Time Δt = final_time - previous_time;
 
@@ -180,6 +182,7 @@ void Planetarium::PlotMethod4(
   Instant t;
   Angle rms_apparent_distance;
   Position<Navigation> position;
+  Vector<double, Navigation> direction_from_camera;
   Vector<AngularFrequency, Navigation> projected_velocity;
   Square<Length> minimal_squared_distance = Infinity<Square<Length>>;
 
@@ -225,40 +228,42 @@ void Planetarium::PlotMethod4(
       // the actual velocities and are represented as a (somewhat unusual)
       // `Vector<AngularFrequency, Navigation>`.  Note that neither the line
       // segment nor the trajectory are on the sphere, but for sufficiently
-      // small time intervals they are close
+      // small time intervals they are close.
+      direction_from_camera = Normalize(position - perspective_.camera());
       projected_velocity =
-          ProperMotion(degrees_of_freedom) *
-          Normalize(position - perspective_.camera());
+          ProperMotion(degrees_of_freedom) * direction_from_camera;
       auto const previous_projected_linear_velocity =
           ProperMotion({previous_position, linear_velocity}) *
-          Normalize(previous_position - perspective_.camera());
+          previous_direction_from_camera;
       auto const projected_linear_velocity =
           ProperMotion({position, linear_velocity}) *
-          Normalize(position - perspective_.camera());
-
-      Hermite3<Vector<Angle, Navigation>, Instant> const error_approximation(
-          {previous_time, t},
-          {Vector<Angle, Navigation>{}, Vector<Angle, Navigation>{}},
-          {previous_projected_velocity - previous_projected_linear_velocity,
-           projected_velocity - projected_linear_velocity});
+          direction_from_camera;
 
       // Our metric is the root mean square of the norm of the displacement
       // between the trajectory and the linear segment, normalized by the
-      // duration of the time interval.  It is an angle.  Note that the square
-      // norm is a polynomial of degree 6, and the 4-point Gauss-Legendre method
-      // is exact for polynomials of degree 7.
-      rms_apparent_distance =
-          Sqrt(GaussLegendre<4>(
-                   [&error_approximation](Instant const& time) {
-                     return error_approximation(time).Norm²();
-                   },
-                   previous_time,
-                   t) /
-               Δt);
+      // duration of the time interval. It is an angle.
+      // The 3rd-degree Hermite error polynomial has zero values at the interval
+      // endpoints: p(x) = v₀ x (1 - x)² - v₁ x² (1 - x) where x = (t - t₀) / Δt,
+      // v₀ = Δt (previous_projected_velocity - previous_projected_linear_velocity),
+      // and v₁ = Δt (projected_velocity - projected_linear_velocity).
+      // The integral of its square norm has an exact closed form:
+      //   (1 / Δt) ∫ₜ₀ᵗ₁ ‖p(t)‖² dt = ∫₀¹ ‖p(x)‖² dx
+      //                             = (2 ‖v₀‖² - 3 (v₀ · v₁) + 2 ‖v₁‖²) / 210.
+      // Evaluating this directly eliminates polynomial construction, lambda allocation,
+      // and 4-point numerical quadrature while matching Gauss-Legendre to machine
+      // precision.
+      auto const v0 =
+          (previous_projected_velocity - previous_projected_linear_velocity) * Δt;
+      auto const v1 =
+          (projected_velocity - projected_linear_velocity) * Δt;
+      auto const mean_square =
+          (2.0 * v0.Norm²() - 3.0 * InnerProduct(v0, v1) + 2.0 * v1.Norm²()) / 210.0;
+      rms_apparent_distance = Sqrt(std::max(mean_square, Square<Angle>{}));
     } while (rms_apparent_distance > parameters_.angular_resolution_);
 
     previous_time = t;
     previous_position = position;
+    previous_direction_from_camera = direction_from_camera;
     previous_projected_velocity = projected_velocity;
 
     add_point(plotting_to_scaled_space_(t, position));

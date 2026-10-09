@@ -73,7 +73,9 @@
     <PlatformToolset Condition="'$(PlatformToolset)'==''">v145</PlatformToolset>
     <CLToolPath>C:\Users\43701\LLVM\LLVM\bin</CLToolPath>
     <CLToolExe>clang-cl.exe</CLToolExe>
-    <TrackFileAccess>false</TrackFileAccess>
+    <TrackFileAccess>true</TrackFileAccess>
+    <UseMultiToolTask>true</UseMultiToolTask>
+    <EnforceProcessCountAcrossBuilds>true</EnforceProcessCountAcrossBuilds>
   </PropertyGroup>
 
   <!--Target.-->
@@ -131,6 +133,10 @@
         -Wno-undef
         -Wno-unknown-pragmas
         -Wno-unsafe-buffer-usage
+        -Wno-deprecated-attributes
+        -Wno-microsoft-unqualified-friend
+        -Wno-unused-function
+        -Wno-unused-lambda-capture
         -Xclang -fno-char8_t
         <!--Warnings in protobuf generated code are none of our business.-->
         -Xclang --system-header-prefix=serialization/
@@ -166,7 +172,7 @@
                                $(ProjectName) != serialization">Level3</WarningLevel>
     </ClCompile>
     <Link>
-      <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
       <LinkTimeCodeGeneration>Default</LinkTimeCodeGeneration>
     </Link>
   </ItemDefinitionGroup>
