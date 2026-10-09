@@ -26,7 +26,7 @@ using namespace principia::geometry::_instant;
 using namespace principia::ksp_plugin::_frames;
 using namespace principia::physics::_ephemeris;
 using namespace principia::quantities::_quantities;
-using namespace principia::quantities::si;
+using namespace principia::quantities::_si;
 
 // Autonomous native background thread for prolonging the Ephemeris.
 // Eliminates the need for Unity / C# to create artificial dummy carrier
@@ -74,5 +74,7 @@ class EphemerisPacer {
 using internal::EphemerisPacer;
 
 }  // namespace _ephemeris_pacer
+
+namespace ephemeris_pacer = _ephemeris_pacer;
 }  // namespace ksp_plugin
 }  // namespace principia

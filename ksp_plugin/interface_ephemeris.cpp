@@ -1,6 +1,7 @@
 #include "ksp_plugin/ephemeris_pacer.hpp"
 #include "ksp_plugin/interface.hpp"
 #include "ksp_plugin/plugin.hpp"
+#include "quantities/si.hpp"
 
 #if defined(_MSC_VER)
 #define PRINCIPIA_EXPORT extern "C" __declspec(dllexport)
@@ -11,12 +12,14 @@
 namespace principia {
 namespace interface {
 
+using namespace principia::quantities::_si;
+
 PRINCIPIA_EXPORT double __cdecl principia__EphemerisGetHorizonSeconds(
     Plugin const* const plugin) {
   if (plugin == nullptr || plugin->ephemeris_pacer() == nullptr) {
     return 0.0;
   }
-  return plugin->ephemeris_pacer()->current_horizon() / quantities::si::Second;
+  return plugin->ephemeris_pacer()->current_horizon() / Second;
 }
 
 PRINCIPIA_EXPORT double __cdecl principia__EphemerisGetTargetExtendedTime(
@@ -47,7 +50,7 @@ PRINCIPIA_EXPORT void __cdecl principia__EphemerisAdjustHorizon(
     double const delta_seconds) {
   if (plugin != nullptr && plugin->ephemeris_pacer() != nullptr) {
     plugin->ephemeris_pacer()->AdjustHorizon(
-        delta_seconds * quantities::si::Second);
+        delta_seconds * Second);
   }
 }
 

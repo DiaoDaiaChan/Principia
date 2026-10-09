@@ -311,6 +311,132 @@ internal static partial class Interface {
 
   private static Symbols symbols_ = null;
 
+  private partial class Symbols {
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate IntPtr StateBusCreateChannelDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void StateBusDestroyChannelDelegate(ref IntPtr channel);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void StateBusCommitWriteDelegate(IntPtr channel, [In] ref DensePolynomialSlice slice);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool StateBusAcquireReadDelegate(IntPtr channel, out DensePolynomialSlice out_slice);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate IntPtr CommandBusCreateDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void CommandBusDestroyDelegate(ref IntPtr queue);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool CommandBusTryPushDelegate(IntPtr queue, [In] ref CommandPacket packet);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool CommandBusTryPopDelegate(IntPtr queue, out CommandPacket out_packet);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void BatchInsertOrKeepLoadedPartsDelegate(
+        IntPtr plugin,
+        [In] PartBatchInsertState[] states,
+        int count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void BatchPartSetApparentRigidMotionDelegate(
+        IntPtr plugin,
+        [In] PartBatchApparentMotion[] states,
+        int count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void BatchPartGetActualRigidMotionDelegate(
+        IntPtr plugin,
+        [In] ref Origin origin,
+        [In] uint[] part_ids,
+        [Out] QPRW[] motions_out,
+        int count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate double EphemerisGetHorizonSecondsDelegate(IntPtr plugin);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate double EphemerisGetTargetExtendedTimeDelegate(IntPtr plugin);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool EphemerisIsProlongingDelegate(IntPtr plugin);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void EphemerisForceProlongDelegate(IntPtr plugin);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void EphemerisAdjustHorizonDelegate(IntPtr plugin, double delta_seconds);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void EphemerisTogglePauseDelegate(IntPtr plugin);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool EphemerisIsPausedDelegate(IntPtr plugin);
+
+    public StateBusCreateChannelDelegate StateBusCreateChannel =
+        Loader.LoadOptionalFunction<StateBusCreateChannelDelegate>("principia__StateBusCreateChannel");
+
+    public StateBusDestroyChannelDelegate StateBusDestroyChannel =
+        Loader.LoadOptionalFunction<StateBusDestroyChannelDelegate>("principia__StateBusDestroyChannel");
+
+    public StateBusCommitWriteDelegate StateBusCommitWrite =
+        Loader.LoadOptionalFunction<StateBusCommitWriteDelegate>("principia__StateBusCommitWrite");
+
+    public StateBusAcquireReadDelegate StateBusAcquireRead =
+        Loader.LoadOptionalFunction<StateBusAcquireReadDelegate>("principia__StateBusAcquireRead");
+
+    public CommandBusCreateDelegate CommandBusCreate =
+        Loader.LoadOptionalFunction<CommandBusCreateDelegate>("principia__CommandBusCreate");
+
+    public CommandBusDestroyDelegate CommandBusDestroy =
+        Loader.LoadOptionalFunction<CommandBusDestroyDelegate>("principia__CommandBusDestroy");
+
+    public CommandBusTryPushDelegate CommandBusTryPush =
+        Loader.LoadOptionalFunction<CommandBusTryPushDelegate>("principia__CommandBusTryPush");
+
+    public CommandBusTryPopDelegate CommandBusTryPop =
+        Loader.LoadOptionalFunction<CommandBusTryPopDelegate>("principia__CommandBusTryPop");
+
+    public BatchInsertOrKeepLoadedPartsDelegate BatchInsertOrKeepLoadedParts =
+        Loader.LoadOptionalFunction<BatchInsertOrKeepLoadedPartsDelegate>("principia__BatchInsertOrKeepLoadedParts");
+
+    public BatchPartSetApparentRigidMotionDelegate BatchPartSetApparentRigidMotion =
+        Loader.LoadOptionalFunction<BatchPartSetApparentRigidMotionDelegate>("principia__BatchPartSetApparentRigidMotion");
+
+    public BatchPartGetActualRigidMotionDelegate BatchPartGetActualRigidMotion =
+        Loader.LoadOptionalFunction<BatchPartGetActualRigidMotionDelegate>("principia__BatchPartGetActualRigidMotion");
+
+    public EphemerisGetHorizonSecondsDelegate EphemerisGetHorizonSeconds =
+        Loader.LoadOptionalFunction<EphemerisGetHorizonSecondsDelegate>("principia__EphemerisGetHorizonSeconds");
+
+    public EphemerisGetTargetExtendedTimeDelegate EphemerisGetTargetExtendedTime =
+        Loader.LoadOptionalFunction<EphemerisGetTargetExtendedTimeDelegate>("principia__EphemerisGetTargetExtendedTime");
+
+    public EphemerisIsProlongingDelegate EphemerisIsProlonging =
+        Loader.LoadOptionalFunction<EphemerisIsProlongingDelegate>("principia__EphemerisIsProlonging");
+
+    public EphemerisForceProlongDelegate EphemerisForceProlong =
+        Loader.LoadOptionalFunction<EphemerisForceProlongDelegate>("principia__EphemerisForceProlong");
+
+    public EphemerisAdjustHorizonDelegate EphemerisAdjustHorizon =
+        Loader.LoadOptionalFunction<EphemerisAdjustHorizonDelegate>("principia__EphemerisAdjustHorizon");
+
+    public EphemerisTogglePauseDelegate EphemerisTogglePause =
+        Loader.LoadOptionalFunction<EphemerisTogglePauseDelegate>("principia__EphemerisTogglePause");
+
+    public EphemerisIsPausedDelegate EphemerisIsPaused =
+        Loader.LoadOptionalFunction<EphemerisIsPausedDelegate>("principia__EphemerisIsPaused");
+  }
+
   internal static bool HasDirectVramSupport =>
       symbols_?.PlanetariumPlotPredictionDirect != null;
   internal static bool HasNonBlockingHarvestSupport =>
@@ -321,6 +447,90 @@ internal static partial class Interface {
       symbols_?.CommandBusCreate != null;
   internal static bool HasBatchSyncSupport =>
       symbols_?.BatchInsertOrKeepLoadedParts != null;
+
+  internal static IntPtr StateBusCreateChannel() {
+    return symbols_?.StateBusCreateChannel != null ? symbols_.StateBusCreateChannel() : IntPtr.Zero;
+  }
+
+  internal static void StateBusDestroyChannel(ref IntPtr channel) {
+    symbols_?.StateBusDestroyChannel?.Invoke(ref channel);
+  }
+
+  internal static void StateBusCommitWrite(IntPtr channel, ref DensePolynomialSlice slice) {
+    symbols_?.StateBusCommitWrite?.Invoke(channel, ref slice);
+  }
+
+  internal static bool StateBusAcquireRead(IntPtr channel, out DensePolynomialSlice out_slice) {
+    if (symbols_?.StateBusAcquireRead != null) {
+      return symbols_.StateBusAcquireRead(channel, out out_slice);
+    }
+    out_slice = default(DensePolynomialSlice);
+    return false;
+  }
+
+  internal static IntPtr CommandBusCreate() {
+    return symbols_?.CommandBusCreate != null ? symbols_.CommandBusCreate() : IntPtr.Zero;
+  }
+
+  internal static void CommandBusDestroy(ref IntPtr queue) {
+    symbols_?.CommandBusDestroy?.Invoke(ref queue);
+  }
+
+  internal static bool CommandBusTryPush(IntPtr queue, ref CommandPacket packet) {
+    return symbols_?.CommandBusTryPush != null && symbols_.CommandBusTryPush(queue, ref packet);
+  }
+
+  internal static bool CommandBusTryPop(IntPtr queue, out CommandPacket out_packet) {
+    if (symbols_?.CommandBusTryPop != null) {
+      return symbols_.CommandBusTryPop(queue, out out_packet);
+    }
+    out_packet = default(CommandPacket);
+    return false;
+  }
+
+  internal static void BatchInsertOrKeepLoadedParts(this IntPtr plugin, PartBatchInsertState[] states, int count) {
+    symbols_?.BatchInsertOrKeepLoadedParts?.Invoke(plugin, states, count);
+  }
+
+  internal static void BatchPartSetApparentRigidMotion(this IntPtr plugin, PartBatchApparentMotion[] states, int count) {
+    symbols_?.BatchPartSetApparentRigidMotion?.Invoke(plugin, states, count);
+  }
+
+  internal static void BatchPartGetActualRigidMotion(this IntPtr plugin, ref Origin origin, uint[] part_ids, QPRW[] motions_out, int count) {
+    symbols_?.BatchPartGetActualRigidMotion?.Invoke(plugin, ref origin, part_ids, motions_out, count);
+  }
+
+  internal static bool HasNativeEphemerisPacer() {
+    return symbols_?.EphemerisGetHorizonSeconds != null;
+  }
+
+  internal static double EphemerisGetHorizonSeconds(this IntPtr plugin) {
+    return symbols_?.EphemerisGetHorizonSeconds != null ? symbols_.EphemerisGetHorizonSeconds(plugin) : 0.0;
+  }
+
+  internal static double EphemerisGetTargetExtendedTime(this IntPtr plugin) {
+    return symbols_?.EphemerisGetTargetExtendedTime != null ? symbols_.EphemerisGetTargetExtendedTime(plugin) : 0.0;
+  }
+
+  internal static bool EphemerisIsProlonging(this IntPtr plugin) {
+    return symbols_?.EphemerisIsProlonging != null && symbols_.EphemerisIsProlonging(plugin);
+  }
+
+  internal static void EphemerisForceProlong(this IntPtr plugin) {
+    symbols_?.EphemerisForceProlong?.Invoke(plugin);
+  }
+
+  internal static void EphemerisAdjustHorizon(this IntPtr plugin, double delta_seconds) {
+    symbols_?.EphemerisAdjustHorizon?.Invoke(plugin, delta_seconds);
+  }
+
+  internal static void EphemerisTogglePause(this IntPtr plugin) {
+    symbols_?.EphemerisTogglePause?.Invoke(plugin);
+  }
+
+  internal static bool EphemerisIsPaused(this IntPtr plugin) {
+    return symbols_?.EphemerisIsPaused != null && symbols_.EphemerisIsPaused(plugin);
+  }
 
   internal static void LoadSymbols() {
     symbols_ = new Symbols();

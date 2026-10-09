@@ -123,8 +123,8 @@ void EphemerisPacer::ForceProlong() {
 
 void EphemerisPacer::AdjustHorizon(Time const& delta) {
   absl::MutexLock l(&lock_);
-  lookahead_horizon_ = std::max(0.5 * JulianYear, lookahead_horizon_ + delta);
-  refresh_threshold_ = std::max(0.2 * JulianYear, lookahead_horizon_ * 0.333);
+  lookahead_horizon_ = std::max(50.0 * Day, lookahead_horizon_ + delta);
+  refresh_threshold_ = std::max(20.0 * Day, lookahead_horizon_ * 0.333);
 }
 
 void EphemerisPacer::TogglePause() {

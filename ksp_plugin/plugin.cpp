@@ -299,7 +299,7 @@ void Plugin::EndInitialization() {
 
   geometric_potential_plotter_.emplace(ephemeris_.get());
   ephemeris_pacer_ =
-      std::make_unique<ephemeris_pacer::EphemerisPacer>(ephemeris_.get());
+      std::make_unique<EphemerisPacer>(ephemeris_.get());
   ephemeris_pacer_->Start();
 
   // Log the serialized ephemeris.
@@ -1555,7 +1555,7 @@ GeometricPotentialPlotter const& Plugin::geometric_potential_plotter() const {
   return *geometric_potential_plotter_;
 }
 
-ephemeris_pacer::EphemerisPacer* Plugin::ephemeris_pacer() const {
+EphemerisPacer* Plugin::ephemeris_pacer() const {
   return ephemeris_pacer_.get();
 }
 
@@ -1695,7 +1695,7 @@ not_null<std::unique_ptr<Plugin>> Plugin::ReadFromMessage(
   plugin->ephemeris_->Prolong(plugin->current_time_).IgnoreError();
   CHECK_LE(plugin->ephemeris_->t_min(), plugin->current_time_);
   plugin->ephemeris_pacer_ =
-      std::make_unique<ephemeris_pacer::EphemerisPacer>(
+      std::make_unique<EphemerisPacer>(
           plugin->ephemeris_.get());
   plugin->ephemeris_pacer_->NotifyCurrentTime(plugin->current_time_);
   plugin->ephemeris_pacer_->Start();

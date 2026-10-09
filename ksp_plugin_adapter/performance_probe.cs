@@ -96,7 +96,36 @@ public static class PerformanceProbe {
   // the whole multi-level cache is being bypassed.
   private static long plot_invalidations_ = 0;
   public static long PlotInvalidations => plot_invalidations_;
-  public static void RecordPlotInvalidation() => plot_invalidations_++;
+
+  // Per-caller breakdown of plot invalidations, so the HUD can show *who* is
+  // wiping the caches (e.g. vessel-change vs plotting-frame-change).
+  private static readonly System.Collections.Generic.Dictionary<string, long>
+      plot_invalidation_reasons_ =
+          new System.Collections.Generic.Dictionary<string, long>();
+
+  public static void RecordPlotInvalidation(string reason) {
+    plot_invalidations_++;
+    plot_invalidation_reasons_[reason] =
+        plot_invalidation_reasons_.TryGetValue(reason, out long count)
+            ? count + 1
+            : 1;
+  }
+
+  public static string PlotInvalidationReasonSummary {
+    get {
+      if (plot_invalidation_reasons_.Count == 0) {
+        return "(无)";
+      }
+      var sb = new System.Text.StringBuilder();
+      foreach (var kv in plot_invalidation_reasons_) {
+        if (sb.Length > 0) {
+          sb.Append(" | ");
+        }
+        sb.Append(kv.Key).Append(": ").Append(kv.Value);
+      }
+      return sb.ToString();
+    }
+  }
 
   public static float GetSmoothedMs(ProbeCategory category) => smoothed_ms_[(int)category];
   public static float GetPeakMs(ProbeCategory category) => peak_ms_[(int)category];
@@ -148,6 +177,7 @@ public static class PerformanceProbe {
   private static string cached_zc_direct_str_ = "";
   private static string cached_zc_pool_str_ = "";
   private static string cached_cache_hit_str_ = "";
+  private static string cached_invalidation_reasons_str_ = "";
   private static string cached_governor_mode_str_ = "";
   private static string cached_governor_dispatch_str_ = "";
   private static string cached_vacuum_bypass_str_ = "";
@@ -232,6 +262,7 @@ public static class PerformanceProbe {
     cached_zc_direct_str_ = $"直通提交次数: <b>{HeterogeneousDynamicGovernor.ZeroCopyDirectCount:N0}</b> 次 (峰值: {NativeZeroCopyTrajectoryPipeline.PeakVertexCountObserved:N0} 顶点)";
     cached_zc_pool_str_ = $"非托管显存池: <b>{NativeZeroCopyTrajectoryPipeline.CurrentCapacity:N0}</b> 顶点 ({NativeZeroCopyTrajectoryPipeline.CurrentCapacity * 12 / 1024} KB 独立池)";
     cached_cache_hit_str_ = $"3D 网格多级缓存: 命中率 <b>{CacheHitRatio:F1}%</b> (命中: {CacheHits:N0} | 重构: {CacheMisses:N0} | 失效: {PlotInvalidations:N0}) | 天体轨迹命中: <b>{CelestialTrajectoryBinaryCache.HitRatio:F1}%</b>";
+    cached_invalidation_reasons_str_ = $"失效来源: <b>{PlotInvalidationReasonSummary}</b>";
 
     string mode_str = HeterogeneousDynamicGovernor.Affinity switch {
       HeterogeneousAffinity.AutoAdaptive => "Auto (动态自适应)",
@@ -399,6 +430,7 @@ public static class PerformanceProbe {
       GUILayout.Label(cached_zc_direct_str_);
       GUILayout.Label(cached_zc_pool_str_);
       GUILayout.Label(cached_cache_hit_str_);
+      GUILayout.Label(cached_invalidation_reasons_str_);
       GUILayout.Label(cached_governor_mode_str_);
       GUILayout.Label(cached_governor_dispatch_str_);
       GUILayout.Label(cached_vacuum_bypass_str_);

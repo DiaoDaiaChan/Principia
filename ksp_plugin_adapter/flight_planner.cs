@@ -101,9 +101,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
 
     using (new UnityEngine.GUILayout.HorizontalScope()) {
       int flight_plans = plugin.FlightPlanCount(vessel_guid);
-      bool is_carrier_only =
-          RollingEphemerisDriver.IsCarrier(vessel_guid) && (flight_plans == 1);
-      int user_flight_plans = is_carrier_only ? 0 : flight_plans;
+      int user_flight_plans = flight_plans;
       int selected_flight_plan = plugin.FlightPlanSelected(vessel_guid);
       for (int i = 0; i < user_flight_plans; ++i) {
         var id = new string(L10N.CacheFormat("#Principia_AlphabeticList")[i],
@@ -130,15 +128,9 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
             UnityEngine.GUILayout.Button("+", GUILayoutWidth(1));
       }
       if (must_create_flight_plan) {
-        if (is_carrier_only) {
-          RollingEphemerisDriver.ReleaseCarrier(vessel_guid);
-          plugin.FlightPlanSetDesiredFinalTime(vessel_guid,
-                                              plugin.CurrentTime() + 3600);
-        } else {
-          plugin.FlightPlanCreate(vessel_guid,
-                                  plugin.CurrentTime() + 3600,
-                                  predicted_vessel.GetTotalMass());
-        }
+        plugin.FlightPlanCreate(vessel_guid,
+                                plugin.CurrentTime() + 3600,
+                                predicted_vessel.GetTotalMass());
         adapter_.flight_plan_dirty = true;
         final_time_.value_if_different =
             plugin.FlightPlanGetDesiredFinalTime(vessel_guid);
@@ -148,9 +140,7 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
       }
     }
 
-    if (plugin.FlightPlanExists(vessel_guid) &&
-        !(RollingEphemerisDriver.IsCarrier(vessel_guid) &&
-          plugin.FlightPlanCount(vessel_guid) == 1)) {
+    if (plugin.FlightPlanExists(vessel_guid)) {
       RenderFlightPlan(vessel_guid);
     }
     UnityEngine.GUI.DragWindow();

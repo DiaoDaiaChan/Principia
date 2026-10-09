@@ -5,6 +5,8 @@ param(
 
 $srcDll = "Release\GameData\Principia\ksp_plugin_adapter.dll"
 $srcPdb = "Release\GameData\Principia\ksp_plugin_adapter.pdb"
+$srcNativeDll = "Release\GameData\Principia\Windows\x64\principia.dll"
+$srcNativePdb = "Release\GameData\Principia\Windows\x64\principia.pdb"
 
 if (-not (Test-Path $srcDll)) {
     Write-Error "Source DLL not found at $srcDll. Please build first."
@@ -84,6 +86,22 @@ foreach ($dir in $candidateDirs) {
     Copy-FileAtomic $srcDll $dstDll
     if (Test-Path $srcPdb) {
         Copy-FileAtomic $srcPdb $dstPdb
+    }
+
+    if (Test-Path $srcNativeDll) {
+        $platforms = @("x64", "x64_AVX_FMA")
+        foreach ($plat in $platforms) {
+            $nativeDstDir = Join-Path $targetDir1 "Windows\$plat"
+            if (-not (Test-Path $nativeDstDir)) {
+                New-Item -ItemType Directory -Path $nativeDstDir -Force | Out-Null
+            }
+            $dstNativeDll = Join-Path $nativeDstDir "principia.dll"
+            Copy-FileAtomic $srcNativeDll $dstNativeDll
+            Write-Host "Deployed native principia.dll to $dstNativeDll" -ForegroundColor Green
+            if (Test-Path $srcNativePdb) {
+                Copy-FileAtomic $srcNativePdb (Join-Path $nativeDstDir "principia.pdb")
+            }
+        }
     }
 
     if (Test-Path $shadersSrc) {

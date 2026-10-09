@@ -78,6 +78,7 @@ using namespace principia::geometry::_rotation;
 using namespace principia::geometry::_space;
 using namespace principia::integrators::_integrators;
 using namespace principia::ksp_plugin::_celestial;
+using namespace principia::ksp_plugin::_ephemeris_pacer;
 using namespace principia::ksp_plugin::_frames;
 using namespace principia::ksp_plugin::_geometric_potential_plotter;
 using namespace principia::ksp_plugin::_identification;
@@ -408,7 +409,7 @@ class Plugin {
   virtual bool HasCelestial(Index index) const;
   virtual Celestial const& GetCelestial(Index index) const;
   virtual std::vector<not_null<Celestial const*>> GetAllCelestials() const;
-  virtual ephemeris_pacer::EphemerisPacer* ephemeris_pacer() const;
+  virtual EphemerisPacer* ephemeris_pacer() const;
 
   virtual bool HasVessel(GUID const& vessel_guid) const;
   virtual not_null<Vessel*> GetVessel(GUID const& vessel_guid) const;
@@ -639,7 +640,7 @@ class Plugin {
   mutable absl::flat_hash_map<Index, ApsidesCacheEntry> apsides_cache_;
   mutable std::optional<NodesCacheEntry> nodes_cache_;
   mutable std::optional<ClosestApproachesCacheEntry> closest_approaches_cache_;
-  std::unique_ptr<ephemeris_pacer::EphemerisPacer> ephemeris_pacer_;
+  std::unique_ptr<EphemerisPacer> ephemeris_pacer_;
 
   friend class NavballFrameField;
   friend class ksp_plugin::TestablePlugin;

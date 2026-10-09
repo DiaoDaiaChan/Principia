@@ -419,6 +419,23 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                plotting_frame_selector_.FrameParameters());
   }
 
+  // True if the current plotting frame is configured to hide the
+  // trajectories of unpinned celestial bodies.  This queries
+  // FrameParameters(), which allocates a fresh object and two int[] arrays;
+  // callers must hoist it out of per-body loops (once per frame is fine).
+  public bool FrameHidesUnpinnedCelestials() =>
+      main_window_.frames_that_hide_unpinned_celestials.Contains(
+          plotting_frame_selector_.FrameParameters());
+
+  // Allocation-free variant of show_celestial_trajectory(CelestialBody) for
+  // the per-body plot recursion: the frame-level decision is computed once
+  // per frame by the caller.
+  public bool show_celestial_trajectory(CelestialBody celestial,
+                                        bool frame_hides_unpinned) {
+    return plotting_frame_selector_.pinned[celestial] ||
+           !frame_hides_unpinned;
+  }
+
   public event Action LockClearing;
   public event Action WindowsDisposal;
   public event Action WindowsRendering;
@@ -2988,10 +3005,10 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         flight_plan_dirty = true;
         break;
       case CommandType.SetPlottingFrame:
-        plotter_?.InvalidateAll();
+        // Handled directly and synchronously in UpdatePlottingFrame.
         break;
       case CommandType.TriggerPrediction:
-        plotter_?.InvalidateAll();
+        plotter_?.InvalidateAll("command:TriggerPrediction");
         break;
       default:
         break;
@@ -4045,14 +4062,13 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     } else {
       plugin_.ClearTargetVessel();
       plugin_.SetPlottingFrame(frame_parameters);
-      SpscCommandBus.TryPostCommand(CommandPacket.ForCelestial(CommandType.SetPlottingFrame, 0));
     }
     navball_changed_ = true;
     reset_rsas_target_ = true;
     planetarium_camera_adjuster_.should_transfer_camera_coordinates = true;
     map_node_pool_.Clear();
     MapMarkerEventGovernor.InvalidateAll();
-    plotter_?.InvalidateAll();
+    plotter_?.InvalidateAll("plotting-frame-change");
   }
 
   private void LoadDrawStyles(ConfigNode draw_styles) {

@@ -1,8 +1,8 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <Keyword>Win32Proj</Keyword>
-    <WindowsTargetPlatformVersion>10.0.22621.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformVersion Condition="'$(WindowsTargetPlatformVersion)'==''">10.0.26100.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <!--Define project configurations.  Nothing interesting can happen here.-->
   <ItemGroup Label="ProjectConfigurations">
@@ -58,8 +58,7 @@
                                      $(ProjectName) == nanobenchmarks or
                                      $(ProjectName) == tools">false</PrincipiaTestProject>
     <!--Predicates.-->
-    <PrincipiaCompilerClangLLVM>false</PrincipiaCompilerClangLLVM>
-    <PrincipiaCompilerClangLLVM Condition="$(ConfigurationWithoutCPUFeatures)==Release_LLVM">true</PrincipiaCompilerClangLLVM>
+    <PrincipiaCompilerClangLLVM>true</PrincipiaCompilerClangLLVM>
     <PrincipiaMainProject>false</PrincipiaMainProject>
     <PrincipiaMainProject Condition="$(PrincipiaBenchmarkProject) or $(PrincipiaTestProject) or $(ProjectName) == tools">true</PrincipiaMainProject>
     <PrincipiaOptimize>false</PrincipiaOptimize>
@@ -71,8 +70,10 @@
 
   <!--Compiler.-->
   <PropertyGroup>
-    <PlatformToolset>v143</PlatformToolset>
-    <PlatformToolset Condition="$(PrincipiaCompilerClangLLVM)">ClangCL</PlatformToolset>
+    <PlatformToolset Condition="'$(PlatformToolset)'==''">v145</PlatformToolset>
+    <CLToolPath>C:\Users\43701\LLVM\LLVM\bin</CLToolPath>
+    <CLToolExe>clang-cl.exe</CLToolExe>
+    <TrackFileAccess>false</TrackFileAccess>
   </PropertyGroup>
 
   <!--Target.-->
@@ -162,7 +163,7 @@
       <WarningLevel Condition="$(PrincipiaCompilerClangLLVM) and
                                $(ProjectName) == serialization">TurnOffAllWarnings</WarningLevel>
       <WarningLevel Condition="$(PrincipiaCompilerClangLLVM) and
-                               $(ProjectName) != serialization">EnableAllWarnings</WarningLevel>
+                               $(ProjectName) != serialization">Level3</WarningLevel>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>DebugFastLink</GenerateDebugInformation>

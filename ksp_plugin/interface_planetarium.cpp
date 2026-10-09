@@ -9,6 +9,7 @@
 #include "base/macros.hpp"  // 🧙 For OS_WIN.
 #if OS_WIN
 #include <d3d11.h>
+#undef interface
 #endif
 #include "geometry/affine_map.hpp"
 #include "geometry/grassmann.hpp"

@@ -54,14 +54,23 @@ class Plotter {
     // Equipotentials are static in the rotating frame and move with the central body.
     // When paused: 100% reuse (0 ms CPU).
     // During 1x physics: refresh at 2 Hz (0.50s interval). Between intervals, 100% GPU reuse with anchor offset (0 ms CPU).
-    // When time warping: refresh at 10 Hz (0.10s interval) to maintain zero spatial drift.
-    double eq_interval = is_warping ? 0.10 : 0.50;
-    bool can_reuse_eq = !time_is_advancing ||
-        (current_realtime - last_equipotential_update_realtime_ < eq_interval);
+    // When time warping: refresh at 4 Hz (0.25s interval).  The interval must
+    // stay above the frame period or every entry goes stale every frame and
+    // the cache degenerates to a full re-plot per frame (audit 02, R1).
+    double eq_interval = is_warping ? 0.25 : 0.50;
+    bool eq_interval_elapsed =
+        current_realtime - last_equipotential_update_realtime_ >= eq_interval;
 
     for (int i = 0; i < number_of_equipotentials; ++i) {
       var entry = equipotential_entries_[i];
-      if (entry.is_valid && (!time_is_advancing || can_reuse_eq)) {
+      // Reuse whenever there is drawable content and either the scene is
+      // static (paused) or the refresh interval has not elapsed.  An
+      // invalidated entry keeps drawing its stale mesh until the interval
+      // elapses, so repeated InvalidateAll() calls cannot force a rebuild
+      // every frame.
+      bool can_reuse_eq = entry.has_content &&
+          ((!time_is_advancing && entry.is_valid) || !eq_interval_elapsed);
+      if (can_reuse_eq) {
         entry.Draw();
         continue;
       }
@@ -75,7 +84,7 @@ class Plotter {
       entry.UpdateMesh(vertex_count, colour, GLLines.Style.Solid, shared_indices_, CurrentReferenceAnchor);
       entry.Draw();
     }
-    if (!can_reuse_eq) {
+    if (eq_interval_elapsed) {
       last_equipotential_update_realtime_ = current_realtime;
     }
   }
@@ -85,21 +94,22 @@ class Plotter {
                                double history_length,
                                double? prediction_t_max,
                                double? flight_plan_t_max) {
-    // Detect Krakensbane or FloatingOrigin shifts in ScaledSpace.
-    // In KSP ScaledSpace, meshes are rendered in ScaledSpace coordinates at (0,0,0)
-    // on PlanetariumCamera, which are completely invariant to Krakensbane/FloatingOrigin shifts.
-    // FloatingOrigin shifts only affect LocalSpace (physics world space).
-    // Updating last_scaled_space_origin_ without calling InvalidateAll() eliminates
-    // cyclic frame spikes that previously occurred every ~3 seconds in orbit!
-    Vector3d current_scaled_space_origin =
-        ScaledSpace.ScaledToLocalSpace(Vector3d.zero);
-    if ((current_scaled_space_origin - last_scaled_space_origin_).sqrMagnitude > 1.0) {
-      InvalidateAll();
-      last_scaled_space_origin_ = current_scaled_space_origin;
-    }
+    // Meshes live in ScaledSpace and are completely invariant to
+    // Krakensbane/FloatingOrigin shifts (those only affect LocalSpace).
+    // The C++ Planetarium is rebuilt every frame with the fresh origin, so
+    // cached meshes stay valid across origin shifts.  Never invalidate here:
+    // this previously called InvalidateAll() whenever the origin moved by
+    // more than 1 m, which wiped every cache every few seconds in orbit and
+    // caused cyclic 40-90 ms frame spikes.
 
-    if (main_vessel_guid != last_main_vessel_guid_) {
-      InvalidateAll();
+    if (main_vessel_guid == null) {
+      // Transient loss of the predicted vessel (e.g. the plugin momentarily
+      // not knowing the vessel): keep the caches warm and skip the vessel
+      // paths below.  Previously a null here flipped
+      // last_main_vessel_guid_, so a flapping null wiped every cache on the
+      // next frame.
+    } else if (main_vessel_guid != last_main_vessel_guid_) {
+      InvalidateAll("vessel-change");
       last_main_vessel_guid_ = main_vessel_guid;
     }
     if (Math.Abs(history_length - last_history_length_) > 1.0) {
@@ -134,6 +144,12 @@ class Plotter {
     }
 
     using (PerformanceProbe.Measure(ProbeCategory.CelestialPlot)) {
+      // Per-frame refresh budget for celestial trajectories.  Without it,
+      // every overdue entry (potentially 2 × ~17 bodies) is re-plotted in a
+      // single frame through the C++ planetarium, which is what produced the
+      // 60-90 ms Plotting spikes: see audit report
+      // 02_celestial_trajectory_cache_invalidation_root_cause.md (R1/R2).
+      celestial_refresh_budget_ = MaxCelestialRefreshesPerFrame;
       PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
     }
     using (PerformanceProbe.Measure(ProbeCategory.VesselPlot)) {
@@ -152,20 +168,36 @@ class Plotter {
     double current_time_ut = Planetarium.GetUniversalTime();
     bool is_warping = TimeWarp.CurrentRate > 1.0f;
     CelestialBody anchor = CurrentReferenceAnchor;
-    double psychohistory_interval = is_warping ? 0.05 : 0.20;
+    // Psychohistory refresh throttle.  The interval must stay comfortably
+    // above the expected frame period: with a 0.05 s warp interval, any frame
+    // slower than 50 ms made every entry overdue every frame, so the cache
+    // never hit and the refresh cost itself kept the frame rate low (the
+    // positive feedback loop documented as R1 in audit report 02).  Warp now
+    // uses 0.25 s; endpoint lag at warp is accepted (the anchor offset in
+    // Draw() keeps the trail glued to the reference body).
+    //
+    // The interval is additionally self-tuning: the rebuild cost grows with
+    // history_length and vertex count (a 7-day psychohistory costs ~5-8 ms
+    // to re-plot), so stretch the interval with the measured rebuild cost to
+    // keep the amortized rebuild overhead below ~8% of the frame time,
+    // bounded to [0.20 s, 1.00 s].
+    double psychohistory_interval = Math.Max(
+        is_warping ? 0.25 : 0.20,
+        Math.Min(1.0, psychohistory_rebuild_ms_ema_ * 0.08));
 
     if (main_vessel_guid != null) {
       // Psychohistory (绿色历史轨迹):
-      // When paused: 100% reuse (0 ms CPU).
-      // During 1x physics: throttled to 5 Hz (0.20s interval). Between intervals, 100% GPU reuse with anchor offset (0 ms CPU).
-      // During time warp: throttled to 20 Hz (0.05s interval).
-      bool can_reuse_psychohistory = psychohistory_entry_.is_valid &&
-          (!time_is_advancing ||
-           current_realtime - psychohistory_entry_.last_update_realtime < psychohistory_interval);
-
-      if (can_reuse_psychohistory) {
+      // Rebuild at most once per interval; between rebuilds the last mesh is
+      // drawn with the anchor offset.  An invalidated entry keeps drawing
+      // its stale mesh until the interval elapses, so repeated
+      // InvalidateAll() calls cannot force a rebuild every frame.
+      if (!NeedsRebuild(psychohistory_entry_,
+                        psychohistory_interval,
+                        time_is_advancing,
+                        current_realtime)) {
         psychohistory_entry_.Draw();
       } else {
+        long rebuild_t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         PlotPsychohistoryDirect(
             planetarium,
             main_vessel_guid,
@@ -179,20 +211,29 @@ class Plotter {
                                         adapter_.history_style,
                                         shared_indices_,
                                         anchor);
+        double rebuild_ms =
+            (System.Diagnostics.Stopwatch.GetTimestamp() - rebuild_t0) *
+            1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        psychohistory_rebuild_ms_ema_ =
+            psychohistory_rebuild_ms_ema_ * 0.9 + rebuild_ms * 0.1;
         psychohistory_entry_.Draw();
       }
 
       // Prediction (粉红色实际预测轨迹):
       // Once calculated by C++ numerical integration, the prediction trajectory curve in 3D space
-      // is completely static! It is 100% REUSED from GPU VRAM with zero CPU overhead across all frames!
-      // Dynamically anchored to the central body via anchor offset to ensure absolute zero spatial drift.
+      // is completely static! It is REUSED from GPU VRAM across all frames.
       // Re-evaluated ONLY when:
       //   1. Explicitly invalidated by UpdatePredictions() (numerical integration step every 2.5s / 0.1s burn).
       //   2. Reference frame or active vessel changes (InvalidateAll).
       //   3. prediction_t_max changes (collision).
-      bool can_reuse_prediction = prediction_entry_.is_valid;
-
-      if (can_reuse_prediction) {
+      // The rebuild floor protects against invalidation spam: an invalidated
+      // entry keeps drawing its stale mesh until the floor elapses.
+      const double prediction_rebuild_floor = 0.20;
+      bool prediction_floor_elapsed =
+          current_realtime - prediction_entry_.last_update_realtime >=
+          prediction_rebuild_floor;
+      if (prediction_entry_.has_content &&
+          (prediction_entry_.is_valid || !prediction_floor_elapsed)) {
         prediction_entry_.Draw();
       } else {
         PlotPredictionDirect(
@@ -211,8 +252,7 @@ class Plotter {
       }
 
       // Main vessel flight plan.
-      if (Plugin.FlightPlanExists(main_vessel_guid) &&
-          !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
+      if (Plugin.FlightPlanExists(main_vessel_guid)) {
         int number_of_segments =
             Plugin.FlightPlanNumberOfSegments(main_vessel_guid);
         while (flight_plan_segment_entries_.Count < number_of_segments) {
@@ -220,9 +260,17 @@ class Plotter {
         }
 
         bool fp_dirty = adapter_.flight_plan_dirty;
+        const double fp_rebuild_floor = 0.20;
         for (int i = 0; i < number_of_segments; ++i) {
           var entry = flight_plan_segment_entries_[i];
-          bool can_reuse_fp = !fp_dirty && entry.is_valid;
+          // A user edit (fp_dirty) rebuilds immediately for responsiveness;
+          // invalidation spam (InvalidateAll) is absorbed by the floor.
+          bool fp_floor_elapsed =
+              current_realtime - entry.last_update_realtime >=
+              fp_rebuild_floor;
+          bool can_reuse_fp = entry.has_content &&
+              !fp_dirty &&
+              (entry.is_valid || !fp_floor_elapsed);
 
           if (can_reuse_fp) {
             entry.Draw();
@@ -264,14 +312,15 @@ class Plotter {
         last_target_id_ = target_id;
       }
 
-      // Target psychohistory
-      bool can_reuse_target_psychohistory = target_psychohistory_entry_.is_valid &&
-          (!time_is_advancing ||
-           current_realtime - target_psychohistory_entry_.last_update_realtime < psychohistory_interval);
-
-      if (can_reuse_target_psychohistory) {
+      // Target psychohistory: same throttled, invalidation-resistant policy
+      // as the main vessel psychohistory.
+      if (!NeedsRebuild(target_psychohistory_entry_,
+                        psychohistory_interval,
+                        time_is_advancing,
+                        current_realtime)) {
         target_psychohistory_entry_.Draw();
       } else {
+        long rebuild_t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         PlotPsychohistoryDirect(
             planetarium,
             target_id,
@@ -285,13 +334,23 @@ class Plotter {
                                                adapter_.target_history_style,
                                                shared_indices_,
                                                anchor);
+        double rebuild_ms =
+            (System.Diagnostics.Stopwatch.GetTimestamp() - rebuild_t0) *
+            1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        psychohistory_rebuild_ms_ema_ =
+            psychohistory_rebuild_ms_ema_ * 0.9 + rebuild_ms * 0.1;
         target_psychohistory_entry_.Draw();
       }
 
-      // Target prediction
-      bool can_reuse_target_prediction = target_prediction_entry_.is_valid;
-
-      if (can_reuse_target_prediction) {
+      // Target prediction: event-driven with a rebuild floor, like the main
+      // vessel prediction.
+      const double target_prediction_rebuild_floor = 0.20;
+      bool target_prediction_floor_elapsed =
+          current_realtime - target_prediction_entry_.last_update_realtime >=
+          target_prediction_rebuild_floor;
+      if (target_prediction_entry_.has_content &&
+          (target_prediction_entry_.is_valid ||
+           !target_prediction_floor_elapsed)) {
         target_prediction_entry_.Draw();
       } else {
         PlotPredictionDirect(
@@ -309,6 +368,28 @@ class Plotter {
         target_prediction_entry_.Draw();
       }
     }
+  }
+
+  // Decides whether a vessel-side entry needs a rebuild this frame.  The
+  // rebuild is gated on the refresh interval having elapsed since the last
+  // rebuild, so a caller that spam-invalidates entries (e.g. repeated
+  // InvalidateAll) cannot force a rebuild every frame: the entry keeps
+  // drawing its last mesh (has_content) and rebuilds at most once per
+  // interval.  `interval` therefore acts both as the periodic refresh rate
+  // (while time advances) and as the invalidation-rebuild floor.
+  private static bool NeedsRebuild(CachedMeshEntry entry,
+                                   double interval,
+                                   bool time_is_advancing,
+                                   double current_realtime) {
+    if (!entry.has_content) {
+      return true;  // Nothing to draw yet: build immediately.
+    }
+    if (entry.is_valid && !time_is_advancing) {
+      return false;  // Paused with fresh content: reuse forever.
+    }
+    bool interval_elapsed =
+        current_realtime - entry.last_update_realtime >= interval;
+    return interval_elapsed && (!entry.is_valid || time_is_advancing);
   }
 
   private void PlotPsychohistoryDirect(
@@ -376,18 +457,66 @@ class Plotter {
     double current_time_ut = Planetarium.GetUniversalTime();
     double current_realtime = UnityEngine.Time.realtimeSinceStartup;
     CelestialBody anchor = CurrentReferenceAnchor;
+    // Whether the current frame hides unpinned celestial trajectories.
+    // Queried once per frame: show_celestial_trajectory() used to call
+    // FrameParameters() per body per frame, allocating a fresh
+    // PlottingFrameParameters and two int[] arrays for every celestial
+    // (audit report 02, R5).
+    bool frame_hides_unpinned = adapter_.FrameHidesUnpinnedCelestials();
     PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
                             Planetarium.fetch.Sun, TanAngularResolution(),
                             frame_key, is_inertial_tree, time_is_advancing,
-                            current_time_ut, current_realtime, anchor);
+                            current_time_ut, current_realtime, anchor,
+                            frame_hides_unpinned);
+  }
+
+  // Decides whether a celestial cache entry may be re-plotted this frame.
+  // Guarantees:
+  //   * at most MaxCelestialRefreshesPerFrame re-plots per frame, so the cost
+  //     of refreshing is amortized instead of bursting every entry in a
+  //     single frame (audit report 02, R2);
+  //   * entries older than CriticalStalenessMultiplier × interval always
+  //     refresh, so a body can never starve when the budget is saturated by
+  //     entries that come earlier in tree order;
+  //   * not-yet-built entries count against the budget too, so the initial
+  //     map-view fill is spread over several frames rather than one 80+ ms
+  //     hitch;
+  //   * an invalidated entry keeps drawing its stale mesh until the refresh
+  //     interval elapses, so repeated InvalidateAll() calls cannot force a
+  //     rebuild every frame (the anchor offset in Draw() keeps the stale
+  //     mesh glued to the reference body, so it is far better than a frame
+  //     spike).
+  private bool TryConsumeCelestialRefresh(CachedMeshEntry entry,
+                                          double interval,
+                                          bool time_is_advancing,
+                                          double current_realtime) {
+    double age = current_realtime - entry.last_update_realtime;
+    if (entry.has_content) {
+      if (!time_is_advancing) {
+        return false;  // Paused: draw whatever we have.
+      }
+      if (age < interval) {
+        return false;  // Fresh, or stale-but-recently-rebuilt (e.g. just
+                       // invalidated by a spam caller): keep drawing.
+      }
+    }
+    // The entry needs a rebuild: it has no drawable content yet, or its
+    // content is older than the refresh interval.
+    bool critically_stale =
+        entry.has_content && age >= CriticalStalenessMultiplier * interval;
+    if (celestial_refresh_budget_ > 0) {
+      --celestial_refresh_budget_;
+      return true;
+    }
+    return critically_stale;
   }
 
   // Plots the trajectories of `root` and its natural satellites.
   // The per-frame invariants (`frame_key`, `is_inertial_tree`,
-  // `time_is_advancing`, `current_time_ut`, `current_realtime`, `anchor`) are hoisted to
-  // the caller and threaded through the recursion, since recomputing them per
-  // body allocated objects on every visit and queried the universal time once
-  // per celestial.
+  // `time_is_advancing`, `current_time_ut`, `current_realtime`, `anchor`,
+  // `frame_hides_unpinned`) are hoisted to the caller and threaded through
+  // the recursion, since recomputing them per body allocated objects on
+  // every visit and queried the universal time once per celestial.
   private void PlotSubtreeTrajectories(DisposablePlanetarium planetarium,
                                        string main_vessel_guid,
                                        double history_length,
@@ -398,7 +527,8 @@ class Plotter {
                                        bool time_is_advancing,
                                        double current_time_ut,
                                        double current_realtime,
-                                       CelestialBody anchor) {
+                                       CelestialBody anchor,
+                                       bool frame_hides_unpinned) {
     var past_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: false);
     var future_key = new TrajectoryCacheKey(frame_key, root.flightGlobalsIndex, is_future: true);
 
@@ -412,26 +542,34 @@ class Plotter {
     double min_distance_from_camera =
         (root.position - camera_world_position).magnitude;
 
-    bool show_this_body = adapter_.show_celestial_trajectory(root);
+    bool show_this_body =
+        adapter_.show_celestial_trajectory(root, frame_hides_unpinned);
     bool is_warping = TimeWarp.CurrentRate > 1.0f;
-    double celestial_interval = is_warping ? 0.05 : 2.0;
+    // The warp interval must stay well above the expected frame period.  The
+    // previous 0.05 s value was shorter than the frame time under load, so
+    // every entry went overdue on every frame and the cache degenerated into
+    // a full re-plot per frame (61 ms Celestial): audit report 02, R1.
+    double celestial_interval = is_warping ? 0.50 : 2.0;
 
     if (!adapter_.plotting_frame_selector_.FixesBody(root) &&
         show_this_body) {
       // Past trajectory:
       // When paused: 100% reuse (0 ms CPU).
       // During 1x physics: celestial orbit is fixed relative to parent body, reuse with anchor offset (0 ms CPU).
-      // Refreshed at 0.5 Hz (2.0s interval) or 20 Hz during warp.
-      bool can_reuse_past = past_entry.is_valid &&
-          (!time_is_advancing ||
-           current_realtime - past_entry.last_update_realtime < celestial_interval);
-
-      if (can_reuse_past) {
-        CelestialTrajectoryBinaryCache.RecordL1Hit();
-        past_entry.Draw();
-        min_distance_from_camera =
-            Math.Min(min_distance_from_camera,
-                     past_entry.min_distance_from_camera);
+      // Refreshed at 0.5 Hz (2.0s interval) or 2 Hz during warp, at most
+      // MaxCelestialRefreshesPerFrame entries per frame; over-budget entries
+      // keep drawing their stale mesh.
+      if (!TryConsumeCelestialRefresh(past_entry,
+                                      celestial_interval,
+                                      time_is_advancing,
+                                      current_realtime)) {
+        if (past_entry.has_content) {
+          CelestialTrajectoryBinaryCache.RecordL1Hit();
+          past_entry.Draw();
+          min_distance_from_camera =
+              Math.Min(min_distance_from_camera,
+                       past_entry.min_distance_from_camera);
+        }
       } else {
         planetarium.PlanetariumPlotCelestialPastTrajectory(
             Plugin,
@@ -457,17 +595,18 @@ class Plotter {
       }
 
       if (main_vessel_guid != null && Plugin.HasVessel(main_vessel_guid)) {
-        // Future trajectory:
-        bool can_reuse_future = future_entry.is_valid &&
-            (!time_is_advancing ||
-             current_realtime - future_entry.last_update_realtime < celestial_interval);
-
-        if (can_reuse_future) {
-          CelestialTrajectoryBinaryCache.RecordL1Hit();
-          future_entry.Draw();
-          min_distance_from_camera =
-              Math.Min(min_distance_from_camera,
-                       future_entry.min_distance_from_camera);
+        // Future trajectory: same budgeted refresh policy as the past arc.
+        if (!TryConsumeCelestialRefresh(future_entry,
+                                        celestial_interval,
+                                        time_is_advancing,
+                                        current_realtime)) {
+          if (future_entry.has_content) {
+            CelestialTrajectoryBinaryCache.RecordL1Hit();
+            future_entry.Draw();
+            min_distance_from_camera =
+                Math.Min(min_distance_from_camera,
+                         future_entry.min_distance_from_camera);
+          }
         } else {
           planetarium.PlanetariumPlotCelestialFutureTrajectory(
               Plugin,
@@ -499,7 +638,8 @@ class Plotter {
         PlotSubtreeTrajectories(planetarium, main_vessel_guid, history_length,
                                 child, tan_angular_resolution,
                                 frame_key, is_inertial_tree, time_is_advancing,
-                                current_time_ut, current_realtime, anchor);
+                                current_time_ut, current_realtime, anchor,
+                                frame_hides_unpinned);
       }
     }
   }
@@ -512,8 +652,8 @@ class Plotter {
     target_prediction_entry_.Invalidate();
   }
 
-  public void InvalidateAll() {
-    PerformanceProbe.RecordPlotInvalidation();
+  public void InvalidateAll(string reason) {
+    PerformanceProbe.RecordPlotInvalidation(reason);
     frame_key_dirty_ = true;
     psychohistory_entry_.Invalidate();
     prediction_entry_.Invalidate();
@@ -525,7 +665,12 @@ class Plotter {
     for (int i = 0; i < equipotential_entries_.Count; ++i) {
       equipotential_entries_[i].Invalidate();
     }
-    last_equipotential_update_realtime_ = -1.0;
+    // NOTE: last_equipotential_update_realtime_ is intentionally NOT reset
+    // here.  Resetting it made the equipotential refresh interval elapse
+    // immediately, so every InvalidateAll() forced an equipotential rebuild
+    // on the very next frame.  Keeping it lets the interval floor absorb
+    // invalidation spam; on a genuine frame change the (brief) stale
+    // equipotential draw is corrected at the next interval boundary.
     CelestialTrajectoryBinaryCache.InvalidateAll();
   }
 
@@ -566,7 +711,13 @@ class Plotter {
     public UnityEngine.Vector3[] compact_vertices;
     public UnityEngine.Color[] compact_colors;
     public int vertex_count;
+    // is_valid: content is fresh (no rebuild needed).  has_content: the mesh
+    // holds drawable geometry, possibly stale.  Invalidate() clears only
+    // is_valid, so invalidated entries keep rendering their last mesh while
+    // awaiting a throttled rebuild; this is what makes repeated
+    // InvalidateAll() calls cheap.
     public bool is_valid;
+    public bool has_content;
     public double last_update_ut;
     public double last_update_realtime;
     public double min_distance_from_camera;
@@ -617,6 +768,7 @@ class Plotter {
             mesh.Clear();
           }
           is_valid = true;
+          has_content = false;
           return;
         }
 
@@ -696,11 +848,12 @@ class Plotter {
 
         NativeZeroCopyTrajectoryPipeline.RecordTransfer(count);
         is_valid = true;
+        has_content = true;
       }
     }
 
     public void Draw() {
-      if (!is_valid || vertex_count <= 0) {
+      if (!has_content || vertex_count <= 0) {
         return;
       }
       using (PerformanceProbe.Measure(ProbeCategory.GpuCompute)) {
@@ -750,6 +903,7 @@ class Plotter {
       if (count <= 0) {
         mesh.Clear();
         is_valid = true;
+        has_content = false;
         return;
       }
       compact_vertices = vertices;
@@ -789,12 +943,16 @@ class Plotter {
         mesh_camera_forward = PlanetariumCamera.Camera.transform.forward;
       }
       is_valid = true;
+      has_content = true;
     }
 
     public void Invalidate() {
+      // Only mark the content stale.  The mesh, vertex arrays and reference
+      // anchor are intentionally preserved: Draw() gates on has_content, so
+      // the entry keeps rendering its last mesh (with the anchor offset)
+      // while it awaits a throttled rebuild.  Repeated InvalidateAll()
+      // calls therefore cost nothing until the rebuild interval elapses.
       is_valid = false;
-      reference_body = null;
-      reference_scaled_position = UnityEngine.Vector3.zero;
     }
 
     public void Dispose() {
@@ -802,6 +960,7 @@ class Plotter {
         mesh.Clear();
       }
       is_valid = false;
+      has_content = false;
       vertex_count = 0;
       reference_body = null;
       reference_scaled_position = UnityEngine.Vector3.zero;
@@ -815,6 +974,7 @@ class Plotter {
       compact_vertices = null;
       compact_colors = null;
       is_valid = false;
+      has_content = false;
       vertex_count = 0;
       reference_body = null;
       reference_scaled_position = UnityEngine.Vector3.zero;
@@ -851,7 +1011,6 @@ class Plotter {
   private readonly CachedMeshEntry target_psychohistory_entry_ = new CachedMeshEntry();
   private readonly CachedMeshEntry target_prediction_entry_ = new CachedMeshEntry();
 
-  private Vector3d last_scaled_space_origin_ = Vector3d.zero;
   private string last_main_vessel_guid_ = null;
   private double last_history_length_ = -1.0;
   private string last_target_id_ = null;
@@ -860,6 +1019,18 @@ class Plotter {
   private double last_equipotential_update_realtime_ = -1.0;
   private FrameKey cached_frame_key_;
   private bool frame_key_dirty_ = true;
+
+  // Per-frame budget for celestial trajectory re-plots (P/Invoke + mesh
+  // rebuild).  Reset at the start of every PlotTrajectories call.  An entry
+  // whose staleness exceeds CriticalStalenessMultiplier × interval always
+  // refreshes regardless of the budget, preventing starvation.
+  private const int MaxCelestialRefreshesPerFrame = 2;
+  private const double CriticalStalenessMultiplier = 4.0;
+  private int celestial_refresh_budget_ = MaxCelestialRefreshesPerFrame;
+
+  // EMA of the measured psychohistory rebuild cost (P/Invoke + mesh rebuild),
+  // in milliseconds.  Feeds the self-tuning psychohistory refresh interval.
+  private double psychohistory_rebuild_ms_ema_ = 0.0;
 }
 
 }  // namespace ksp_plugin_adapter
