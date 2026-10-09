@@ -7,6 +7,7 @@
 #include "base/algebra.hpp"
 #include "geometry/grassmann.hpp"
 #include "geometry/sign.hpp"
+#include "ksp_plugin/chebyshev_segment_export.hpp"
 #include "numerics/elementary_functions.hpp"
 #include "numerics/hermite3.hpp"
 #include "numerics/quadrature.hpp"
@@ -284,6 +285,25 @@ inline AngularVelocity<Navigation> Planetarium::ProperMotion(
     DegreesOfFreedom<Navigation> const& degrees_of_freedom) const {
   auto const r = degrees_of_freedom.position() - perspective_.camera();
   return Wedge(r, degrees_of_freedom.velocity()) / r.Norm²() * Radian;
+}
+
+template<typename Frame>
+int Planetarium::ExportChebyshevSegments(
+    TrajectoryView<Frame> const& trajectory,
+    ChebyshevSegmentData* const buffer,
+    int const max_segments,
+    bool const is_d3d11_buffer) const {
+  return principia::ksp_plugin::_chebyshev_segment_export::
+      ExportTrajectoryViewToChebyshevSegments(
+          trajectory,
+          [this, &trajectory](Instant const& t) {
+            auto const dof = EvaluateDegreesOfFreedomInNavigation<Frame>(
+                *plotting_frame_, trajectory, t);
+            return plotting_to_scaled_space_(t, dof.position());
+          },
+      buffer,
+      max_segments,
+      is_d3d11_buffer);
 }
 
 }  // namespace internal

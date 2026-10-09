@@ -22,7 +22,10 @@ public enum ProbeCategory {
   CelestialPlot = 14,
   VesselPlot = 15,
   EquipotentialPlot = 16,
-  Count = 17
+  GpuDmaUpload = 17,
+  GpuPipelineStall = 18,
+  FrameJitterP99 = 19,
+  Count = 20
 }
 
 public static class PerformanceProbe {
@@ -31,6 +34,14 @@ public static class PerformanceProbe {
   // Real-time smoothed durations in milliseconds
   private static readonly float[] smoothed_ms_ = new float[(int)ProbeCategory.Count];
   private static readonly float[] peak_ms_ = new float[(int)ProbeCategory.Count];
+
+  // Frame jitter (P99 - P50 frame delta)
+  private const int FrameHistoryCapacity = 120;
+  private static readonly float[] frame_time_history_ = new float[FrameHistoryCapacity];
+  private static readonly float[] sorted_frame_times_ = new float[FrameHistoryCapacity];
+  private static int frame_history_index_ = 0;
+  private static int frame_history_count_ = 0;
+  public static float P99FrameJitterMs { get; private set; }
 
   // Garbage collection & heap metrics
   private static long last_gc_memory_ = 0;
@@ -135,6 +146,21 @@ public static class PerformanceProbe {
     CurrentFps = dt > 0.0001f ? Mathf.Lerp(CurrentFps, 1.0f / dt, 0.1f) : 60.0f;
     FrameTimeMs = dt * 1000.0f;
 
+    // Rolling window for P99 frame jitter calculation
+    frame_time_history_[frame_history_index_] = FrameTimeMs;
+    frame_history_index_ = (frame_history_index_ + 1) % FrameHistoryCapacity;
+    if (frame_history_count_ < FrameHistoryCapacity) {
+      frame_history_count_++;
+    }
+    if (frame_history_count_ >= 10) {
+      Array.Copy(frame_time_history_, sorted_frame_times_, frame_history_count_);
+      Array.Sort(sorted_frame_times_, 0, frame_history_count_);
+      int p99_idx = Mathf.Clamp((int)(frame_history_count_ * 0.99f), 0, frame_history_count_ - 1);
+      int p50_idx = frame_history_count_ / 2;
+      P99FrameJitterMs = Mathf.Max(0.0f, sorted_frame_times_[p99_idx] - sorted_frame_times_[p50_idx]);
+      smoothed_ms_[(int)ProbeCategory.FrameJitterP99] = P99FrameJitterMs;
+    }
+
     TotalVerticesRendered = frame_vertices_accumulator_;
     frame_vertices_accumulator_ = 0;
 
@@ -193,7 +219,7 @@ public static class PerformanceProbe {
     }
     last_telemetry_update_time_ = now;
 
-    cached_fps_str_ = $"<b>FPS:</b> {CurrentFps:F1}";
+    cached_fps_str_ = $"<b>FPS:</b> {CurrentFps:F1} (Jitter: {P99FrameJitterMs:F1}ms)";
     cached_frametime_str_ = $"<b>帧耗时:</b> {FrameTimeMs:F2} ms";
     cached_gc_str_ = $"<b>GC:</b> {GcAllocRateKbPerFrame:F1} KB/f";
 
@@ -299,6 +325,8 @@ public static class PerformanceProbe {
     UpdateMetricBarCache(ProbeCategory.CelestialPlot, 2.0f);
     UpdateMetricBarCache(ProbeCategory.VesselPlot, 3.0f);
     UpdateMetricBarCache(ProbeCategory.EquipotentialPlot, 1.0f);
+    UpdateMetricBarCache(ProbeCategory.GpuDmaUpload, 1.0f);
+    UpdateMetricBarCache(ProbeCategory.GpuPipelineStall, 2.0f);
   }
 
   private static void UpdateMetricBarCache(ProbeCategory cat, float warning_threshold_ms) {
@@ -449,6 +477,8 @@ public static class PerformanceProbe {
       DrawMetricBar("• 网格细分 (Mesh Gen):", ProbeCategory.MeshGeneration);
       DrawMetricBar("• 飞行寻优 (Optimizer):", ProbeCategory.FlightPlanEvaluation);
       DrawMetricBar("• GPU绘制直出 (GPU Pass):", ProbeCategory.GpuCompute);
+      DrawMetricBar("• DMA 零拷贝传输 (DMA Upload):", ProbeCategory.GpuDmaUpload);
+      DrawMetricBar("• GPU 管线停顿/同步 (GPU Stall):", ProbeCategory.GpuPipelineStall);
 
       GUILayout.EndScrollView();
 

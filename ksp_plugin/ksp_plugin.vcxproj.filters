@@ -193,6 +193,12 @@
     <ClCompile Include="interface_celestial.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="interface_gpu.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="interface_snapshot.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="principia.manifest" />

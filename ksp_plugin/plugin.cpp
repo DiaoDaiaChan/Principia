@@ -50,6 +50,7 @@
 #include "physics/solar_system.hpp"
 #include "quantities/numbers.hpp"  // 🧙 For π.
 #include "quantities/parser.hpp"
+#include "quantities/si.hpp"
 
 namespace principia {
 namespace ksp_plugin {
@@ -68,6 +69,7 @@ using namespace principia::geometry::_identity;
 using namespace principia::geometry::_permutation;
 using namespace principia::geometry::_space_transformations;
 using namespace principia::ksp_plugin::_equator_relevance_threshold;
+using namespace principia::quantities::_si;
 using namespace principia::ksp_plugin::_integrators;
 using namespace principia::ksp_plugin::_part;
 using namespace principia::physics::_barycentric_rotating_reference_frame;
@@ -1564,6 +1566,12 @@ EphemerisPacer* Plugin::ephemeris_pacer() const {
   return ephemeris_pacer_.get();
 }
 
+not_null<Ephemeris<Barycentric> const*> Plugin::ephemeris() const {
+  CHECK(!initializing_);
+  CHECK(ephemeris_ != nullptr);
+  return ephemeris_.get();
+}
+
 void Plugin::WriteToMessage(
     not_null<serialization::Plugin*> const message) const {
   LOG(INFO) << __FUNCTION__;
@@ -1932,6 +1940,47 @@ void Plugin::AddPart(not_null<Vessel*> const vessel,
 
 bool Plugin::is_loaded(not_null<Vessel*> vessel) const {
   return loaded_vessels_.contains(vessel);
+}
+
+int Plugin::PackInactiveVesselsForGpu(
+    _gpu_interop_types::OrbitalState64* const out_states,
+    int const max_states) const {
+  if (out_states == nullptr || max_states <= 0) {
+    return 0;
+  }
+  int count = 0;
+  for (auto const& [guid, vessel] : vessels_) {
+    if (count >= max_states) {
+      break;
+    }
+    // Only pack inactive / unloaded background vessels.
+    if (loaded_vessels_.contains(vessel.get())) {
+      continue;
+    }
+    if (vessel->psychohistory()->empty()) {
+      continue;
+    }
+    DegreesOfFreedom<Barycentric> const dof =
+        vessel->psychohistory()->back().degrees_of_freedom;
+    auto const pos = (dof.position() - Barycentric::origin).coordinates();
+    auto const vel = dof.velocity().coordinates();
+
+    out_states[count].position.x = _gpu_interop_types::ToDoubleSingle(pos.x / Metre);
+    out_states[count].position.y = _gpu_interop_types::ToDoubleSingle(pos.y / Metre);
+    out_states[count].position.z = _gpu_interop_types::ToDoubleSingle(pos.z / Metre);
+
+    out_states[count].velocity.x = _gpu_interop_types::ToDoubleSingle(vel.x / (Metre / Second));
+    out_states[count].velocity.y = _gpu_interop_types::ToDoubleSingle(vel.y / (Metre / Second));
+    out_states[count].velocity.z = _gpu_interop_types::ToDoubleSingle(vel.z / (Metre / Second));
+    ++count;
+  }
+  return count;
+}
+
+void Plugin::UnpackInactiveVesselsFromGpu(
+    _gpu_interop_types::OrbitalState64 const* const in_states,
+    int const count) {
+  // Reserved for background vessels GPU time step updates.
 }
 
 }  // namespace internal

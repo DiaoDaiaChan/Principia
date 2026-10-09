@@ -30,6 +30,7 @@
 #include "ksp_plugin/ephemeris_pacer.hpp"
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/geometric_potential_plotter.hpp"
+#include "ksp_plugin/gpu_interop_types.hpp"
 #include "ksp_plugin/identification.hpp"
 #include "ksp_plugin/pile_up.hpp"
 #include "ksp_plugin/planetarium.hpp"
@@ -410,6 +411,7 @@ class Plugin {
   virtual Celestial const& GetCelestial(Index index) const;
   virtual std::vector<not_null<Celestial const*>> GetAllCelestials() const;
   virtual EphemerisPacer* ephemeris_pacer() const;
+  virtual not_null<Ephemeris<Barycentric> const*> ephemeris() const;
 
   virtual bool HasVessel(GUID const& vessel_guid) const;
   virtual not_null<Vessel*> GetVessel(GUID const& vessel_guid) const;
@@ -472,6 +474,14 @@ class Plugin {
   virtual Instant GameEpoch() const;
 
   virtual Instant CurrentTime() const;
+
+  // Batch inactive vessel state packing and unpacking for GPU orbit integration.
+  virtual int PackInactiveVesselsForGpu(
+      _gpu_interop_types::OrbitalState64* out_states,
+      int max_states) const;
+  virtual void UnpackInactiveVesselsFromGpu(
+      _gpu_interop_types::OrbitalState64 const* in_states,
+      int count);
 
   // The rotation between the `AliceWorld` basis at `current_time_` and the
   // `Barycentric` axes. Since `AliceSun` is not a rotating reference frame,

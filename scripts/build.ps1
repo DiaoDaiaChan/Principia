@@ -63,6 +63,20 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+if ($Project -eq "ksp_plugin\ksp_plugin.vcxproj") {
+    Write-Host "Building ksp_plugin_adapter\ksp_plugin_adapter.csproj ($Configuration)..." -ForegroundColor Cyan
+    & $msBuild "ksp_plugin_adapter\ksp_plugin_adapter.csproj" `
+        /p:Configuration=$Configuration `
+        /p:SolutionDir="$solutionDir" `
+        $targetArg `
+        /v:m
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Error "Adapter build failed with exit code $LASTEXITCODE"
+        exit $LASTEXITCODE
+    }
+}
+
 $sw.Stop()
 Write-Host "Build finished in $($sw.Elapsed.TotalSeconds.ToString('F2'))s." -ForegroundColor Green
 

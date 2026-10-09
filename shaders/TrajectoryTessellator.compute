@@ -15,6 +15,7 @@ struct ChebyshevSegmentData {
     uint degree;
     float padding;
     float3 coeffs[MAX_CHEBYSHEV_DEGREE + 1];
+    float reserved[9];
 };
 
 struct OutputVertex {

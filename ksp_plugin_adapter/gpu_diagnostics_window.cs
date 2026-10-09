@@ -42,6 +42,7 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
 
     using (new GUILayout.VerticalScope()) {
       RenderHardwareBanner();
+      RenderDmaAndGpuSelectionSection();
       RenderPrecisionAndGovernanceSection();
       RenderTelemetryTable();
       RenderGlobalActionBar();
@@ -50,6 +51,90 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
       }
     }
     GUI.DragWindow();
+  }
+
+  private void RenderDmaAndGpuSelectionSection() {
+    using (new GUILayout.VerticalScope(GUI.skin.box)) {
+      GUILayout.Label("<b>硬件 DMA、异构多 GPU 路由与 A/B 基准测速 (Hardware DMA & GPU Router):</b>");
+
+      // 1. Adapter Selection
+      int adapter_count = Interface.GpuGetAdapterCount();
+      int selected_adapter = Interface.GpuGetSelectedAdapter();
+
+      using (new GUILayout.HorizontalScope()) {
+        GUILayout.Label("<b>目标运算显卡:</b>", GUILayout.Width(110));
+        bool is_auto = selected_adapter < 0;
+        if (GUILayout.Toggle(is_auto, "自动 (Auto / 默认系统GPU)", GUI.skin.toggle, GUILayout.Width(190)) && !is_auto) {
+          Interface.GpuSelectComputeAdapter(-1);
+          GpuModuleTelemetry.LogBenchmarkResult("GPU 路由已切换至 [自动选择]");
+        }
+
+        for (int i = 0; i < adapter_count; ++i) {
+          if (Interface.GpuGetAdapterInfo(i, out var info)) {
+            bool is_this = selected_adapter == i;
+            string gpu_type = info.is_integrated ? "<color=#55ffff>[核显 iGPU]</color>" : "<color=#ffaa55>[独显 dGPU]</color>";
+            ulong vram_mb = info.dedicated_video_memory / (1024UL * 1024UL);
+            string btn_title = $"{gpu_type} {info.description} ({vram_mb} MB)";
+            if (GUILayout.Toggle(is_this, btn_title, GUI.skin.toggle) && !is_this) {
+              Interface.GpuSelectComputeAdapter(i);
+              GpuModuleTelemetry.LogBenchmarkResult($"GPU 路由已切换至: [{i}] {info.description}");
+            }
+          }
+        }
+      }
+
+      GUILayout.Label(
+          "<size=10><color=#aaffaa>💡 异构调度策略: 若机器具备双显卡，强烈推荐指定至 <b>核显 (Intel UHD/Iris / AMD RDNA APU)</b> 承载 GPGPU 轨道打靶与推演，使独立显卡 100% 算力全权留给游戏 3D 渲染与着色！</color></size>");
+
+      // 2. DMA Transfer Modes Hot-Switching
+      DmaTransferMode current_dma_mode = Interface.GpuGetDmaMode();
+      using (new GUILayout.HorizontalScope()) {
+        GUILayout.Label("<b>DMA 传输模式:</b>", GUILayout.Width(110));
+
+        bool is_dma = current_dma_mode == DmaTransferMode.DirectDma;
+        bool is_staging = current_dma_mode == DmaTransferMode.StagingFallback;
+        bool is_pure_cpu = current_dma_mode == DmaTransferMode.PureCpu;
+
+        if (GUILayout.Toggle(is_dma, "⚡ Mode 1: 硬件直连 DMA (PCIe ReBAR / 零拷贝 / 零停顿)", GUI.skin.toggle)) {
+          if (!is_dma) {
+            Interface.GpuSetDmaMode(DmaTransferMode.DirectDma);
+            GpuModuleTelemetry.LogBenchmarkResult("已切换至 [Mode 1: 硬件直连 DMA (ReBAR)] 零拷贝高速直达。");
+          }
+        }
+
+        if (GUILayout.Toggle(is_staging, "📦 Mode 2: 传统暂存内存拷贝 (Staging Fallback)", GUI.skin.toggle)) {
+          if (!is_staging) {
+            Interface.GpuSetDmaMode(DmaTransferMode.StagingFallback);
+            GpuModuleTelemetry.LogBenchmarkResult("已切换至 [Mode 2: 暂存拷贝降级模式] 兼容无 ReBAR 设备。");
+          }
+        }
+
+        if (GUILayout.Toggle(is_pure_cpu, "🛑 Mode 3: 纯 CPU 模式 (Pure CPU Native)", GUI.skin.toggle)) {
+          if (!is_pure_cpu) {
+            Interface.GpuSetDmaMode(DmaTransferMode.PureCpu);
+            GpuModuleTelemetry.LogBenchmarkResult("已切换至 [Mode 3: 纯 CPU 原生模式] 硬件级旁路全部 GPU 派发。");
+          }
+        }
+      }
+
+      // 3. A/B Telemetry & Performance Probes
+      double last_dma_write_s = Interface.GpuGetLastDmaWriteSeconds();
+      ulong total_dma_bytes = Interface.GpuGetTotalDmaBytes();
+      double total_dma_mb = total_dma_bytes / (1024.0 * 1024.0);
+      float dma_upload_ms = PerformanceProbe.GetSmoothedMs(ProbeCategory.GpuDmaUpload);
+      float gpu_stall_ms = PerformanceProbe.GetSmoothedMs(ProbeCategory.GpuPipelineStall);
+      float jitter_ms = PerformanceProbe.P99FrameJitterMs;
+
+      using (new GUILayout.HorizontalScope()) {
+        string stall_color = gpu_stall_ms < 0.1f ? "#55ff55" : (gpu_stall_ms < 1.0f ? "#ffff55" : "#ff5555");
+        string dma_color = dma_upload_ms < 0.2f ? "#55ff55" : "#ffff55";
+        string jitter_color = jitter_ms < 3.0f ? "#55ff55" : (jitter_ms < 8.0f ? "#ffff55" : "#ff5555");
+
+        GUILayout.Label(
+            $"<b>实时 A/B 探针:</b> DMA 上传: <color={dma_color}>{dma_upload_ms:F3} ms</color> | GPU 管线停顿: <color={stall_color}>{gpu_stall_ms:F3} ms</color> | P99 帧抖动: <color={jitter_color}>{jitter_ms:F2} ms</color> | 最近 DMA 写: <b>{last_dma_write_s * 1000.0:F3} ms</b> | 累计直通吞吐: <b>{total_dma_mb:F2} MB</b>",
+            GUILayout.ExpandWidth(true));
+      }
+    }
   }
 
   private void RenderHardwareBanner() {

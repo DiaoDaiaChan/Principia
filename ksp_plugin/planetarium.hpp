@@ -10,6 +10,7 @@
 #include "geometry/space.hpp"
 #include "geometry/sphere.hpp"
 #include "ksp_plugin/frames.hpp"
+#include "ksp_plugin/gpu_interop_types.hpp"
 #include "physics/degrees_of_freedom.hpp"
 #include "physics/discrete_trajectory_view.hpp"
 #include "physics/ephemeris.hpp"
@@ -21,6 +22,7 @@ namespace ksp_plugin {
 namespace _planetarium {
 namespace internal {
 
+using _gpu_interop_types::ChebyshevSegmentData;
 using namespace principia::base::_not_null;
 using namespace principia::geometry::_instant;
 using namespace principia::geometry::_perspective;
@@ -148,6 +150,14 @@ class Planetarium {
       std::function<void(ScaledSpacePoint const&)> const& add_point,
       int max_points,
       Length* minimal_distance = nullptr) const;
+
+  // Exports continuous Chebyshev segments directly to host buffer or mapped D3D11 VRAM.
+  template<typename Frame>
+  int ExportChebyshevSegments(
+      TrajectoryView<Frame> const& trajectory,
+      ChebyshevSegmentData* buffer,
+      int max_segments,
+      bool is_d3d11_buffer) const;
 
  private:
   // Computes the coordinates of the spheres that represent the `ephemeris_`

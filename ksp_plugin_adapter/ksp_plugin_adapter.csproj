@@ -169,6 +169,7 @@
     <Compile Include="NativeZeroCopyTrajectoryPipeline.cs" />
     <Compile Include="NativeStateSnapshotChannel.cs" />
     <Compile Include="DensePolynomialSlice.cs" />
+    <Compile Include="GpuInteropTypes.cs" />
     <Compile Include="TripleBufferStateBus.cs" />
     <Compile Include="SpscCommandBus.cs" />
     <Compile Include="BatchStateSync.cs" />

@@ -30,7 +30,7 @@ internal struct CandidateBurnEvaluation {
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct CelestialBodyGpuState {
+public struct CelestialBodyGpuState {
   public Vector3 position;
   public float gravitational_parameter; // GM
   public Vector3 velocity;
@@ -151,7 +151,24 @@ internal static class GpuFlightPlanShootingOptimizer {
     bool success = false;
     best_result = default(CandidateBurnEvaluation);
 
-    if (IsGpuAcceleratedSupported) {
+    DmaTransferMode dma_mode = Interface.GpuGetDmaMode();
+    if (dma_mode == DmaTransferMode.PureCpu) {
+      // Tier 3: Pure CPU Native mode
+      success = DispatchCpuOptimization(
+          initial_pos,
+          initial_vel,
+          (float)initial_time,
+          base_delta_v,
+          span_delta_v,
+          span_delta_t,
+          target_celestial_index,
+          target_periapsis_altitude,
+          integration_steps,
+          step_size_seconds,
+          out best_result);
+      cpu_fallback_dispatches_++;
+      last_used_gpu_ = false;
+    } else if (IsGpuAcceleratedSupported) {
       try {
         success = DispatchGpuOptimization(
             initial_pos,
@@ -174,7 +191,7 @@ internal static class GpuFlightPlanShootingOptimizer {
       }
     }
 
-    if (!success) {
+    if (!success && dma_mode != DmaTransferMode.PureCpu) {
       success = DispatchCpuOptimization(
           initial_pos,
           initial_vel,
@@ -235,7 +252,9 @@ internal static class GpuFlightPlanShootingOptimizer {
     int celestial_count = PopulateCelestials(initial_time);
     if (celestial_count <= 0) return false;
 
-    celestial_buffer_.SetData(celestials_scratch_, 0, 0, celestial_count);
+    using (PerformanceProbe.Measure(ProbeCategory.GpuDmaUpload)) {
+      celestial_buffer_.SetData(celestials_scratch_, 0, 0, celestial_count);
+    }
 
     // Set configuration vectors
     shader.SetVector("_BaseBurnTimes", new Vector4(initial_time, span_delta_t, 1000.0f, 10000.0f));
@@ -270,9 +289,25 @@ internal static class GpuFlightPlanShootingOptimizer {
     shader.SetBuffer(kernel_reduce_pass2_, "_ReducedResults", reduced_results_buffer_);
     shader.Dispatch(kernel_reduce_pass2_, 1, 1, 1);
 
-    // Read back single global minimum result
-    reduced_results_buffer_.GetData(readback_array_, 0, 0, 1);
-    best_result = readback_array_[0];
+    var dma_mode = Interface.GpuGetDmaMode();
+    if (dma_mode == DmaTransferMode.DirectDma) {
+      // Direct Hardware DMA: Asynchronous non-blocking readback
+      using (PerformanceProbe.Measure(ProbeCategory.GpuDmaUpload)) {
+        var req = AsyncGPUReadback.Request(reduced_results_buffer_, Marshal.SizeOf(typeof(CandidateBurnEvaluation)), 0);
+        req.WaitForCompletion();
+        if (!req.hasError) {
+          var data = req.GetData<CandidateBurnEvaluation>();
+          best_result = data[0];
+          return best_result.cost_metric < 1e30f;
+        }
+      }
+    }
+
+    // Tier 2 Staging fallback: Synchronous pipeline stall
+    using (PerformanceProbe.Measure(ProbeCategory.GpuPipelineStall)) {
+      reduced_results_buffer_.GetData(readback_array_, 0, 0, 1);
+      best_result = readback_array_[0];
+    }
 
     return best_result.cost_metric < 1e30f;
   }

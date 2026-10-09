@@ -68,6 +68,9 @@
     <ClInclude Include="renderer.hpp" />
     <ClInclude Include="resource.h" />
     <ClInclude Include="vessel.hpp" />
+    <ClInclude Include="gpu_interop_types.hpp" />
+    <ClInclude Include="dxgi_adapter_factory.hpp" />
+    <ClInclude Include="chebyshev_segment_export.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="celestial.cpp" />
@@ -92,6 +95,8 @@
     <ClCompile Include="interface_planetarium.cpp" />
     <ClCompile Include="interface_renderer.cpp" />
     <ClCompile Include="interface_vessel.cpp" />
+    <ClCompile Include="interface_gpu.cpp" />
+    <ClCompile Include="interface_snapshot.cpp" />
     <ClCompile Include="orbit_analyser.cpp" />
     <ClCompile Include="part.cpp" />
     <ClCompile Include="part_subsets.cpp" />

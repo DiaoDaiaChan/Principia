@@ -382,6 +382,72 @@ internal static partial class Interface {
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool EphemerisIsPausedDelegate(IntPtr plugin);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int GpuGetAdapterCountDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool GpuGetAdapterInfoDelegate(int index, out GpuAdapterInfo info);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GpuSelectComputeAdapterDelegate(int adapter_index);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int GpuGetSelectedAdapterDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GpuSetDmaModeDelegate(int mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int GpuGetDmaModeDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate double GpuGetLastDmaWriteSecondsDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate ulong GpuGetTotalDmaBytesDelegate();
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int ExportChebyshevSegmentsDelegate(
+        IntPtr planetarium,
+        IntPtr plugin,
+        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
+        int segment_index,
+        in double t_max,
+        IntPtr buffer,
+        int max_segments,
+        [MarshalAs(UnmanagedType.I1)] bool is_d3d11_buffer);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int ExportPredictionChebyshevSegmentsDelegate(
+        IntPtr planetarium,
+        IntPtr plugin,
+        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
+        in double t_max,
+        IntPtr buffer,
+        int max_segments,
+        [MarshalAs(UnmanagedType.I1)] bool is_d3d11_buffer);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool FlightPlanExportShootingContextDelegate(
+        IntPtr plugin,
+        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
+        int burn_index,
+        out ShootingContextGpu context);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int PackInactiveVesselsBatchDelegate(
+        IntPtr plugin,
+        [Out] OrbitalState64[] out_states,
+        int max_states);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void UnpackInactiveVesselsBatchDelegate(
+        IntPtr plugin,
+        [In] OrbitalState64[] in_states,
+        int count);
+
     public StateBusCreateChannelDelegate StateBusCreateChannel =
         Loader.LoadOptionalFunction<StateBusCreateChannelDelegate>("principia__StateBusCreateChannel");
 
@@ -435,6 +501,45 @@ internal static partial class Interface {
 
     public EphemerisIsPausedDelegate EphemerisIsPaused =
         Loader.LoadOptionalFunction<EphemerisIsPausedDelegate>("principia__EphemerisIsPaused");
+
+    public GpuGetAdapterCountDelegate GpuGetAdapterCount =
+        Loader.LoadOptionalFunction<GpuGetAdapterCountDelegate>("principia__GpuGetAdapterCount");
+
+    public GpuGetAdapterInfoDelegate GpuGetAdapterInfo =
+        Loader.LoadOptionalFunction<GpuGetAdapterInfoDelegate>("principia__GpuGetAdapterInfo");
+
+    public GpuSelectComputeAdapterDelegate GpuSelectComputeAdapter =
+        Loader.LoadOptionalFunction<GpuSelectComputeAdapterDelegate>("principia__GpuSelectComputeAdapter");
+
+    public GpuGetSelectedAdapterDelegate GpuGetSelectedAdapter =
+        Loader.LoadOptionalFunction<GpuGetSelectedAdapterDelegate>("principia__GpuGetSelectedAdapter");
+
+    public GpuSetDmaModeDelegate GpuSetDmaMode =
+        Loader.LoadOptionalFunction<GpuSetDmaModeDelegate>("principia__GpuSetDmaMode");
+
+    public GpuGetDmaModeDelegate GpuGetDmaMode =
+        Loader.LoadOptionalFunction<GpuGetDmaModeDelegate>("principia__GpuGetDmaMode");
+
+    public GpuGetLastDmaWriteSecondsDelegate GpuGetLastDmaWriteSeconds =
+        Loader.LoadOptionalFunction<GpuGetLastDmaWriteSecondsDelegate>("principia__GpuGetLastDmaWriteSeconds");
+
+    public GpuGetTotalDmaBytesDelegate GpuGetTotalDmaBytes =
+        Loader.LoadOptionalFunction<GpuGetTotalDmaBytesDelegate>("principia__GpuGetTotalDmaBytes");
+
+    public ExportChebyshevSegmentsDelegate ExportChebyshevSegments =
+        Loader.LoadOptionalFunction<ExportChebyshevSegmentsDelegate>("principia__ExportChebyshevSegments");
+
+    public ExportPredictionChebyshevSegmentsDelegate ExportPredictionChebyshevSegments =
+        Loader.LoadOptionalFunction<ExportPredictionChebyshevSegmentsDelegate>("principia__ExportPredictionChebyshevSegments");
+
+    public FlightPlanExportShootingContextDelegate FlightPlanExportShootingContext =
+        Loader.LoadOptionalFunction<FlightPlanExportShootingContextDelegate>("principia__FlightPlanExportShootingContext");
+
+    public PackInactiveVesselsBatchDelegate PackInactiveVesselsBatch =
+        Loader.LoadOptionalFunction<PackInactiveVesselsBatchDelegate>("principia__PackInactiveVesselsBatch");
+
+    public UnpackInactiveVesselsBatchDelegate UnpackInactiveVesselsBatch =
+        Loader.LoadOptionalFunction<UnpackInactiveVesselsBatchDelegate>("principia__UnpackInactiveVesselsBatch");
   }
 
   internal static bool HasDirectVramSupport =>
@@ -530,6 +635,102 @@ internal static partial class Interface {
 
   internal static bool EphemerisIsPaused(this IntPtr plugin) {
     return symbols_?.EphemerisIsPaused != null && symbols_.EphemerisIsPaused(plugin);
+  }
+
+  internal static bool HasGpuInteropSupport =>
+      symbols_?.GpuGetAdapterCount != null;
+
+  internal static int GpuGetAdapterCount() {
+    return symbols_?.GpuGetAdapterCount != null ? symbols_.GpuGetAdapterCount() : 0;
+  }
+
+  internal static bool GpuGetAdapterInfo(int index, out GpuAdapterInfo info) {
+    if (symbols_?.GpuGetAdapterInfo != null) {
+      return symbols_.GpuGetAdapterInfo(index, out info);
+    }
+    info = default(GpuAdapterInfo);
+    return false;
+  }
+
+  internal static void GpuSelectComputeAdapter(int adapter_index) {
+    symbols_?.GpuSelectComputeAdapter?.Invoke(adapter_index);
+  }
+
+  internal static int GpuGetSelectedAdapter() {
+    return symbols_?.GpuGetSelectedAdapter != null ? symbols_.GpuGetSelectedAdapter() : -1;
+  }
+
+  internal static void GpuSetDmaMode(DmaTransferMode mode) {
+    symbols_?.GpuSetDmaMode?.Invoke((int)mode);
+  }
+
+  internal static DmaTransferMode GpuGetDmaMode() {
+    return symbols_?.GpuGetDmaMode != null
+        ? (DmaTransferMode)symbols_.GpuGetDmaMode()
+        : DmaTransferMode.StagingFallback;
+  }
+
+  internal static double GpuGetLastDmaWriteSeconds() {
+    return symbols_?.GpuGetLastDmaWriteSeconds != null ? symbols_.GpuGetLastDmaWriteSeconds() : 0.0;
+  }
+
+  internal static ulong GpuGetTotalDmaBytes() {
+    return symbols_?.GpuGetTotalDmaBytes != null ? symbols_.GpuGetTotalDmaBytes() : 0UL;
+  }
+
+  internal static int ExportChebyshevSegments(
+      IntPtr planetarium,
+      IntPtr plugin,
+      string vessel_guid,
+      int segment_index,
+      in double t_max,
+      IntPtr buffer,
+      int max_segments,
+      bool is_d3d11_buffer) {
+    return symbols_?.ExportChebyshevSegments != null
+        ? symbols_.ExportChebyshevSegments(planetarium, plugin, vessel_guid, segment_index, in t_max, buffer, max_segments, is_d3d11_buffer)
+        : 0;
+  }
+
+  internal static int ExportPredictionChebyshevSegments(
+      IntPtr planetarium,
+      IntPtr plugin,
+      string vessel_guid,
+      in double t_max,
+      IntPtr buffer,
+      int max_segments,
+      bool is_d3d11_buffer) {
+    return symbols_?.ExportPredictionChebyshevSegments != null
+        ? symbols_.ExportPredictionChebyshevSegments(planetarium, plugin, vessel_guid, in t_max, buffer, max_segments, is_d3d11_buffer)
+        : 0;
+  }
+
+  internal static bool FlightPlanExportShootingContext(
+      IntPtr plugin,
+      string vessel_guid,
+      int burn_index,
+      out ShootingContextGpu context) {
+    if (symbols_?.FlightPlanExportShootingContext != null) {
+      return symbols_.FlightPlanExportShootingContext(plugin, vessel_guid, burn_index, out context);
+    }
+    context = default(ShootingContextGpu);
+    return false;
+  }
+
+  internal static int PackInactiveVesselsBatch(
+      this IntPtr plugin,
+      OrbitalState64[] out_states,
+      int max_states) {
+    return symbols_?.PackInactiveVesselsBatch != null
+        ? symbols_.PackInactiveVesselsBatch(plugin, out_states, max_states)
+        : 0;
+  }
+
+  internal static void UnpackInactiveVesselsBatch(
+      this IntPtr plugin,
+      OrbitalState64[] in_states,
+      int count) {
+    symbols_?.UnpackInactiveVesselsBatch?.Invoke(plugin, in_states, count);
   }
 
   internal static void LoadSymbols() {
