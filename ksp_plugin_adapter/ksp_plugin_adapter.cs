@@ -1019,6 +1019,16 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     return false;
   }
 
+  private bool force_prediction_update_ = false;
+
+  public void RequestImmediatePredictionUpdate() {
+    force_prediction_update_ = true;
+    last_prediction_integration_realtime_ = 0.0;
+    MapMarkerEventGovernor.InvalidatePrediction();
+    plotter_?.InvalidatePrediction(immediate: true);
+    plotter_?.InvalidateTargetPrediction(immediate: true);
+  }
+
   private void UpdatePredictions() {
     Vessel main_vessel = PredictedVessel();
     plotting_frame_selector_.active_vessel = main_vessel;
@@ -1043,6 +1053,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       // Decoupled from mesh invalidation so Plotter can smoothly reuse its cached GPU geometry.
       double interval = is_maneuvering ? 0.100 : (is_warping ? 5.000 : 2.500);
       bool should_update =
+          force_prediction_update_ ||
           map_just_enabled ||
           main_vessel_guid != last_prediction_integration_guid_ ||
           target_guid != last_prediction_integration_target_guid_ ||
@@ -1050,6 +1061,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
            (is_maneuvering || !is_warping || Math.Abs(current_ut - last_prediction_integration_ut_) > 10.0));
 
       if (should_update) {
+        force_prediction_update_ = false;
         last_prediction_integration_realtime_ = current_realtime;
         last_prediction_integration_ut_ = current_ut;
         last_prediction_integration_guid_ = main_vessel_guid;
@@ -1060,7 +1072,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             single_guid_array_[0] = target_guid;
             plugin_.UpdatePrediction(single_guid_array_);
             MapMarkerEventGovernor.InvalidateTarget();
-            plotter_?.InvalidateTargetPrediction();
+            plotter_?.InvalidateTargetPrediction(immediate: true);
           } else {
             AdaptiveStepParameters adaptive_step_parameters =
                 plugin_.VesselGetPredictionAdaptiveStepParameters(
@@ -1073,14 +1085,14 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             plugin_.UpdatePrediction(double_guid_array_);
             MapMarkerEventGovernor.InvalidatePrediction();
             MapMarkerEventGovernor.InvalidateTarget();
-            plotter_?.InvalidatePrediction();
-            plotter_?.InvalidateTargetPrediction();
+            plotter_?.InvalidatePrediction(immediate: true);
+            plotter_?.InvalidateTargetPrediction(immediate: true);
           }
         } else if (main_vessel_guid != null) {
           single_guid_array_[0] = main_vessel_guid;
           plugin_.UpdatePrediction(single_guid_array_);
           MapMarkerEventGovernor.InvalidatePrediction();
-          plotter_?.InvalidatePrediction();
+          plotter_?.InvalidatePrediction(immediate: true);
         }
       }
     } else {
@@ -3558,9 +3570,23 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     string main_vessel_guid = GetVesselGuid(PredictedVessel());
     if (MapView.MapIsEnabled) {
       XYZ sun_world_position = (XYZ)Planetarium.fetch.Sun.position;
-      // Standard angular resolution: 1 arcminute provides sub-pixel smoothness (< 1/3 pixel at 1080p)
-      // while cutting redundant Hermite and Gauss-Legendre quadrature subdivisions in C++ PlotMethod4.
-      double resolution_multiplier = 1.0;
+      // Dynamic zoom-adaptive angular resolution:
+      // When zoomed in close (< 50 km), increase angular precision (multiplier 0.25 - 0.40) to guarantee
+      // dense sub-pixel sampling in C++ PlotMethod4 and eliminate angular chord kinks.
+      // When zoomed far out, scale gently to avoid unnecessary subdivisions.
+      double resolution_multiplier = 0.50;
+      if (PlanetariumCamera.fetch != null) {
+        float cam_dist = PlanetariumCamera.fetch.Distance;
+        if (cam_dist < 5000f) {
+          resolution_multiplier = 0.25;
+        } else if (cam_dist < 50000f) {
+          resolution_multiplier = 0.35;
+        } else if (cam_dist < 500000f) {
+          resolution_multiplier = 0.50;
+        } else {
+          resolution_multiplier = 0.80;
+        }
+      }
       using (DisposablePlanetarium planetarium =
              GLLines.NewPlanetarium(plugin_, sun_world_position, resolution_multiplier)) {
         plotter_.PlotTrajectories(planetarium,
@@ -3648,7 +3674,11 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     string main_vessel_guid = GetVesselGuid(PredictedVessel());
     if (MapView.MapIsEnabled) {
       var sun_world_position = (XYZ)Planetarium.fetch.Sun.position;
-      double resolution_multiplier = 1.0;
+      double resolution_multiplier = 0.50;
+      if (PlanetariumCamera.fetch != null) {
+        float cam_dist = PlanetariumCamera.fetch.Distance;
+        resolution_multiplier = cam_dist < 50000f ? 0.35 : 0.75;
+      }
       using (DisposablePlanetarium planetarium =
         GLLines.NewPlanetarium(plugin_, sun_world_position, resolution_multiplier)) {
         int number_of_rendered_manœuvres = 0;

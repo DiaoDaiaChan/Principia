@@ -723,6 +723,7 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
         plugin.VesselSetPredictionAdaptiveStepParameters(
             vessel_guid,
             new_adaptive_step_parameters);
+        adapter_.RequestImmediatePredictionUpdate();
       }
       if (RenderSelector(prediction_steps_,
                          ref prediction_steps_index_,
@@ -743,6 +744,7 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
         plugin.VesselSetPredictionAdaptiveStepParameters(
             vessel_guid,
             new_adaptive_step_parameters);
+        adapter_.RequestImmediatePredictionUpdate();
       }
     }
   }

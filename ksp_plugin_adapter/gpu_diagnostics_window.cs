@@ -542,7 +542,14 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
         string smooth_badge = SmoothPlottingBridge.IsExternalModDetected
             ? "<color=#55ff55>PrincipiaSmoothPlotting 模组联动</color>"
             : "<color=#55ffff>内置自适应 Catmull-Rom 样条平滑</color>";
-        GUILayout.Label($"<b>Phase 4: GPU 虚拟投影与轨迹平滑:</b> {smooth_badge}");
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label($"<b>Phase 4: GPU 虚拟投影与轨迹平滑:</b> {smooth_badge}", GUILayout.ExpandWidth(true));
+          bool current_smooth = SmoothPlottingBridge.SmoothInterpolationEnabled;
+          bool new_smooth = GUILayout.Toggle(current_smooth, "开启样条平滑", GUILayout.Width(110));
+          if (new_smooth != current_smooth) {
+            SmoothPlottingBridge.SmoothInterpolationEnabled = new_smooth;
+          }
+        }
         GUILayout.Label(
             $"投影绑定: <b>{GpuVirtualProjection.TotalProjectionsApplied:N0}</b> | 最大微偏置: <b>{GpuVirtualProjection.MaxDisplacementMagnitude:F3} m</b> | 样条细分: <b>{SmoothPlottingBridge.SubdivisionsPerformed:N0}</b> 次 (生成顶点: <b>{SmoothPlottingBridge.SubdividedVertices:N0}</b>)");
       }
