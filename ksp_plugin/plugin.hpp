@@ -613,33 +613,46 @@ class Plugin {
 
   std::optional<GeometricPotentialPlotter> geometric_potential_plotter_;
 
-  struct ApsidesCacheEntry {
+  struct ApsidesCacheKey {
+    Index celestial_index{0};
     Instant t_min;
     Instant t_max;
     std::int64_t size{0};
+    auto operator<=>(ApsidesCacheKey const&) const = default;
+  };
+
+  struct ApsidesCacheEntry {
     DistinguishedPoints<Barycentric> apoapsides;
     DistinguishedPoints<Barycentric> periapsides;
   };
 
-  struct NodesCacheEntry {
+  struct NodesCacheKey {
+    PlottingFrame const* plotting_frame{nullptr};
     Instant t_min;
     Instant t_max;
     std::int64_t size{0};
-    PlottingFrame const* plotting_frame{nullptr};
+    auto operator<=>(NodesCacheKey const&) const = default;
+  };
+
+  struct NodesCacheEntry {
     DistinguishedPoints<Navigation> ascending;
     DistinguishedPoints<Navigation> descending;
   };
 
-  struct ClosestApproachesCacheEntry {
+  struct ClosestApproachesCacheKey {
     Instant t_min;
     Instant t_max;
     std::int64_t size{0};
+    auto operator<=>(ClosestApproachesCacheKey const&) const = default;
+  };
+
+  struct ClosestApproachesCacheEntry {
     DistinguishedPoints<Barycentric> closest_approaches;
   };
 
-  mutable absl::flat_hash_map<Index, ApsidesCacheEntry> apsides_cache_;
-  mutable std::optional<NodesCacheEntry> nodes_cache_;
-  mutable std::optional<ClosestApproachesCacheEntry> closest_approaches_cache_;
+  mutable std::map<ApsidesCacheKey, ApsidesCacheEntry> apsides_cache_;
+  mutable std::map<NodesCacheKey, NodesCacheEntry> nodes_cache_;
+  mutable std::map<ClosestApproachesCacheKey, ClosestApproachesCacheEntry> closest_approaches_cache_;
   std::unique_ptr<EphemerisPacer> ephemeris_pacer_;
 
   friend class NavballFrameField;

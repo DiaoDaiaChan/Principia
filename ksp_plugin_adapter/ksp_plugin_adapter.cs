@@ -1775,69 +1775,28 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
         if (main_vessel_guid != last_markers_vessel_guid_) {
           last_markers_vessel_guid_ = main_vessel_guid;
-          MapMarkerEventGovernor.InvalidatePrediction();
-          MapMarkerEventGovernor.InvalidateFlightPlan();
           plotter_?.InvalidatePrediction();
         }
         if (target_id != last_markers_target_guid_) {
           last_markers_target_guid_ = target_id;
-          MapMarkerEventGovernor.InvalidateTarget();
           plotter_?.InvalidateTargetPrediction();
         }
 
-        // Event & Dynamics Driven marker evaluation with single-task-per-frame throttling:
-        // When coasting / idle, HasDirtyMarkers is false -> strictly 0.000 ms overhead.
-        // When dirty, executes AT MOST ONE marker category per frame, guaranteeing LateUpdate
-        // execution time stays strictly < 0.8 ms without multi-task pileups or 3 ms spikes.
-        // Any remaining dirty categories naturally complete in successive frames (within ~60 ms total).
-        if (!MapMarkerEventGovernor.TaskExecutedThisFrame &&
-            MapMarkerEventGovernor.HasDirtyMarkers &&
-            MapMarkerEventGovernor.HasBudgetRemaining) {
-          if (MapMarkerEventGovernor.PredictionApsidesDirty) {
-            RenderPredictionApsides(main_vessel_guid,
-                                    prediction_collision_,
-                                    sun_world_position);
-            MapMarkerEventGovernor.PredictionApsidesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
-          } else if (MapMarkerEventGovernor.PredictionNodesDirty) {
-            RenderPredictionNodes(main_vessel_guid,
+        if (main_vessel_guid != null) {
+          RenderPredictionMarkers(main_vessel_guid,
                                   prediction_collision_,
                                   sun_world_position);
-            MapMarkerEventGovernor.PredictionNodesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
-          } else if (MapMarkerEventGovernor.FlightPlanApsidesDirty) {
-            if (main_vessel_guid != null &&
-                plugin_.FlightPlanExists(main_vessel_guid) &&
-                !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
-              RenderFlightPlanApsides(main_vessel_guid,
-                                      flight_plan_collision_,
-                                      sun_world_position);
-            }
-            MapMarkerEventGovernor.FlightPlanApsidesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
-          } else if (MapMarkerEventGovernor.FlightPlanNodesDirty) {
-            if (main_vessel_guid != null &&
-                plugin_.FlightPlanExists(main_vessel_guid) &&
-                !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
-              RenderFlightPlanNodes(main_vessel_guid,
+          if (plugin_.FlightPlanExists(main_vessel_guid) &&
+              !RollingEphemerisDriver.ShouldSuppressPlot(main_vessel_guid)) {
+            RenderFlightPlanMarkers(main_vessel_guid,
                                     flight_plan_collision_,
                                     sun_world_position);
-            }
-            MapMarkerEventGovernor.FlightPlanNodesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
-          } else if (MapMarkerEventGovernor.TargetApsidesDirty) {
-            if (target_id != null && !plotting_frame_selector_.target_frame_selected) {
-              RenderPredictionApsides(target_id, null, sun_world_position);
-            }
-            MapMarkerEventGovernor.TargetApsidesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
-          } else if (MapMarkerEventGovernor.TargetNodesDirty) {
-            if (target_id != null && !plotting_frame_selector_.target_frame_selected) {
-              RenderPredictionNodes(target_id, null, sun_world_position);
-            }
-            MapMarkerEventGovernor.TargetNodesDirty = false;
-            MapMarkerEventGovernor.TaskExecutedThisFrame = true;
           }
+        }
+        if (target_id != null) {
+          RenderPredictionMarkers(target_id,
+                                  prediction_collision: null,
+                                  sun_world_position);
         }
       }
       float frame_ms = UnityEngine.Time.unscaledDeltaTime * 1000.0f;
@@ -3595,25 +3554,25 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
             MapMarkerEventGovernor.CollisionDirty = true;
           }
           MapMarkerEventGovernor.TaskExecutedThisFrame = true;
+        }
 
-          if (prediction_collision_.HasValue) {
-            single_collision_marker_array_[0] = prediction_collision_.Value;
-            map_node_pool_.RenderMarkers(single_collision_marker_array_,
-                                         new MapNodePool.Provenance(
-                                             vessel_guid,
-                                             MapNodePool.NodeSource.Prediction,
-                                             MapObject.ObjectType.PatchTransition),
-                                         plotting_frame_selector_);
-          }
-          if (flight_plan_collision_.HasValue) {
-            single_collision_marker_array_[0] = flight_plan_collision_.Value;
-            map_node_pool_.RenderMarkers(single_collision_marker_array_,
-                                         new MapNodePool.Provenance(
-                                             vessel_guid,
-                                             MapNodePool.NodeSource.FlightPlan,
-                                             MapObject.ObjectType.PatchTransition),
-                                         plotting_frame_selector_);
-          }
+        if (prediction_collision_.HasValue) {
+          single_collision_marker_array_[0] = prediction_collision_.Value;
+          map_node_pool_.RenderMarkers(single_collision_marker_array_,
+                                       new MapNodePool.Provenance(
+                                           vessel_guid,
+                                           MapNodePool.NodeSource.Prediction,
+                                           MapObject.ObjectType.PatchTransition),
+                                       plotting_frame_selector_);
+        }
+        if (flight_plan_collision_.HasValue) {
+          single_collision_marker_array_[0] = flight_plan_collision_.Value;
+          map_node_pool_.RenderMarkers(single_collision_marker_array_,
+                                       new MapNodePool.Provenance(
+                                           vessel_guid,
+                                           MapNodePool.NodeSource.FlightPlan,
+                                           MapObject.ObjectType.PatchTransition),
+                                       plotting_frame_selector_);
         }
 
         prediction_collision = prediction_collision_;

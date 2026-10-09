@@ -1053,27 +1053,32 @@ void Plugin::ComputeAndRenderApsides(
   Instant const t_max = trajectory.t_max();
   std::int64_t const size = trajectory.size();
 
-  auto& entry = apsides_cache_[celestial_index];
-  if (entry.size != size || entry.t_min != t_min || entry.t_max != t_max) {
-    entry.apoapsides.clear();
-    entry.periapsides.clear();
+  ApsidesCacheKey const key{
+      .celestial_index = celestial_index,
+      .t_min = t_min,
+      .t_max = t_max,
+      .size = size};
+  auto [it, inserted] = apsides_cache_.try_emplace(key);
+  if (inserted) {
+    if (apsides_cache_.size() > 32) {
+      apsides_cache_.clear();
+      it = apsides_cache_.emplace(key, ApsidesCacheEntry{}).first;
+    }
+    auto& entry = it->second;
     ComputeApsides(FindOrDie(celestials_, celestial_index)->trajectory(),
                    trajectory,
                    max_points,
                    entry.apoapsides,
                    entry.periapsides);
-    entry.t_min = t_min;
-    entry.t_max = t_max;
-    entry.size = size;
   }
   apoapsides = renderer_->RenderDistinguishedPointsInWorld(
                    current_time_,
-                   entry.apoapsides,
+                   it->second.apoapsides,
                    sun_world_position,
                    PlanetariumRotation());
   periapsides = renderer_->RenderDistinguishedPointsInWorld(
                     current_time_,
-                    entry.periapsides,
+                    it->second.periapsides,
                     sun_world_position,
                     PlanetariumRotation());
 }
@@ -1097,25 +1102,30 @@ Plugin::ComputeAndRenderFirstCollision(
   Instant const t_max = trajectory.t_max();
   std::int64_t const size = trajectory.size();
 
-  auto& entry = apsides_cache_[celestial_index];
-  if (entry.size != size || entry.t_min != t_min || entry.t_max != t_max) {
-    entry.apoapsides.clear();
-    entry.periapsides.clear();
+  ApsidesCacheKey const key{
+      .celestial_index = celestial_index,
+      .t_min = t_min,
+      .t_max = t_max,
+      .size = size};
+  auto [it, inserted] = apsides_cache_.try_emplace(key);
+  if (inserted) {
+    if (apsides_cache_.size() > 32) {
+      apsides_cache_.clear();
+      it = apsides_cache_.emplace(key, ApsidesCacheEntry{}).first;
+    }
+    auto& entry = it->second;
     ComputeApsides(celestial_trajectory,
                    trajectory,
                    max_points,
                    entry.apoapsides,
                    entry.periapsides);
-    entry.t_min = t_min;
-    entry.t_max = t_max;
-    entry.size = size;
   }
 
   const auto intervals = ComputeCollisionIntervals(celestial_body,
                                                    celestial_trajectory,
                                                    trajectory,
-                                                   entry.apoapsides,
-                                                   entry.periapsides);
+                                                   it->second.apoapsides,
+                                                   it->second.periapsides);
 
   VLOG(1) << "Found " << intervals.size() << " collision intervals";
   for (auto const& interval : intervals) {
@@ -1160,29 +1170,29 @@ void Plugin::ComputeAndRenderClosestApproaches(
   Instant const t_max = trajectory.t_max();
   std::int64_t const size = trajectory.size();
 
-  if (!closest_approaches_cache_.has_value() ||
-      closest_approaches_cache_->size != size ||
-      closest_approaches_cache_->t_min != t_min ||
-      closest_approaches_cache_->t_max != t_max) {
+  ClosestApproachesCacheKey const key{
+      .t_min = t_min,
+      .t_max = t_max,
+      .size = size};
+  auto [it, inserted] = closest_approaches_cache_.try_emplace(key);
+  if (inserted) {
+    if (closest_approaches_cache_.size() > 32) {
+      closest_approaches_cache_.clear();
+      it = closest_approaches_cache_.emplace(key, ClosestApproachesCacheEntry{}).first;
+    }
+    auto& entry = it->second;
     DistinguishedPoints<Barycentric> apoapsides;
-    DistinguishedPoints<Barycentric> periapsides;
     ComputeApsides(*renderer_->GetTargetVessel().prediction(),
                    trajectory,
                    max_points,
                    apoapsides,
-                   periapsides);
-    closest_approaches_cache_ = ClosestApproachesCacheEntry{
-        .t_min = t_min,
-        .t_max = t_max,
-        .size = size,
-        .closest_approaches = std::move(periapsides),
-    };
+                   entry.closest_approaches);
   }
 
   closest_approaches =
       renderer_->RenderDistinguishedPointsInWorld(
           current_time_,
-          closest_approaches_cache_->closest_approaches,
+          it->second.closest_approaches,
           sun_world_position,
           PlanetariumRotation());
 }
@@ -1203,11 +1213,18 @@ void Plugin::ComputeAndRenderNodes(
   std::int64_t const size = trajectory.size();
   PlottingFrame const* const current_frame = &*renderer_->GetPlottingFrame();
 
-  if (!nodes_cache_.has_value() ||
-      nodes_cache_->size != size ||
-      nodes_cache_->t_min != t_min ||
-      nodes_cache_->t_max != t_max ||
-      nodes_cache_->plotting_frame != current_frame) {
+  NodesCacheKey const key{
+      .plotting_frame = current_frame,
+      .t_min = t_min,
+      .t_max = t_max,
+      .size = size};
+  auto [it, inserted] = nodes_cache_.try_emplace(key);
+  if (inserted) {
+    if (nodes_cache_.size() > 32) {
+      nodes_cache_.clear();
+      it = nodes_cache_.emplace(key, NodesCacheEntry{}).first;
+    }
+    auto& entry = it->second;
     auto const trajectory_in_plotting =
         renderer_->RenderBarycentricTrajectoryInPlotting(trajectory);
 
@@ -1228,32 +1245,20 @@ void Plugin::ComputeAndRenderNodes(
       return (dof.position() - Navigation::origin).Norm() < threshold;
     };
 
-    DistinguishedPoints<Navigation> plotting_ascending;
-    DistinguishedPoints<Navigation> plotting_descending;
-    // The so-called North is orthogonal to the plane of the trajectory.
     ComputeNodes(DiscreteTrajectoryView(&trajectory_in_plotting),
                  Vector<double, Navigation>({0, 0, 1}),
                  max_points,
-                 plotting_ascending,
-                 plotting_descending,
+                 entry.ascending,
+                 entry.descending,
                  show_node).IgnoreError();
-
-    nodes_cache_ = NodesCacheEntry{
-        .t_min = t_min,
-        .t_max = t_max,
-        .size = size,
-        .plotting_frame = current_frame,
-        .ascending = std::move(plotting_ascending),
-        .descending = std::move(plotting_descending),
-    };
   }
 
   ascending = renderer_->RenderNodes(current_time_,
-                                     nodes_cache_->ascending,
+                                     it->second.ascending,
                                      sun_world_position,
                                      PlanetariumRotation());
   descending = renderer_->RenderNodes(current_time_,
-                                      nodes_cache_->descending,
+                                      it->second.descending,
                                       sun_world_position,
                                       PlanetariumRotation());
 }
