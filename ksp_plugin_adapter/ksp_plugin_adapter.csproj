@@ -179,6 +179,8 @@
     <Compile Include="SmoothPlottingBridge.cs" />
     <Compile Include="FrameBudgetCircuitBreaker.cs" />
     <Compile Include="ZeroAllocationForceCache.cs" />
+    <Compile Include="HardwareStartupProfiler.cs" />
+    <Compile Include="HeterogeneousWorkloadBalancer.cs" />
     <Compile Include="GpuFlightPlanShootingOptimizer.cs" />
     <Compile Include="performance_probe.cs" />
     <Compile Include="TelemetryLogger.cs" />

@@ -392,6 +392,7 @@ public static class PerformanceProbe {
           GUILayout.Label(cached_gc_str_);
         }
         GUILayout.Label("<color=grey><i>(Principia 零拷贝轨迹通道产生 GC: 0 B/f)</i></color>");
+        GUILayout.Label($"<b>异构负载均衡:</b> {HeterogeneousWorkloadBalancer.SceneProfileBadge} | {HeterogeneousWorkloadBalancer.AllocationSummary}");
       }
 
       // 2. Realtime Telemetry Controls Card
@@ -570,6 +571,13 @@ public static class PerformanceProbe {
         GUILayout.Label("<b>异构调度总督 (Heterogeneous Governor):</b>");
         GUILayout.Label(cached_governor_mode_str_);
         GUILayout.Label(cached_governor_dispatch_str_);
+      }
+
+      // Dynamic Balancer & Scene Profile Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        GUILayout.Label("<b>场景感知自适应负载均衡 (Dynamic Balancer):</b>");
+        GUILayout.Label($"当前场景感知: {HeterogeneousWorkloadBalancer.SceneProfileBadge}");
+        GUILayout.Label($"动态切片分配: {HeterogeneousWorkloadBalancer.AllocationSummary}");
       }
     }
     GUILayout.EndScrollView();

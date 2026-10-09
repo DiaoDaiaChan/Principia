@@ -1428,6 +1428,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     Log.Info("principia.ksp_plugin_adapter.PrincipiaPluginAdapter.OnAwake()");
     PrincipiaGPGPUContext.Initialize();
     VacuumBypassGovernor.Initialize();
+    HardwareStartupProfiler.RunCalibrationBenchmark();
 
     LoadTextureIfExists(out compass_navball_texture_, "navball_compass.png");
     LoadTextureOrDie(out inertial_navball_texture_, "navball_inertial.png");

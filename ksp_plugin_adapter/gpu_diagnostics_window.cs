@@ -178,7 +178,64 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             "<size=10><color=#aaffaa>💡 异构调度策略: 若机器具备双显卡，强烈推荐指定至 <b>核显 (Intel UHD/Iris / AMD APU)</b> 承载 GPGPU 轨道打靶与推演，使独立显卡 100% 算力全权留给游戏 3D 渲染与着色！</color></size>");
       }
 
-      // 2. DMA Transfer Modes Hot-Switching Card
+      // 2. Hardware Startup Profiler & Benchmark Scores Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        GUILayout.Label("<b>全设备硬件性能画像与拓扑 (Hardware Profiling & Calibration):</b>");
+        GUILayout.Label(HardwareStartupProfiler.CalibrationSummary);
+
+        using (new GUILayout.HorizontalScope()) {
+          string btn_prof_txt = HardwareStartupProfiler.IsCalibrating
+              ? "⏳ 正在探测全设备基准..."
+              : "⚡ 重新校准全设备硬件画像 (Re-Calibrate)";
+          if (GUILayout.Button(btn_prof_txt, GUILayout.Height(26))) {
+            HardwareStartupProfiler.RunCalibrationBenchmark();
+          }
+
+          if (HardwareStartupProfiler.Topology == HardwareTopologyType.DualGpuAsymmetric) {
+            if (GUILayout.Button("🎯 自动应用推荐路由 (核显做物理/独显做3D)", GUILayout.Height(26))) {
+              HardwareStartupProfiler.ApplyRecommendedAdapter();
+            }
+          }
+        }
+      }
+
+      // 3. Scene-Aware Dynamic Workload Balancer Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        GUILayout.Label("<b>场景感知与运行时动态负载均衡 (Scene-Aware Dynamic Balancer):</b>");
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label($"<b>当前场景感知:</b> {HeterogeneousWorkloadBalancer.SceneProfileBadge}", GUILayout.Width(260));
+          GUILayout.Label($"<b>实时算力切片分配:</b> {HeterogeneousWorkloadBalancer.AllocationSummary}", GUILayout.ExpandWidth(true));
+        }
+
+        float gpu_ratio = HeterogeneousWorkloadBalancer.GpuWorkloadRatio;
+        int filled = Mathf.Clamp(Mathf.RoundToInt(gpu_ratio * 30), 0, 30);
+        string alloc_bar = "[" + new string('█', filled) + new string('░', 30 - filled) + $"] GPU: {gpu_ratio * 100.0f:F0}%";
+        GUILayout.Label($"<color=#55ffff>动态分配比:</color> {alloc_bar}");
+
+        using (new GUILayout.HorizontalScope()) {
+          bool is_auto = !HeterogeneousWorkloadBalancer.ForceManualRatio;
+          if (GUILayout.Toggle(is_auto, "自适应动态平衡 (Auto Adaptive)", GUI.skin.toggle)) {
+            HeterogeneousWorkloadBalancer.ForceManualRatio = false;
+          }
+          if (GUILayout.Toggle(!is_auto, "手动固定分配 (Manual Override)", GUI.skin.toggle)) {
+            HeterogeneousWorkloadBalancer.ForceManualRatio = true;
+          }
+
+          if (HeterogeneousWorkloadBalancer.ForceManualRatio) {
+            if (GUILayout.Button("CPU 70%", GUILayout.Width(65))) {
+              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.30f;
+            }
+            if (GUILayout.Button("平衡 50%", GUILayout.Width(65))) {
+              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.50f;
+            }
+            if (GUILayout.Button("GPU 70%", GUILayout.Width(65))) {
+              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.70f;
+            }
+          }
+        }
+      }
+
+      // 4. DMA Transfer Modes Hot-Switching Card
       using (new GUILayout.VerticalScope(GUI.skin.box)) {
         GUILayout.Label("<b>DMA 传输模式热切换 (DMA Transfer Modes):</b>");
         DmaTransferMode current_dma_mode = Interface.GpuGetDmaMode();
