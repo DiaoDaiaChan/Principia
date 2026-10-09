@@ -70,11 +70,6 @@ function Copy-FileAtomic([string]$source, [string]$destination) {
     }
 }
 
-$shadersSrc = "Release\GameData\Principia\shaders"
-if (-not (Test-Path $shadersSrc)) {
-    $shadersSrc = "shaders"
-}
-
 foreach ($dir in $candidateDirs) {
     Write-Host "`nDeploying to KSP directory: $dir" -ForegroundColor Cyan
     $targetDir1 = Join-Path $dir "GameData\Principia"
@@ -104,13 +99,9 @@ foreach ($dir in $candidateDirs) {
         }
     }
 
-    if (Test-Path $shadersSrc) {
-        $shadersDst = Join-Path $targetDir1 "shaders"
-        if (-not (Test-Path $shadersDst)) {
-            New-Item -ItemType Directory -Path $shadersDst -Force | Out-Null
-        }
-        Copy-Item -Path "$shadersSrc\*" -Destination $shadersDst -Recurse -Force
-        Write-Host "Synced shaders to $shadersDst" -ForegroundColor Green
+    $legacyShadersDst = Join-Path $targetDir1 "shaders"
+    if (Test-Path $legacyShadersDst) {
+        Remove-Item -Path $legacyShadersDst -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     if (Test-Path $targetDir2) {
