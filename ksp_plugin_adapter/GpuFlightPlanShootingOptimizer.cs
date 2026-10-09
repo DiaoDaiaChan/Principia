@@ -144,6 +144,7 @@ internal static class GpuFlightPlanShootingOptimizer {
       float step_size_seconds,
       out CandidateBurnEvaluation best_result) {
 
+    using (PerformanceProbe.Measure(ProbeCategory.FlightPlanEvaluation)) {
     var stopwatch = Stopwatch.StartNew();
     total_optimizations_++;
 
@@ -208,6 +209,7 @@ internal static class GpuFlightPlanShootingOptimizer {
     }
 
     return success;
+    }
   }
 
   private static bool DispatchGpuOptimization(

@@ -860,19 +860,34 @@ class Plotter {
         return;
       }
       using (PerformanceProbe.Measure(ProbeCategory.GpuCompute)) {
+        PerformanceProbe.RecordCacheHit();
+        PerformanceProbe.RecordVertices(vertex_count);
+        HeterogeneousDynamicGovernor.RecordGpuDispatch();
+
+        UnityEngine.Vector3 draw_position = UnityEngine.Vector3.zero;
+        if (reference_body != null) {
+          UnityEngine.Vector3 current_scaled_pos =
+              ScaledSpace.LocalToScaledSpace(reference_body.position);
+          draw_position = current_scaled_pos - reference_scaled_position;
+        }
+
+        // 1. GPGPU Procedural Indirect Rendering (显存直出，零 CPU 拷贝)
+        if (GpuTrajectoryRenderer.IsGpuRenderingEnabled && compact_vertices != null) {
+          UnityEngine.Camera cam = PlanetariumCamera.Camera;
+          if (cam != null && GpuTrajectoryRenderer.RenderTrajectory(
+                  compact_vertices,
+                  vertex_count,
+                  base_color,
+                  style,
+                  cam,
+                  draw_position)) {
+            return;
+          }
+        }
+
+        // 2. 原生/回退渲染：经典 Unity CPU Mesh 绘制
         EnsureMesh();
         if (mesh != null) {
-          PerformanceProbe.RecordCacheHit();
-          PerformanceProbe.RecordVertices(vertex_count);
-          HeterogeneousDynamicGovernor.RecordGpuDispatch();
-
-          UnityEngine.Vector3 draw_position = UnityEngine.Vector3.zero;
-          if (reference_body != null) {
-            UnityEngine.Vector3 current_scaled_pos =
-                ScaledSpace.LocalToScaledSpace(reference_body.position);
-            draw_position = current_scaled_pos - reference_scaled_position;
-          }
-
           UnityEngine.Graphics.DrawMesh(
               mesh,
               draw_position,

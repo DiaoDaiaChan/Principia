@@ -425,6 +425,15 @@ class FlightPlanner : RequiredVesselSupervisedWindowRenderer {
                                      new[]{ centre }),
                 style: Style.MiddleLeftAligned(UnityEngine.GUI.skin.label,
                                                Height(2)));
+            bool is_native = HeterogeneousDynamicGovernor.IsNativeDoublePrecision;
+            string mode_btn = is_native
+                ? "<color=#55ff55>模式: 原生双精度</color>"
+                : "<color=#55ffff>模式: GPGPU异构</color>";
+            if (UnityEngine.GUILayout.Button(mode_btn, GUILayoutWidth(4))) {
+              HeterogeneousDynamicGovernor.PipelineMode = is_native
+                  ? ComputationPipelineMode.GpuAccelerated
+                  : ComputationPipelineMode.NativeDoublePrecision;
+            }
             using (new UnityEngine.GUILayout.VerticalScope()) {
               double optimization_altitude = optimization_altitude_;
               double? optimization_inclination_in_degrees =

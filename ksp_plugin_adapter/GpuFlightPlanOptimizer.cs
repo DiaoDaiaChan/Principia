@@ -77,20 +77,22 @@ public static class GpuFlightPlanOptimizer {
       Vessel vessel,
       CelestialBody target_celestial,
       Action<CandidateBurnResult> on_success) {
-    ComputeShader cs = PrincipiaGPGPUContext.flight_plan_shooting_optimizer;
-    bool prefer_cpu = !HeterogeneousDynamicGovernor.ShouldDispatchToGpu(TotalCandidates) || cs == null;
+    using (PerformanceProbe.Measure(ProbeCategory.FlightPlanEvaluation)) {
+      ComputeShader cs = PrincipiaGPGPUContext.flight_plan_shooting_optimizer;
+      bool prefer_cpu = !HeterogeneousDynamicGovernor.ShouldDispatchToGpu(TotalCandidates) || cs == null;
 
-    try {
-      EnsureBuffersAllocated();
-      IsOptimizing = true;
-      float start_time = Time.realtimeSinceStartup;
+      Vector3 vessel_pos = Vector3.zero;
+      Vector3 vessel_vel = Vector3.zero;
+      int target_index = 0;
+      float target_r = 100000.0f;
+      int step_count = 256;
+      float dt = 14.0f;
 
-      int k_grid = cs.FindKernel("GenerateCandidateGrid");
-      int k_eval = cs.FindKernel("EvaluateTrajectoryBundle");
-      int k_reduce = cs.FindKernel("ParallelReduceOptimalBurn");
-      int k_reduce_final = cs.FindKernel("ParallelReduceOptimalBurnFinal");
+      try {
+        IsOptimizing = true;
+        float start_time = Time.realtimeSinceStartup;
 
-      CelestialBody central_body = target_celestial;
+        CelestialBody central_body = target_celestial;
       if (central_body == null) {
         central_body = vessel?.mainBody ??
                        FlightGlobals.currentMainBody ??
@@ -102,8 +104,6 @@ public static class GpuFlightPlanOptimizer {
       Vector3 central_body_pos = central_body != null ? (Vector3)central_body.position : Vector3.zero;
       Vector3 central_body_vel = central_body?.orbit != null ? (Vector3)central_body.orbit.GetVel() : Vector3.zero;
 
-      Vector3 vessel_pos = Vector3.zero;
-      Vector3 vessel_vel = Vector3.zero;
       if (vessel != null) {
         vessel_pos = (Vector3)vessel.GetWorldPos3D() - central_body_pos;
         vessel_vel = (Vector3)vessel.GetObtVelocity();
@@ -115,7 +115,7 @@ public static class GpuFlightPlanOptimizer {
       }
       var bodies = bodies_scratch_;
       int celestial_count = 1;
-      int target_index = 0;
+      target_index = 0;
 
       bodies[0] = new CelestialBodyState {
         position = Vector3.zero,
@@ -137,7 +137,7 @@ public static class GpuFlightPlanOptimizer {
       celestial_bodies_buffer_.SetData(bodies);
 
       // Dynamic integration horizon based on transfer geometry or orbital period
-      int step_count = 256;
+      step_count = 256;
       double flight_time = 3600.0;
       if (target_celestial != null && vessel != null) {
         double dist = (vessel.GetWorldPos3D() - target_celestial.position).magnitude;
@@ -150,10 +150,10 @@ public static class GpuFlightPlanOptimizer {
         flight_time = Math.Max(3600.0, vessel.orbit.period * 1.2);
       }
       flight_time = Mathf.Clamp((float)flight_time, 1800.0f, 86400.0f * 365.0f);
-      float dt = (float)(flight_time / step_count);
+      dt = (float)(flight_time / step_count);
 
       // Target periapsis radius
-      float target_r = 100000.0f;
+      target_r = 100000.0f;
       if (target_celestial != null) {
         float safe_alt = (float)(target_celestial.atmosphere ? target_celestial.atmosphereDepth * 1.2 : target_celestial.Radius * 0.1);
         target_r = (float)target_celestial.Radius + Mathf.Max(10000.0f, safe_alt);
@@ -221,6 +221,12 @@ public static class GpuFlightPlanOptimizer {
         }
       }
 
+      EnsureBuffersAllocated();
+      int k_grid = cs.FindKernel("GenerateCandidateGrid");
+      int k_eval = cs.FindKernel("EvaluateTrajectoryBundle");
+      int k_reduce = cs.FindKernel("ParallelReduceOptimalBurn");
+      int k_reduce_final = cs.FindKernel("ParallelReduceOptimalBurnFinal");
+
       cs.SetVector("_BaseBurnTimes", new Vector4(initial_time, span_t, vessel_mass, vessel_thrust));
       cs.SetVector("_BaseDeltaV", new Vector4(base_delta_v.x, base_delta_v.y, base_delta_v.z, vessel_isp));
       cs.SetVector("_SpanDeltaV", new Vector4(span_dv.x, span_dv.y, span_dv.z, target_r));
@@ -286,16 +292,16 @@ public static class GpuFlightPlanOptimizer {
       IsOptimizing = false;
       try {
         bool cpu_ok = GpuFlightPlanShootingOptimizer.OptimizeManoeuvre(
-            Vector3.zero,
-            Vector3.zero,
+            vessel_pos,
+            vessel_vel,
             initial_time,
             base_delta_v,
             span_dv,
             span_t,
-            0,
-            100000.0f,
-            256,
-            14.0f,
+            target_index,
+            target_r,
+            step_count,
+            dt,
             out var eval);
         if (cpu_ok) {
           on_success?.Invoke(new CandidateBurnResult {
@@ -314,6 +320,7 @@ public static class GpuFlightPlanOptimizer {
         // Fallback failed
       }
       return false;
+    }
     }
   }
 }
