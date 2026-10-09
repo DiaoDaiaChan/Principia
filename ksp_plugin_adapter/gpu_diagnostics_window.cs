@@ -22,6 +22,7 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
 
   public static string LastDmaBenchmarkResult { get; private set; } = "尚未执行基准测速 (点击下方按钮立即测试)";
   public static bool IsDmaBenchmarking { get; private set; } = false;
+  private float manual_slider_ratio_ = 0.5f;
 
   private const int ColumnWidthModule = 210;
   private const int ColumnWidthCategory = 70;
@@ -148,6 +149,85 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
   private void RenderDmaAndHardwareTab() {
     tab0_scroll_position_ = GUILayout.BeginScrollView(tab0_scroll_position_, GUILayout.Height(500));
     using (new GUILayout.VerticalScope()) {
+      // 0A. C++ Native Hardware Calibration Profile Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        var prof = HeterogeneousWorkloadBalancer.CurrentProfile;
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label("<b>C++ 原生全硬件基准画像 (Native Hardware Profile):</b>", GUILayout.ExpandWidth(true));
+          if (GUILayout.Button("⚡ 重新执行启动硬件校准", GUILayoutWidth(4))) {
+            HeterogeneousWorkloadBalancer.RunCalibration();
+          }
+        }
+
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label(
+              $"CPU 物理积分算力: <b><color=#55ff55>{prof.cpu_fp64_gflops_score:N0}</color></b> (千步/s) | GPU 算力估值: <b><color=#55ffff>{prof.primary_gpu_compute_score:N0}</color></b> | 总线带宽: <b>{prof.dma_bandwidth_gbps:F2} GB/s</b> | 发现设备: <b>{prof.adapter_count}</b> 张",
+              GUILayout.ExpandWidth(true));
+        }
+
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label($"<b>硬件拓扑:</b> {HeterogeneousWorkloadBalancer.TopologyDescription}", GUILayout.ExpandWidth(true));
+        }
+      }
+
+      // 0B. Scene-Aware Dynamic Balancer Radar Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        GUILayout.Label("<b>场景感知闭环自适应平衡器 (Scene-Aware Dynamic Balancer):</b>");
+
+        using (new GUILayout.HorizontalScope()) {
+          GUILayout.Label($"<b>当前感知场景:</b> <color=#55ffff>{HeterogeneousWorkloadBalancer.SceneDescription}</color>", GUILayout.ExpandWidth(true));
+          string pressure_badge = HeterogeneousWorkloadBalancer.IsRenderPressureActive
+              ? "<color=orange>[独显渲染保护已激活 (GPU 物理已削减以保 60/120 FPS)]</color>"
+              : "<color=lime>[负载畅通 (动态自适应切片)]</color>";
+          GUILayout.Label(pressure_badge);
+        }
+
+        int cpu_pct = (int)(HeterogeneousWorkloadBalancer.CpuWorkloadRatio * 100.0);
+        int gpu_pct = (int)(HeterogeneousWorkloadBalancer.GpuWorkloadRatio * 100.0);
+        int cpu_blocks = Mathf.Clamp((int)(HeterogeneousWorkloadBalancer.CpuWorkloadRatio * 20), 0, 20);
+        int gpu_blocks = 20 - cpu_blocks;
+        string bar_cpu = new string('█', cpu_blocks);
+        string bar_gpu = new string('█', gpu_blocks);
+
+        using (new GUILayout.HorizontalScope(GUI.skin.box)) {
+          GUILayout.Label(
+              $"<b>实时算力分配:</b>  CPU <color=#55ff55>[{bar_cpu}] {cpu_pct}%</color>  |  GPU <color=#55ffff>[{bar_gpu}] {gpu_pct}%</color>",
+              GUILayout.ExpandWidth(true));
+        }
+
+        using (new GUILayout.HorizontalScope()) {
+          bool is_bypassed = HeterogeneousWorkloadBalancer.IsMasterBypass;
+          bool new_bypass = GUILayout.Toggle(
+              is_bypassed,
+              "● 100% 经典纯 CPU 完全旁路 (Zero-Friction Master Bypass)",
+              GUI.skin.toggle);
+          if (new_bypass != is_bypassed) {
+            HeterogeneousWorkloadBalancer.SetMasterBypass(new_bypass);
+          }
+
+          bool is_manual = HeterogeneousWorkloadBalancer.IsManualOverride;
+          bool new_manual = GUILayout.Toggle(
+              is_manual,
+              "🔧 锁定手动分配比例",
+              GUI.skin.toggle);
+          if (new_manual != is_manual) {
+            HeterogeneousWorkloadBalancer.SetManualOverride(new_manual, manual_slider_ratio_);
+          }
+        }
+
+        if (HeterogeneousWorkloadBalancer.IsManualOverride) {
+          using (new GUILayout.HorizontalScope()) {
+            GUILayout.Label("手动 GPU 占比:", GUILayout.Width(100));
+            float new_val = GUILayout.HorizontalSlider(manual_slider_ratio_, 0.0f, 1.0f);
+            if (Mathf.Abs(new_val - manual_slider_ratio_) > 0.01f) {
+              manual_slider_ratio_ = new_val;
+              HeterogeneousWorkloadBalancer.SetManualOverride(true, manual_slider_ratio_);
+            }
+            GUILayout.Label($"{(int)(manual_slider_ratio_ * 100)}%", GUILayout.Width(45));
+          }
+        }
+      }
+
       // 1. Adapter Selection Card
       using (new GUILayout.VerticalScope(GUI.skin.box)) {
         GUILayout.Label("<b>目标运算显卡路由 (GPU Compute Router):</b>");
@@ -178,64 +258,7 @@ internal class GpuDiagnosticsWindow : SupervisedWindowRenderer {
             "<size=10><color=#aaffaa>💡 异构调度策略: 若机器具备双显卡，强烈推荐指定至 <b>核显 (Intel UHD/Iris / AMD APU)</b> 承载 GPGPU 轨道打靶与推演，使独立显卡 100% 算力全权留给游戏 3D 渲染与着色！</color></size>");
       }
 
-      // 2. Hardware Startup Profiler & Benchmark Scores Card
-      using (new GUILayout.VerticalScope(GUI.skin.box)) {
-        GUILayout.Label("<b>全设备硬件性能画像与拓扑 (Hardware Profiling & Calibration):</b>");
-        GUILayout.Label(HardwareStartupProfiler.CalibrationSummary);
-
-        using (new GUILayout.HorizontalScope()) {
-          string btn_prof_txt = HardwareStartupProfiler.IsCalibrating
-              ? "⏳ 正在探测全设备基准..."
-              : "⚡ 重新校准全设备硬件画像 (Re-Calibrate)";
-          if (GUILayout.Button(btn_prof_txt, GUILayout.Height(26))) {
-            HardwareStartupProfiler.RunCalibrationBenchmark();
-          }
-
-          if (HardwareStartupProfiler.Topology == HardwareTopologyType.DualGpuAsymmetric) {
-            if (GUILayout.Button("🎯 自动应用推荐路由 (核显做物理/独显做3D)", GUILayout.Height(26))) {
-              HardwareStartupProfiler.ApplyRecommendedAdapter();
-            }
-          }
-        }
-      }
-
-      // 3. Scene-Aware Dynamic Workload Balancer Card
-      using (new GUILayout.VerticalScope(GUI.skin.box)) {
-        GUILayout.Label("<b>场景感知与运行时动态负载均衡 (Scene-Aware Dynamic Balancer):</b>");
-        using (new GUILayout.HorizontalScope()) {
-          GUILayout.Label($"<b>当前场景感知:</b> {HeterogeneousWorkloadBalancer.SceneProfileBadge}", GUILayout.Width(260));
-          GUILayout.Label($"<b>实时算力切片分配:</b> {HeterogeneousWorkloadBalancer.AllocationSummary}", GUILayout.ExpandWidth(true));
-        }
-
-        float gpu_ratio = HeterogeneousWorkloadBalancer.GpuWorkloadRatio;
-        int filled = Mathf.Clamp(Mathf.RoundToInt(gpu_ratio * 30), 0, 30);
-        string alloc_bar = "[" + new string('█', filled) + new string('░', 30 - filled) + $"] GPU: {gpu_ratio * 100.0f:F0}%";
-        GUILayout.Label($"<color=#55ffff>动态分配比:</color> {alloc_bar}");
-
-        using (new GUILayout.HorizontalScope()) {
-          bool is_auto = !HeterogeneousWorkloadBalancer.ForceManualRatio;
-          if (GUILayout.Toggle(is_auto, "自适应动态平衡 (Auto Adaptive)", GUI.skin.toggle)) {
-            HeterogeneousWorkloadBalancer.ForceManualRatio = false;
-          }
-          if (GUILayout.Toggle(!is_auto, "手动固定分配 (Manual Override)", GUI.skin.toggle)) {
-            HeterogeneousWorkloadBalancer.ForceManualRatio = true;
-          }
-
-          if (HeterogeneousWorkloadBalancer.ForceManualRatio) {
-            if (GUILayout.Button("CPU 70%", GUILayout.Width(65))) {
-              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.30f;
-            }
-            if (GUILayout.Button("平衡 50%", GUILayout.Width(65))) {
-              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.50f;
-            }
-            if (GUILayout.Button("GPU 70%", GUILayout.Width(65))) {
-              HeterogeneousWorkloadBalancer.ManualGpuRatio = 0.70f;
-            }
-          }
-        }
-      }
-
-      // 4. DMA Transfer Modes Hot-Switching Card
+      // 2. DMA Transfer Modes Hot-Switching Card
       using (new GUILayout.VerticalScope(GUI.skin.box)) {
         GUILayout.Label("<b>DMA 传输模式热切换 (DMA Transfer Modes):</b>");
         DmaTransferMode current_dma_mode = Interface.GpuGetDmaMode();

@@ -415,6 +415,33 @@ internal static partial class Interface {
         out double bandwidth_gigabytes_per_second);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool RunHardwareCalibrationDelegate(out HardwareProfile profile);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool GetHardwareProfileDelegate(out HardwareProfile profile);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void UpdateSceneFeedbackDelegate(
+        int scene_type, double render_time_ms, double physics_time_ms);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GetWorkloadBalanceStateDelegate(out WorkloadBalanceState state);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void SetWorkloadBypassDelegate(
+        [MarshalAs(UnmanagedType.I1)] bool master_bypass, int module_mask);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void SetManualWorkloadOverrideDelegate(
+        [MarshalAs(UnmanagedType.I1)] bool enable_manual, double manual_gpu_ratio);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void PartitionVesselBatchDelegate(
+        int total_vessels, out int cpu_count, out int gpu_count);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int ExportChebyshevSegmentsDelegate(
         IntPtr planetarium,
         IntPtr plugin,
@@ -535,6 +562,27 @@ internal static partial class Interface {
 
     public GpuBenchmarkDmaTransferDelegate GpuBenchmarkDmaTransfer =
         Loader.LoadOptionalFunction<GpuBenchmarkDmaTransferDelegate>("principia__GpuBenchmarkDmaTransfer");
+
+    public RunHardwareCalibrationDelegate RunHardwareCalibration =
+        Loader.LoadOptionalFunction<RunHardwareCalibrationDelegate>("principia__RunHardwareCalibration");
+
+    public GetHardwareProfileDelegate GetHardwareProfile =
+        Loader.LoadOptionalFunction<GetHardwareProfileDelegate>("principia__GetHardwareProfile");
+
+    public UpdateSceneFeedbackDelegate UpdateSceneFeedback =
+        Loader.LoadOptionalFunction<UpdateSceneFeedbackDelegate>("principia__UpdateSceneFeedback");
+
+    public GetWorkloadBalanceStateDelegate GetWorkloadBalanceState =
+        Loader.LoadOptionalFunction<GetWorkloadBalanceStateDelegate>("principia__GetWorkloadBalanceState");
+
+    public SetWorkloadBypassDelegate SetWorkloadBypass =
+        Loader.LoadOptionalFunction<SetWorkloadBypassDelegate>("principia__SetWorkloadBypass");
+
+    public SetManualWorkloadOverrideDelegate SetManualWorkloadOverride =
+        Loader.LoadOptionalFunction<SetManualWorkloadOverrideDelegate>("principia__SetManualWorkloadOverride");
+
+    public PartitionVesselBatchDelegate PartitionVesselBatch =
+        Loader.LoadOptionalFunction<PartitionVesselBatchDelegate>("principia__PartitionVesselBatch");
 
     public ExportChebyshevSegmentsDelegate ExportChebyshevSegments =
         Loader.LoadOptionalFunction<ExportChebyshevSegmentsDelegate>("principia__ExportChebyshevSegments");
@@ -699,6 +747,51 @@ internal static partial class Interface {
     duration_seconds = 0.0;
     bandwidth_gigabytes_per_second = 0.0;
     return false;
+  }
+
+  internal static bool RunHardwareCalibration(out HardwareProfile profile) {
+    if (symbols_?.RunHardwareCalibration != null) {
+      return symbols_.RunHardwareCalibration(out profile);
+    }
+    profile = default(HardwareProfile);
+    return false;
+  }
+
+  internal static bool GetHardwareProfile(out HardwareProfile profile) {
+    if (symbols_?.GetHardwareProfile != null) {
+      return symbols_.GetHardwareProfile(out profile);
+    }
+    profile = default(HardwareProfile);
+    return false;
+  }
+
+  internal static void UpdateSceneFeedback(KspSceneType scene_type, double render_time_ms, double physics_time_ms) {
+    symbols_?.UpdateSceneFeedback?.Invoke((int)scene_type, render_time_ms, physics_time_ms);
+  }
+
+  internal static void GetWorkloadBalanceState(out WorkloadBalanceState state) {
+    if (symbols_?.GetWorkloadBalanceState != null) {
+      symbols_.GetWorkloadBalanceState(out state);
+      return;
+    }
+    state = default(WorkloadBalanceState);
+  }
+
+  internal static void SetWorkloadBypass(bool master_bypass, int module_mask = ~0) {
+    symbols_?.SetWorkloadBypass?.Invoke(master_bypass, module_mask);
+  }
+
+  internal static void SetManualWorkloadOverride(bool enable_manual, double manual_gpu_ratio) {
+    symbols_?.SetManualWorkloadOverride?.Invoke(enable_manual, manual_gpu_ratio);
+  }
+
+  internal static void PartitionVesselBatch(int total_vessels, out int cpu_count, out int gpu_count) {
+    if (symbols_?.PartitionVesselBatch != null) {
+      symbols_.PartitionVesselBatch(total_vessels, out cpu_count, out gpu_count);
+      return;
+    }
+    cpu_count = total_vessels;
+    gpu_count = 0;
   }
 
   internal static int ExportChebyshevSegments(

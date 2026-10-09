@@ -392,7 +392,6 @@ public static class PerformanceProbe {
           GUILayout.Label(cached_gc_str_);
         }
         GUILayout.Label("<color=grey><i>(Principia 零拷贝轨迹通道产生 GC: 0 B/f)</i></color>");
-        GUILayout.Label($"<b>异构负载均衡:</b> {HeterogeneousWorkloadBalancer.SceneProfileBadge} | {HeterogeneousWorkloadBalancer.AllocationSummary}");
       }
 
       // 2. Realtime Telemetry Controls Card
@@ -492,6 +491,18 @@ public static class PerformanceProbe {
   private static void RenderGpuDmaTab() {
     scroll_pos_ = GUILayout.BeginScrollView(scroll_pos_, GUILayout.Height(480));
     using (new GUILayout.VerticalScope()) {
+      // Scene-Aware Dynamic Balancer Card
+      using (new GUILayout.VerticalScope(GUI.skin.box)) {
+        GUILayout.Label("<b>自适应场景感知与算力动态平衡 (Workload Balancer):</b>");
+        GUILayout.Label($"<b>当前感知场景:</b> <color=#55ffff>{HeterogeneousWorkloadBalancer.SceneDescription}</color>");
+        int cpu_pct = (int)(HeterogeneousWorkloadBalancer.CpuWorkloadRatio * 100.0);
+        int gpu_pct = (int)(HeterogeneousWorkloadBalancer.GpuWorkloadRatio * 100.0);
+        string pressure_tag = HeterogeneousWorkloadBalancer.IsRenderPressureActive
+            ? " <color=orange>[渲染保护生效中]</color>"
+            : "";
+        GUILayout.Label($"<b>实时算力切片:</b> CPU <b>{cpu_pct}%</b> | GPU <b>{gpu_pct}%</b>{pressure_tag}");
+      }
+
       // GPU Device Card
       using (new GUILayout.VerticalScope(GUI.skin.box)) {
         GUILayout.Label("<b>GPU 硬件与加速能力 (GPU Hardware):</b>");
@@ -571,13 +582,6 @@ public static class PerformanceProbe {
         GUILayout.Label("<b>异构调度总督 (Heterogeneous Governor):</b>");
         GUILayout.Label(cached_governor_mode_str_);
         GUILayout.Label(cached_governor_dispatch_str_);
-      }
-
-      // Dynamic Balancer & Scene Profile Card
-      using (new GUILayout.VerticalScope(GUI.skin.box)) {
-        GUILayout.Label("<b>场景感知自适应负载均衡 (Dynamic Balancer):</b>");
-        GUILayout.Label($"当前场景感知: {HeterogeneousWorkloadBalancer.SceneProfileBadge}");
-        GUILayout.Label($"动态切片分配: {HeterogeneousWorkloadBalancer.AllocationSummary}");
       }
     }
     GUILayout.EndScrollView();

@@ -1428,7 +1428,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     Log.Info("principia.ksp_plugin_adapter.PrincipiaPluginAdapter.OnAwake()");
     PrincipiaGPGPUContext.Initialize();
     VacuumBypassGovernor.Initialize();
-    HardwareStartupProfiler.RunCalibrationBenchmark();
 
     LoadTextureIfExists(out compass_navball_texture_, "navball_compass.png");
     LoadTextureOrDie(out inertial_navball_texture_, "navball_inertial.png");
@@ -1843,6 +1842,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       HeterogeneousDynamicGovernor.UpdateFrameMetrics(
           render_time_ms: frame_ms,
           compute_time_ms: GpuFlightPlanOptimizer.LastOptimizationDurationMs);
+      HeterogeneousWorkloadBalancer.UpdateFrame(
+          render_time_ms: frame_ms,
+          physics_time_ms: GpuFlightPlanShootingOptimizer.LastDurationMs);
     }
     PerformanceProbe.UpdateFrameMetrics();
   }

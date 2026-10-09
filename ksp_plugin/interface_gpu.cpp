@@ -19,10 +19,12 @@
 #include "ksp_plugin/flight_plan.hpp"
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/gpu_interop_types.hpp"
+#include "ksp_plugin/hardware_profiler.hpp"
 #include "ksp_plugin/interface.hpp"
 #include "ksp_plugin/planetarium.hpp"
 #include "ksp_plugin/plugin.hpp"
 #include "ksp_plugin/vessel.hpp"
+#include "ksp_plugin/workload_balancer.hpp"
 #include "numerics/elementary_functions.hpp"
 #include "physics/degrees_of_freedom.hpp"
 #include "physics/discrete_trajectory.hpp"
@@ -50,10 +52,15 @@ using ksp_plugin::_frames::NavigationManœuvre;
 using ksp_plugin::_gpu_interop_types::ChebyshevSegmentData;
 using ksp_plugin::_gpu_interop_types::DmaTransferMode;
 using ksp_plugin::_gpu_interop_types::GpuAdapterInfo;
+using ksp_plugin::_gpu_interop_types::HardwareProfile;
+using ksp_plugin::_gpu_interop_types::KspSceneType;
 using ksp_plugin::_gpu_interop_types::OptimalCandidateBurn;
 using ksp_plugin::_gpu_interop_types::OrbitalState64;
 using ksp_plugin::_gpu_interop_types::ShootingContextGpu;
+using ksp_plugin::_gpu_interop_types::WorkloadBalanceState;
 using ksp_plugin::_gpu_interop_types::kMaxCelestialsForGpu;
+using ksp_plugin::_hardware_profiler::HardwareProfiler;
+using ksp_plugin::_workload_balancer::WorkloadBalancer;
 using ksp_plugin::_planetarium::Planetarium;
 using ksp_plugin::_plugin::Plugin;
 using ksp_plugin::_vessel::Vessel;
@@ -187,6 +194,64 @@ PRINCIPIA_EXPORT bool __cdecl principia__GpuBenchmarkDmaTransfer(
   DxgiAdapterFactory::Instance().RecordDmaWrite(total_bytes, duration_s);
 
   return true;
+}
+
+//=============================================================================
+// Hardware Profiling, Calibration & Dynamic Workload Balancer
+//=============================================================================
+
+PRINCIPIA_EXPORT bool __cdecl principia__RunHardwareCalibration(
+    HardwareProfile* const out_profile) {
+  if (out_profile == nullptr) {
+    return false;
+  }
+  *out_profile = HardwareProfiler::Instance().RunCalibration();
+  return true;
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__GetHardwareProfile(
+    HardwareProfile* const out_profile) {
+  if (out_profile == nullptr) {
+    return false;
+  }
+  *out_profile = HardwareProfiler::Instance().GetProfile();
+  return true;
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__UpdateSceneFeedback(
+    int const scene_type,
+    double const render_time_ms,
+    double const physics_time_ms) {
+  WorkloadBalancer::Instance().UpdateSceneFeedback(
+      scene_type, render_time_ms, physics_time_ms);
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__GetWorkloadBalanceState(
+    WorkloadBalanceState* const out_state) {
+  if (out_state == nullptr) {
+    return;
+  }
+  *out_state = WorkloadBalancer::Instance().GetState();
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__SetWorkloadBypass(
+    bool const master_bypass,
+    int const module_mask) {
+  WorkloadBalancer::Instance().SetMasterBypass(master_bypass, module_mask);
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__SetManualWorkloadOverride(
+    bool const enable_manual,
+    double const manual_gpu_ratio) {
+  WorkloadBalancer::Instance().SetManualOverride(enable_manual, manual_gpu_ratio);
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__PartitionVesselBatch(
+    int const total_vessels,
+    int* const out_cpu_count,
+    int* const out_gpu_count) {
+  WorkloadBalancer::Instance().PartitionVesselBatch(
+      total_vessels, out_cpu_count, out_gpu_count);
 }
 
 //=============================================================================

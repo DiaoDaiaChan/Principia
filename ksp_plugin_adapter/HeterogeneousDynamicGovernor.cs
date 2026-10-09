@@ -106,16 +106,13 @@ public static class HeterogeneousDynamicGovernor {
     is_backpressure_active_ =
         smoothed_gpu_render_time_ms_ > RenderTimeRedlineMs ||
         smoothed_gpu_compute_time_ms_ > GpuComputeBudgetMs;
-
-    // Drive dynamic scene-aware balancer loop
-    HeterogeneousWorkloadBalancer.Update(Time.unscaledDeltaTime, smoothed_gpu_render_time_ms_);
   }
 
   // Millisecond-level dynamic routing decision
   public static bool ShouldDispatchToGpu(int task_item_count) {
-    // If in Master Bypass or Native Double Precision mode, strictly reject GPU dispatch.
+    // If in Native Double Precision mode, strictly reject GPU dispatch.
     // Guarantees that the classic, native CPU FP64 pipeline is 100% preserved and untouched!
-    if (IsNativeDoublePrecision || HeterogeneousWorkloadBalancer.IsMasterBypassActive) {
+    if (IsNativeDoublePrecision) {
       CpuDispatchCount++;
       return false;
     }
@@ -126,12 +123,6 @@ public static class HeterogeneousDynamicGovernor {
     }
 
     if (!PrincipiaGPGPUContext.SupportsCompute) {
-      CpuDispatchCount++;
-      return false;
-    }
-
-    // Dynamic Balancer throttle check
-    if (HeterogeneousWorkloadBalancer.GpuWorkloadRatio <= 0.05f) {
       CpuDispatchCount++;
       return false;
     }

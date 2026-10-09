@@ -87,5 +87,47 @@ public struct ShootingContextGpu {
   public CelestialBodyGpuState[] celestials;
 }
 
+public enum KspSceneType : int {
+  FlightAtmospheric = 0,   // Atmospheric launch/flight (high rendering load & part count)
+  FlightOrbital     = 1,   // Orbital vacuum cruise (stable)
+  TrackingStation   = 2,   // Tracking station (low rendering, high background physics)
+  SpaceCenter       = 3,   // Space center KSC view
+  MapView           = 4,   // Map view (trajectory rendering dominant)
+  Other             = 5
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct HardwareProfile {
+  public double cpu_fp64_gflops_score;
+  public double primary_gpu_compute_score;
+  public double dma_bandwidth_gbps;
+  public int adapter_count;
+  public int recommended_compute_adapter;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool has_integrated_gpu;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool has_discrete_gpu;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_calibrated;
+  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 5)]
+  private byte[] padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct WorkloadBalanceState {
+  public double dynamic_gpu_ratio;
+  public double smoothed_render_ms;
+  public double smoothed_physics_ms;
+  public int current_scene;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_master_bypassed;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_render_pressure_active;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_manual_override;
+  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 1)]
+  private byte[] padding;
+}
+
 } // namespace ksp_plugin_adapter
 } // namespace principia

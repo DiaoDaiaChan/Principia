@@ -109,6 +109,43 @@ inline double FromDoubleSingle(DoubleSingle const& ds) {
   return static_cast<double>(ds.hi) + static_cast<double>(ds.lo);
 }
 
+// KSP scene types for scene-aware workload adaptation.
+enum class KspSceneType : std::int32_t {
+  FlightAtmospheric = 0,   // Atmospheric launch/flight (high rendering load & part count)
+  FlightOrbital     = 1,   // Orbital vacuum cruise (stable)
+  TrackingStation   = 2,   // Tracking station (low rendering, high background physics)
+  SpaceCenter       = 3,   // Space center KSC view
+  MapView           = 4,   // Map view (trajectory rendering dominant)
+  Other             = 5
+};
+
+// Full hardware calibration profile.
+struct alignas(8) HardwareProfile {
+  double cpu_fp64_gflops_score;      // CPU FP64 throughput score (k steps / s)
+  double primary_gpu_compute_score;  // Primary GPU compute score
+  double dma_bandwidth_gbps;         // PCIe / UMA measured DMA bandwidth (GB/s)
+  std::int32_t adapter_count;        // Discovered GPU count
+  std::int32_t recommended_compute_adapter; // Recommended adapter index (-1 for auto/default)
+  bool has_integrated_gpu;           // System has iGPU (Intel UHD/Iris or AMD APU)
+  bool has_discrete_gpu;             // System has dGPU (NVIDIA/AMD)
+  bool is_calibrated;                // True if calibrated
+  std::uint8_t padding[5];           // Pad to 8-byte alignment (40 bytes total)
+};
+static_assert(sizeof(HardwareProfile) == 40, "HardwareProfile must be 40 bytes.");
+
+// Real-time workload balance state.
+struct alignas(8) WorkloadBalanceState {
+  double dynamic_gpu_ratio;          // Dynamically calculated GPU workload ratio [0.0, 1.0]
+  double smoothed_render_ms;         // EWMA smoothed render time (ms)
+  double smoothed_physics_ms;        // EWMA smoothed physics time (ms)
+  std::int32_t current_scene;        // KspSceneType
+  bool is_master_bypassed;           // 100% classic CPU native bypass
+  bool is_render_pressure_active;    // GPU render frame protection throttled
+  bool is_manual_override;           // User manually locked ratio
+  std::uint8_t padding[1];           // Pad to 8-byte alignment (32 bytes total)
+};
+static_assert(sizeof(WorkloadBalanceState) == 32, "WorkloadBalanceState must be 32 bytes.");
+
 }  // namespace internal
 
 using internal::kMaxChebyshevDegree;
@@ -124,6 +161,9 @@ using internal::DsVec3;
 using internal::OrbitalState64;
 using internal::ToDoubleSingle;
 using internal::FromDoubleSingle;
+using internal::KspSceneType;
+using internal::HardwareProfile;
+using internal::WorkloadBalanceState;
 
 }  // namespace _gpu_interop_types
 }  // namespace ksp_plugin

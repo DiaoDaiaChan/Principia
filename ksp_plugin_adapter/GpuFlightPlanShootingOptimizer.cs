@@ -152,13 +152,8 @@ internal static class GpuFlightPlanShootingOptimizer {
     best_result = default(CandidateBurnEvaluation);
 
     DmaTransferMode dma_mode = Interface.GpuGetDmaMode();
-    bool should_offload_gpu =
-        dma_mode != DmaTransferMode.PureCpu &&
-        HeterogeneousWorkloadBalancer.ShouldOffloadShootingToGpu() &&
-        IsGpuAcceleratedSupported;
-
-    if (!should_offload_gpu) {
-      // Tier 3: Pure CPU Native or Balancer Throttled mode
+    if (dma_mode == DmaTransferMode.PureCpu) {
+      // Tier 3: Pure CPU Native mode
       success = DispatchCpuOptimization(
           initial_pos,
           initial_vel,
@@ -173,7 +168,7 @@ internal static class GpuFlightPlanShootingOptimizer {
           out best_result);
       cpu_fallback_dispatches_++;
       last_used_gpu_ = false;
-    } else {
+    } else if (IsGpuAcceleratedSupported) {
       try {
         success = DispatchGpuOptimization(
             initial_pos,
