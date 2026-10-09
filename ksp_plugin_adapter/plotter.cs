@@ -153,6 +153,7 @@ class Plotter {
       PlotCelestialTrajectories(planetarium, main_vessel_guid, history_length);
     }
     using (PerformanceProbe.Measure(ProbeCategory.VesselPlot)) {
+      vessel_refresh_budget_ = MaxVesselRefreshesPerFrame;
       PlotVesselTrajectories(planetarium, main_vessel_guid, history_length,
                              prediction_t_max, flight_plan_t_max);
     }
@@ -182,21 +183,21 @@ class Plotter {
     // keep the amortized rebuild overhead below ~8% of the frame time,
     // bounded to [0.20 s, 1.00 s].
     double psychohistory_interval = Math.Max(
-        is_warping ? 0.25 : 0.20,
+        is_warping ? 0.50 : 0.40,
         Math.Min(1.0, psychohistory_rebuild_ms_ema_ * 0.08));
 
     if (main_vessel_guid != null) {
       // Psychohistory (绿色历史轨迹):
-      // Rebuild at most once per interval; between rebuilds the last mesh is
-      // drawn with the anchor offset.  An invalidated entry keeps drawing
-      // its stale mesh until the interval elapses, so repeated
-      // InvalidateAll() calls cannot force a rebuild every frame.
-      if (!NeedsRebuild(psychohistory_entry_,
-                        psychohistory_interval,
-                        time_is_advancing,
-                        current_realtime)) {
-        psychohistory_entry_.Draw();
-      } else {
+      // Rebuild at most once per interval, budgeted to avoid multi-rebuild frame spikes.
+      bool psychohistory_needs_rebuild = NeedsRebuild(psychohistory_entry_,
+                                                      psychohistory_interval,
+                                                      time_is_advancing,
+                                                      current_realtime);
+      if (psychohistory_needs_rebuild &&
+          (!psychohistory_entry_.has_content || vessel_refresh_budget_ > 0)) {
+        if (psychohistory_entry_.has_content) {
+          --vessel_refresh_budget_;
+        }
         long rebuild_t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         PlotPsychohistoryDirect(
             planetarium,
@@ -216,26 +217,23 @@ class Plotter {
             1000.0 / System.Diagnostics.Stopwatch.Frequency;
         psychohistory_rebuild_ms_ema_ =
             psychohistory_rebuild_ms_ema_ * 0.9 + rebuild_ms * 0.1;
-        psychohistory_entry_.Draw();
       }
+      psychohistory_entry_.Draw();
 
       // Prediction (粉红色实际预测轨迹):
       // Once calculated by C++ numerical integration, the prediction trajectory curve in 3D space
       // is completely static! It is REUSED from GPU VRAM across all frames.
-      // Re-evaluated ONLY when:
-      //   1. Explicitly invalidated by UpdatePredictions() (numerical integration step every 2.5s / 0.1s burn).
-      //   2. Reference frame or active vessel changes (InvalidateAll).
-      //   3. prediction_t_max changes (collision).
-      // The rebuild floor protects against invalidation spam: an invalidated
-      // entry keeps drawing its stale mesh until the floor elapses.
       const double prediction_rebuild_floor = 0.20;
       bool prediction_floor_elapsed =
           current_realtime - prediction_entry_.last_update_realtime >=
           prediction_rebuild_floor;
-      if (prediction_entry_.has_content &&
-          (prediction_entry_.is_valid || !prediction_floor_elapsed)) {
-        prediction_entry_.Draw();
-      } else {
+      bool prediction_needs_rebuild = !prediction_entry_.has_content ||
+          (!prediction_entry_.is_valid && prediction_floor_elapsed);
+      if (prediction_needs_rebuild &&
+          (!prediction_entry_.has_content || vessel_refresh_budget_ > 0)) {
+        if (prediction_entry_.has_content) {
+          --vessel_refresh_budget_;
+        }
         PlotPredictionDirect(
             planetarium,
             main_vessel_guid,
@@ -248,8 +246,8 @@ class Plotter {
                                      adapter_.prediction_style,
                                      shared_indices_,
                                      anchor);
-        prediction_entry_.Draw();
       }
+      prediction_entry_.Draw();
 
       // Main vessel flight plan.
       if (Plugin.FlightPlanExists(main_vessel_guid)) {
@@ -264,34 +262,36 @@ class Plotter {
         for (int i = 0; i < number_of_segments; ++i) {
           var entry = flight_plan_segment_entries_[i];
           // A user edit (fp_dirty) rebuilds immediately for responsiveness;
-          // invalidation spam (InvalidateAll) is absorbed by the floor.
+          // background invalidation is smoothly budgeted across successive frames.
           bool fp_floor_elapsed =
               current_realtime - entry.last_update_realtime >=
               fp_rebuild_floor;
-          bool can_reuse_fp = entry.has_content &&
-              !fp_dirty &&
-              (entry.is_valid || !fp_floor_elapsed);
+          bool segment_needs_rebuild = !entry.has_content ||
+              fp_dirty ||
+              (!entry.is_valid && fp_floor_elapsed);
 
-          if (can_reuse_fp) {
-            entry.Draw();
-            continue;
+          if (segment_needs_rebuild &&
+              (fp_dirty || !entry.has_content || vessel_refresh_budget_ > 0)) {
+            if (entry.has_content && !fp_dirty) {
+              --vessel_refresh_budget_;
+            }
+            bool is_burn = i % 2 == 1;
+            var colour = is_burn
+                             ? adapter_.burn_colour
+                             : adapter_.flight_plan_colour;
+            var style = is_burn
+                            ? adapter_.burn_style
+                            : adapter_.flight_plan_style;
+            PlotFlightPlanSegmentDirect(
+                planetarium,
+                main_vessel_guid,
+                i,
+                flight_plan_t_max,
+                out int vertex_count);
+            entry.last_update_realtime = current_realtime;
+            entry.last_update_ut = current_time_ut;
+            entry.UpdateMesh(vertex_count, colour, style, shared_indices_, anchor);
           }
-          bool is_burn = i % 2 == 1;
-          var colour = is_burn
-                           ? adapter_.burn_colour
-                           : adapter_.flight_plan_colour;
-          var style = is_burn
-                          ? adapter_.burn_style
-                          : adapter_.flight_plan_style;
-          PlotFlightPlanSegmentDirect(
-              planetarium,
-              main_vessel_guid,
-              i,
-              flight_plan_t_max,
-              out int vertex_count);
-          entry.last_update_realtime = current_realtime;
-          entry.last_update_ut = current_time_ut;
-          entry.UpdateMesh(vertex_count, colour, style, shared_indices_, anchor);
           entry.Draw();
         }
         if (fp_dirty) {
@@ -312,14 +312,16 @@ class Plotter {
         last_target_id_ = target_id;
       }
 
-      // Target psychohistory: same throttled, invalidation-resistant policy
-      // as the main vessel psychohistory.
-      if (!NeedsRebuild(target_psychohistory_entry_,
-                        psychohistory_interval,
-                        time_is_advancing,
-                        current_realtime)) {
-        target_psychohistory_entry_.Draw();
-      } else {
+      bool target_psychohistory_needs_rebuild =
+          NeedsRebuild(target_psychohistory_entry_,
+                       psychohistory_interval,
+                       time_is_advancing,
+                       current_realtime);
+      if (target_psychohistory_needs_rebuild &&
+          (!target_psychohistory_entry_.has_content || vessel_refresh_budget_ > 0)) {
+        if (target_psychohistory_entry_.has_content) {
+          --vessel_refresh_budget_;
+        }
         long rebuild_t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         PlotPsychohistoryDirect(
             planetarium,
@@ -339,20 +341,21 @@ class Plotter {
             1000.0 / System.Diagnostics.Stopwatch.Frequency;
         psychohistory_rebuild_ms_ema_ =
             psychohistory_rebuild_ms_ema_ * 0.9 + rebuild_ms * 0.1;
-        target_psychohistory_entry_.Draw();
       }
+      target_psychohistory_entry_.Draw();
 
-      // Target prediction: event-driven with a rebuild floor, like the main
-      // vessel prediction.
       const double target_prediction_rebuild_floor = 0.20;
       bool target_prediction_floor_elapsed =
           current_realtime - target_prediction_entry_.last_update_realtime >=
           target_prediction_rebuild_floor;
-      if (target_prediction_entry_.has_content &&
-          (target_prediction_entry_.is_valid ||
-           !target_prediction_floor_elapsed)) {
-        target_prediction_entry_.Draw();
-      } else {
+      bool target_prediction_needs_rebuild =
+          !target_prediction_entry_.has_content ||
+          (!target_prediction_entry_.is_valid && target_prediction_floor_elapsed);
+      if (target_prediction_needs_rebuild &&
+          (!target_prediction_entry_.has_content || vessel_refresh_budget_ > 0)) {
+        if (target_prediction_entry_.has_content) {
+          --vessel_refresh_budget_;
+        }
         PlotPredictionDirect(
             planetarium,
             target_id,
@@ -365,8 +368,8 @@ class Plotter {
                                             adapter_.target_prediction_style,
                                             shared_indices_,
                                             anchor);
-        target_prediction_entry_.Draw();
       }
+      target_prediction_entry_.Draw();
     }
   }
 
@@ -1027,6 +1030,15 @@ class Plotter {
   private const int MaxCelestialRefreshesPerFrame = 2;
   private const double CriticalStalenessMultiplier = 4.0;
   private int celestial_refresh_budget_ = MaxCelestialRefreshesPerFrame;
+
+  // Per-frame budget for vessel trajectory re-plots (P/Invoke + mesh rebuild).
+  // Without it, every invalidated or overdue vessel path (psychohistory,
+  // prediction, multi-segment flight plan, target psychohistory/prediction)
+  // rebuilds synchronously in a single frame, spiking frame times to 15+ ms.
+  // With a budget, at most 1 heavy vessel entry rebuilds per frame while
+  // remaining entries smoothly draw their cached meshes.
+  private const int MaxVesselRefreshesPerFrame = 1;
+  private int vessel_refresh_budget_ = MaxVesselRefreshesPerFrame;
 
   // EMA of the measured psychohistory rebuild cost (P/Invoke + mesh rebuild),
   // in milliseconds.  Feeds the self-tuning psychohistory refresh interval.

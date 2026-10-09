@@ -619,12 +619,14 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   // Dynamic capacity tracking buffers to support RSS Origin 2 and large planetary systems (400+ bodies).
   private float[] celestial_last_update_realtime_ = new float[1024];
   private int[] celestial_last_update_frame_ = new int[1024];
+  private double[] celestial_last_update_body_ut_ = new double[1024];
 
   private void EnsureCelestialTrackingCapacity(int index) {
     if (index >= celestial_last_update_realtime_.Length) {
       int new_size = Math.Max(index + 256, celestial_last_update_realtime_.Length * 2);
       Array.Resize(ref celestial_last_update_realtime_, new_size);
       Array.Resize(ref celestial_last_update_frame_, new_size);
+      Array.Resize(ref celestial_last_update_body_ut_, new_size);
     }
   }
 
@@ -880,6 +882,13 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
   private void UpdateBody(CelestialBody body, double universal_time) {
     int body_index = body.flightGlobalsIndex;
+    if (body_index >= 0) {
+      EnsureCelestialTrackingCapacity(body_index);
+      if (celestial_last_update_body_ut_[body_index] == universal_time) {
+        return;
+      }
+      celestial_last_update_body_ut_[body_index] = universal_time;
+    }
     int parent_index = body.orbit.referenceBody.flightGlobalsIndex;
     if (!celestial_parent_cache_.TryGetValue(body_index, out int cached_parent) ||
         cached_parent != parent_index) {
@@ -2642,6 +2651,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       for (int i = all_vessels.Count - 1; i >= 0; --i) {
         var vessel = all_vessels[i];
         if (vessel != null && vessel.precalc != null) {
+          if (VacuumBypassGovernor.ShouldBypassPrecalc(vessel)) {
+            continue;
+          }
           vessel.precalc.enabled = true;
           // In stock this is equivalent to `FixedUpdate()`.  With
           // ModularFlightIntegrator's ModularVesselPrecalculate, which gets run
@@ -2967,7 +2979,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         // Handled directly and synchronously in UpdatePlottingFrame.
         break;
       case CommandType.TriggerPrediction:
-        plotter_?.InvalidateAll("command:TriggerPrediction");
+        plotter_?.InvalidatePrediction();
         break;
       default:
         break;
@@ -3503,10 +3515,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     string main_vessel_guid = GetVesselGuid(PredictedVessel());
     if (MapView.MapIsEnabled) {
       XYZ sun_world_position = (XYZ)Planetarium.fetch.Sun.position;
-      // High-precision adaptive subdivision:
-      // Smaller multiplier = finer angular tolerance in C++ Hermite subdivision = silky smooth curvature without polygonal kinks or folded lines ("折线").
-      // Because meshes are cached in GPU VRAM and drawn via DrawMesh, higher vertex counts have 0 ms CPU cost!
-      double resolution_multiplier = 0.75;
+      // Standard angular resolution: 1 arcminute provides sub-pixel smoothness (< 1/3 pixel at 1080p)
+      // while cutting redundant Hermite and Gauss-Legendre quadrature subdivisions in C++ PlotMethod4.
+      double resolution_multiplier = 1.0;
       using (DisposablePlanetarium planetarium =
              GLLines.NewPlanetarium(plugin_, sun_world_position, resolution_multiplier)) {
         plotter_.PlotTrajectories(planetarium,
@@ -3993,6 +4004,9 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     }
     if (celestial_last_update_frame_ != null) {
       Array.Clear(celestial_last_update_frame_, 0, celestial_last_update_frame_.Length);
+    }
+    if (celestial_last_update_body_ut_ != null) {
+      Array.Clear(celestial_last_update_body_ut_, 0, celestial_last_update_body_ut_.Length);
     }
 
     // Load the flags.
