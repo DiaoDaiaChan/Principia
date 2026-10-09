@@ -368,6 +368,36 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
   private readonly TQP[] single_collision_marker_array_ = new TQP[1];
   private string last_markers_vessel_guid_ = null;
   private string last_markers_target_guid_ = null;
+
+  // Cached Map Marker Point Buffers (Zero allocation, high performance)
+  private readonly List<TQP> cached_prediction_apoapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_prediction_periapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private string last_prediction_apsides_vessel_guid_ = null;
+  private int last_prediction_apsides_centre_index_ = -1;
+
+  private readonly List<Node> cached_prediction_ascending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<Node> cached_prediction_descending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_prediction_approaches_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private string last_prediction_nodes_vessel_guid_ = null;
+
+  private readonly List<TQP> cached_flight_plan_apoapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_flight_plan_periapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private string last_flight_plan_apsides_vessel_guid_ = null;
+  private int last_flight_plan_apsides_centre_index_ = -1;
+
+  private readonly List<Node> cached_flight_plan_ascending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<Node> cached_flight_plan_descending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_flight_plan_approaches_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private string last_flight_plan_nodes_vessel_guid_ = null;
+
+  private readonly List<TQP> cached_target_apoapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_target_periapsides_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<Node> cached_target_ascending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<Node> cached_target_descending_nodes_ = new List<Node>(MapNodePool.MaxNodesPerProvenance);
+  private readonly List<TQP> cached_target_approaches_ = new List<TQP>(MapNodePool.MaxNodesPerProvenance);
+  private string last_target_markers_guid_ = null;
+
+  private int remove_stock_trajectories_frame_counter_ = 0;
   private readonly Dictionary<UnityEngine.Transform, UnityEngine.MeshRenderer>
       navball_vector_renderers_ =
           new Dictionary<UnityEngine.Transform, UnityEngine.MeshRenderer>();
@@ -3473,6 +3503,17 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
   private void RemoveStockTrajectories() {
     try {
+      var active = FlightGlobals.ActiveVessel;
+      if (active != null) {
+        RemoveStockTrajectoriesIfNeeded(active);
+      }
+
+      // Throttle scanning all celestials and background vessels to once every 30 frames
+      if (++remove_stock_trajectories_frame_counter_ < 30) {
+        return;
+      }
+      remove_stock_trajectories_frame_counter_ = 0;
+
       var bodies = FlightGlobals.Bodies;
       if (bodies != null) {
         for (int i = 0; i < bodies.Count; ++i) {
@@ -3490,7 +3531,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       if (vessels != null) {
         for (int i = 0; i < vessels.Count; ++i) {
           var vessel = vessels[i];
-          if (vessel == null) continue;
+          if (vessel == null || vessel == active) continue;
           var uiNode = vessel.mapObject?.uiNode;
           if (uiNode != null && hooked_map_nodes_.Add(uiNode)) {
             uiNode.OnClick += OnVesselNodeClick;
@@ -3511,7 +3552,6 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     if (!PluginRunning()) {
       return;
     }
-    RemoveStockTrajectories();
     string main_vessel_guid = GetVesselGuid(PredictedVessel());
     if (MapView.MapIsEnabled) {
       XYZ sun_world_position = (XYZ)Planetarium.fetch.Sun.position;
@@ -3746,29 +3786,66 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       return;
     }
     int centre_index = centre.flightGlobalsIndex;
-    plugin_.RenderedPredictionApsides(vessel_guid,
-                                      prediction_collision?.t,
-                                      centre_index,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator apoapsis_iterator,
-                                      out DisposableIterator periapsis_iterator);
-    using (apoapsis_iterator) {
-      map_node_pool_.RenderMarkers(
-          apoapsis_iterator.DistinguishedPoints(),
-          new MapNodePool.Provenance(vessel_guid,
-                                     MapNodePool.NodeSource.Prediction,
-                                     MapObject.ObjectType.Apoapsis),
-          plotting_frame_selector_);
+    string main_guid = GetVesselGuid(PredictedVessel());
+    bool is_target = vessel_guid != main_guid;
+
+    List<TQP> apoapsis_list = is_target ? cached_target_apoapsides_ : cached_prediction_apoapsides_;
+    List<TQP> periapsis_list = is_target ? cached_target_periapsides_ : cached_prediction_periapsides_;
+
+    bool is_dirty = is_target
+        ? (MapMarkerEventGovernor.TargetApsidesDirty || vessel_guid != last_target_markers_guid_)
+        : (MapMarkerEventGovernor.PredictionApsidesDirty ||
+           vessel_guid != last_prediction_apsides_vessel_guid_ ||
+           centre_index != last_prediction_apsides_centre_index_);
+
+    if (is_dirty) {
+      if (is_target) {
+        last_target_markers_guid_ = vessel_guid;
+      } else {
+        last_prediction_apsides_vessel_guid_ = vessel_guid;
+        last_prediction_apsides_centre_index_ = centre_index;
+      }
+      apoapsis_list.Clear();
+      periapsis_list.Clear();
+
+      plugin_.RenderedPredictionApsides(vessel_guid,
+                                        prediction_collision?.t,
+                                        centre_index,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator apoapsis_iterator,
+                                        out DisposableIterator periapsis_iterator);
+      using (apoapsis_iterator) {
+        foreach (TQP pt in apoapsis_iterator.DistinguishedPoints()) {
+          apoapsis_list.Add(pt);
+        }
+      }
+      using (periapsis_iterator) {
+        foreach (TQP pt in periapsis_iterator.DistinguishedPoints()) {
+          periapsis_list.Add(pt);
+        }
+      }
+
+      if (is_target) {
+        MapMarkerEventGovernor.TargetApsidesDirty = false;
+      } else {
+        MapMarkerEventGovernor.PredictionApsidesDirty = false;
+      }
     }
-    using (periapsis_iterator) {
-      map_node_pool_.RenderMarkers(
-          periapsis_iterator.DistinguishedPoints(),
-          new MapNodePool.Provenance(vessel_guid,
-                                     MapNodePool.NodeSource.Prediction,
-                                     MapObject.ObjectType.Periapsis),
-          plotting_frame_selector_);
-    }
+
+    map_node_pool_.RenderMarkers(
+        apoapsis_list,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.Prediction,
+                                   MapObject.ObjectType.Apoapsis),
+        plotting_frame_selector_);
+
+    map_node_pool_.RenderMarkers(
+        periapsis_list,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.Prediction,
+                                   MapObject.ObjectType.Periapsis),
+        plotting_frame_selector_);
   }
 
   private void RenderPredictionNodes(string vessel_guid,
@@ -3777,67 +3854,101 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
     if (vessel_guid == null || !plugin_.HasVessel(vessel_guid)) {
       return;
     }
-    if (plotting_frame_selector_.target_frame_selected &&
-        TargetVessel() != null) {
-      plugin_.RenderedPredictionNodes(vessel_guid,
-                                      t_max: null,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator ascending_nodes_iterator,
-                                      out DisposableIterator descending_nodes_iterator);
-      using (ascending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            ascending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.Prediction,
-                                       MapObject.ObjectType.AscendingNode),
-            plotting_frame_selector_);
+    string main_guid = GetVesselGuid(PredictedVessel());
+    bool is_target = vessel_guid != main_guid;
+
+    List<Node> ascending_list = is_target ? cached_target_ascending_nodes_ : cached_prediction_ascending_nodes_;
+    List<Node> descending_list = is_target ? cached_target_descending_nodes_ : cached_prediction_descending_nodes_;
+    List<TQP> approaches_list = is_target ? cached_target_approaches_ : cached_prediction_approaches_;
+
+    bool is_target_frame = plotting_frame_selector_.target_frame_selected && TargetVessel() != null;
+    bool is_dirty = is_target
+        ? (MapMarkerEventGovernor.TargetNodesDirty || vessel_guid != last_target_markers_guid_)
+        : (MapMarkerEventGovernor.PredictionNodesDirty || vessel_guid != last_prediction_nodes_vessel_guid_);
+
+    if (is_dirty) {
+      if (!is_target) {
+        last_prediction_nodes_vessel_guid_ = vessel_guid;
       }
-      using (descending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            descending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.Prediction,
-                                       MapObject.ObjectType.DescendingNode),
-            plotting_frame_selector_);
+      ascending_list.Clear();
+      descending_list.Clear();
+      approaches_list.Clear();
+
+      if (is_target_frame) {
+        plugin_.RenderedPredictionNodes(vessel_guid,
+                                        t_max: null,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator ascending_nodes_iterator,
+                                        out DisposableIterator descending_nodes_iterator);
+        using (ascending_nodes_iterator) {
+          foreach (Node n in ascending_nodes_iterator.Nodes()) {
+            ascending_list.Add(n);
+          }
+        }
+        using (descending_nodes_iterator) {
+          foreach (Node n in descending_nodes_iterator.Nodes()) {
+            descending_list.Add(n);
+          }
+        }
+
+        plugin_.RenderedPredictionClosestApproaches(
+            vessel_guid,
+            sun_world_position,
+            MapNodePool.MaxNodesPerProvenance,
+            out DisposableIterator approaches_iterator);
+        using (approaches_iterator) {
+          foreach (TQP pt in approaches_iterator.DistinguishedPoints()) {
+            approaches_list.Add(pt);
+          }
+        }
+      } else {
+        plugin_.RenderedPredictionNodes(vessel_guid,
+                                        prediction_collision?.t,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator ascending_nodes_iterator,
+                                        out DisposableIterator descending_nodes_iterator);
+        using (ascending_nodes_iterator) {
+          foreach (Node n in ascending_nodes_iterator.Nodes()) {
+            ascending_list.Add(n);
+          }
+        }
+        using (descending_nodes_iterator) {
+          foreach (Node n in descending_nodes_iterator.Nodes()) {
+            descending_list.Add(n);
+          }
+        }
       }
 
-      plugin_.RenderedPredictionClosestApproaches(
-          vessel_guid,
-          sun_world_position,
-          MapNodePool.MaxNodesPerProvenance,
-          out DisposableIterator approaches_iterator);
-      using (approaches_iterator) {
-        map_node_pool_.RenderMarkers(
-            approaches_iterator.DistinguishedPoints(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.Prediction,
-                                       MapObject.ObjectType.ApproachIntersect),
-            plotting_frame_selector_);
+      if (is_target) {
+        MapMarkerEventGovernor.TargetNodesDirty = false;
+      } else {
+        MapMarkerEventGovernor.PredictionNodesDirty = false;
       }
-    } else {
-      plugin_.RenderedPredictionNodes(vessel_guid,
-                                      prediction_collision?.t,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator ascending_nodes_iterator,
-                                      out DisposableIterator descending_nodes_iterator);
-      using (ascending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            ascending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.Prediction,
-                                       MapObject.ObjectType.AscendingNode),
-            plotting_frame_selector_);
-      }
-      using (descending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            descending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.Prediction,
-                                       MapObject.ObjectType.DescendingNode),
-            plotting_frame_selector_);
-      }
+    }
+
+    map_node_pool_.RenderNodes(
+        ascending_list,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.Prediction,
+                                   MapObject.ObjectType.AscendingNode),
+        plotting_frame_selector_);
+
+    map_node_pool_.RenderNodes(
+        descending_list,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.Prediction,
+                                   MapObject.ObjectType.DescendingNode),
+        plotting_frame_selector_);
+
+    if (is_target_frame && approaches_list.Count > 0) {
+      map_node_pool_.RenderMarkers(
+          approaches_list,
+          new MapNodePool.Provenance(vessel_guid,
+                                     MapNodePool.NodeSource.Prediction,
+                                     MapObject.ObjectType.ApproachIntersect),
+          plotting_frame_selector_);
     }
   }
 
@@ -3862,29 +3973,51 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
       return;
     }
     int centre_index = centre.flightGlobalsIndex;
-    plugin_.FlightPlanRenderedApsides(vessel_guid,
-                                      flight_plan_collision?.t,
-                                      centre_index,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator apoapsis_iterator,
-                                      out DisposableIterator periapsis_iterator);
-    using (apoapsis_iterator) {
-      map_node_pool_.RenderMarkers(
-          apoapsis_iterator.DistinguishedPoints(),
-          new MapNodePool.Provenance(vessel_guid,
-                                     MapNodePool.NodeSource.FlightPlan,
-                                     MapObject.ObjectType.Apoapsis),
-          plotting_frame_selector_);
+
+    bool should_recompute =
+        MapMarkerEventGovernor.FlightPlanApsidesDirty ||
+        vessel_guid != last_flight_plan_apsides_vessel_guid_ ||
+        centre_index != last_flight_plan_apsides_centre_index_;
+
+    if (should_recompute) {
+      last_flight_plan_apsides_vessel_guid_ = vessel_guid;
+      last_flight_plan_apsides_centre_index_ = centre_index;
+      cached_flight_plan_apoapsides_.Clear();
+      cached_flight_plan_periapsides_.Clear();
+
+      plugin_.FlightPlanRenderedApsides(vessel_guid,
+                                        flight_plan_collision?.t,
+                                        centre_index,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator apoapsis_iterator,
+                                        out DisposableIterator periapsis_iterator);
+      using (apoapsis_iterator) {
+        foreach (TQP pt in apoapsis_iterator.DistinguishedPoints()) {
+          cached_flight_plan_apoapsides_.Add(pt);
+        }
+      }
+      using (periapsis_iterator) {
+        foreach (TQP pt in periapsis_iterator.DistinguishedPoints()) {
+          cached_flight_plan_periapsides_.Add(pt);
+        }
+      }
+      MapMarkerEventGovernor.FlightPlanApsidesDirty = false;
     }
-    using (periapsis_iterator) {
-      map_node_pool_.RenderMarkers(
-          periapsis_iterator.DistinguishedPoints(),
-          new MapNodePool.Provenance(vessel_guid,
-                                     MapNodePool.NodeSource.FlightPlan,
-                                     MapObject.ObjectType.Periapsis),
-          plotting_frame_selector_);
-    }
+
+    map_node_pool_.RenderMarkers(
+        cached_flight_plan_apoapsides_,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.FlightPlan,
+                                   MapObject.ObjectType.Apoapsis),
+        plotting_frame_selector_);
+
+    map_node_pool_.RenderMarkers(
+        cached_flight_plan_periapsides_,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.FlightPlan,
+                                   MapObject.ObjectType.Periapsis),
+        plotting_frame_selector_);
   }
 
   private void RenderFlightPlanNodes(string vessel_guid,
@@ -3895,67 +4028,87 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         RollingEphemerisDriver.ShouldSuppressPlot(vessel_guid)) {
       return;
     }
-    if (plotting_frame_selector_.target_frame_selected &&
-        TargetVessel() != null) {
-      plugin_.FlightPlanRenderedNodes(vessel_guid,
-                                      t_max: null,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator ascending_nodes_iterator,
-                                      out DisposableIterator descending_nodes_iterator);
-      using (ascending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            ascending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.FlightPlan,
-                                       MapObject.ObjectType.AscendingNode),
-            plotting_frame_selector_);
-      }
-      using (descending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            descending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.FlightPlan,
-                                       MapObject.ObjectType.DescendingNode),
-            plotting_frame_selector_);
-      }
+    bool is_target_frame = plotting_frame_selector_.target_frame_selected && TargetVessel() != null;
+    bool should_recompute =
+        MapMarkerEventGovernor.FlightPlanNodesDirty ||
+        vessel_guid != last_flight_plan_nodes_vessel_guid_;
 
-      plugin_.FlightPlanRenderedClosestApproaches(
-          vessel_guid,
-          sun_world_position,
-          MapNodePool.MaxNodesPerProvenance,
-          out DisposableIterator approaches_iterator);
-      using (approaches_iterator) {
-        map_node_pool_.RenderMarkers(
-            approaches_iterator.DistinguishedPoints(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.FlightPlan,
-                                       MapObject.ObjectType.ApproachIntersect),
-            plotting_frame_selector_);
+    if (should_recompute) {
+      last_flight_plan_nodes_vessel_guid_ = vessel_guid;
+      cached_flight_plan_ascending_nodes_.Clear();
+      cached_flight_plan_descending_nodes_.Clear();
+      cached_flight_plan_approaches_.Clear();
+
+      if (is_target_frame) {
+        plugin_.FlightPlanRenderedNodes(vessel_guid,
+                                        t_max: null,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator ascending_nodes_iterator,
+                                        out DisposableIterator descending_nodes_iterator);
+        using (ascending_nodes_iterator) {
+          foreach (Node n in ascending_nodes_iterator.Nodes()) {
+            cached_flight_plan_ascending_nodes_.Add(n);
+          }
+        }
+        using (descending_nodes_iterator) {
+          foreach (Node n in descending_nodes_iterator.Nodes()) {
+            cached_flight_plan_descending_nodes_.Add(n);
+          }
+        }
+
+        plugin_.FlightPlanRenderedClosestApproaches(
+            vessel_guid,
+            sun_world_position,
+            MapNodePool.MaxNodesPerProvenance,
+            out DisposableIterator approaches_iterator);
+        using (approaches_iterator) {
+          foreach (TQP pt in approaches_iterator.DistinguishedPoints()) {
+            cached_flight_plan_approaches_.Add(pt);
+          }
+        }
+      } else {
+        plugin_.FlightPlanRenderedNodes(vessel_guid,
+                                        flight_plan_collision?.t,
+                                        sun_world_position,
+                                        MapNodePool.MaxNodesPerProvenance,
+                                        out DisposableIterator ascending_nodes_iterator,
+                                        out DisposableIterator descending_nodes_iterator);
+        using (ascending_nodes_iterator) {
+          foreach (Node n in ascending_nodes_iterator.Nodes()) {
+            cached_flight_plan_ascending_nodes_.Add(n);
+          }
+        }
+        using (descending_nodes_iterator) {
+          foreach (Node n in descending_nodes_iterator.Nodes()) {
+            cached_flight_plan_descending_nodes_.Add(n);
+          }
+        }
       }
-    } else {
-      plugin_.FlightPlanRenderedNodes(vessel_guid,
-                                      flight_plan_collision?.t,
-                                      sun_world_position,
-                                      MapNodePool.MaxNodesPerProvenance,
-                                      out DisposableIterator ascending_nodes_iterator,
-                                      out DisposableIterator descending_nodes_iterator);
-      using (ascending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            ascending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.FlightPlan,
-                                       MapObject.ObjectType.AscendingNode),
-            plotting_frame_selector_);
-      }
-      using (descending_nodes_iterator) {
-        map_node_pool_.RenderNodes(
-            descending_nodes_iterator.Nodes(),
-            new MapNodePool.Provenance(vessel_guid,
-                                       MapNodePool.NodeSource.FlightPlan,
-                                       MapObject.ObjectType.DescendingNode),
-            plotting_frame_selector_);
-      }
+      MapMarkerEventGovernor.FlightPlanNodesDirty = false;
+    }
+
+    map_node_pool_.RenderNodes(
+        cached_flight_plan_ascending_nodes_,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.FlightPlan,
+                                   MapObject.ObjectType.AscendingNode),
+        plotting_frame_selector_);
+
+    map_node_pool_.RenderNodes(
+        cached_flight_plan_descending_nodes_,
+        new MapNodePool.Provenance(vessel_guid,
+                                   MapNodePool.NodeSource.FlightPlan,
+                                   MapObject.ObjectType.DescendingNode),
+        plotting_frame_selector_);
+
+    if (is_target_frame && cached_flight_plan_approaches_.Count > 0) {
+      map_node_pool_.RenderMarkers(
+          cached_flight_plan_approaches_,
+          new MapNodePool.Provenance(vessel_guid,
+                                     MapNodePool.NodeSource.FlightPlan,
+                                     MapObject.ObjectType.ApproachIntersect),
+          plotting_frame_selector_);
     }
   }
 

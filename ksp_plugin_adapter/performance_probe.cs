@@ -60,7 +60,7 @@ public static class PerformanceProbe {
 
   // In-Game HUD Window state
   public static bool ShowProfilingHud = false;
-  private static Rect hud_rect_ = new Rect(40, 80, 440, 640);
+  private static Rect hud_rect_ = new Rect(40, 80, 500, 660);
   private static Vector2 scroll_pos_ = Vector2.zero;
   private static bool show_ephemeris_console_ = false;
   private const int WindowId = 0x50524F42; // "PROB"
@@ -497,8 +497,8 @@ public static class PerformanceProbe {
 
   private static void DrawMetricBar(string label, ProbeCategory cat) {
     using (new GUILayout.HorizontalScope()) {
-      GUILayout.Label(label, GUILayout.Width(170));
-      GUILayout.Label(cached_metric_bar_labels_[(int)cat] ?? "");
+      GUILayout.Label(label, GUILayout.Width(225));
+      GUILayout.Label(cached_metric_bar_labels_[(int)cat] ?? "", GUILayout.ExpandWidth(true));
     }
   }
 }
