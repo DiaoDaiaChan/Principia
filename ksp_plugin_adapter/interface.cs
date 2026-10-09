@@ -408,6 +408,13 @@ internal static partial class Interface {
     public delegate ulong GpuGetTotalDmaBytesDelegate();
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool GpuBenchmarkDmaTransferDelegate(
+        int segment_count,
+        out double duration_seconds,
+        out double bandwidth_gigabytes_per_second);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int ExportChebyshevSegmentsDelegate(
         IntPtr planetarium,
         IntPtr plugin,
@@ -525,6 +532,9 @@ internal static partial class Interface {
 
     public GpuGetTotalDmaBytesDelegate GpuGetTotalDmaBytes =
         Loader.LoadOptionalFunction<GpuGetTotalDmaBytesDelegate>("principia__GpuGetTotalDmaBytes");
+
+    public GpuBenchmarkDmaTransferDelegate GpuBenchmarkDmaTransfer =
+        Loader.LoadOptionalFunction<GpuBenchmarkDmaTransferDelegate>("principia__GpuBenchmarkDmaTransfer");
 
     public ExportChebyshevSegmentsDelegate ExportChebyshevSegments =
         Loader.LoadOptionalFunction<ExportChebyshevSegmentsDelegate>("principia__ExportChebyshevSegments");
@@ -676,6 +686,19 @@ internal static partial class Interface {
 
   internal static ulong GpuGetTotalDmaBytes() {
     return symbols_?.GpuGetTotalDmaBytes != null ? symbols_.GpuGetTotalDmaBytes() : 0UL;
+  }
+
+  internal static bool GpuBenchmarkDmaTransfer(
+      int segment_count,
+      out double duration_seconds,
+      out double bandwidth_gigabytes_per_second) {
+    if (symbols_?.GpuBenchmarkDmaTransfer != null) {
+      return symbols_.GpuBenchmarkDmaTransfer(
+          segment_count, out duration_seconds, out bandwidth_gigabytes_per_second);
+    }
+    duration_seconds = 0.0;
+    bandwidth_gigabytes_per_second = 0.0;
+    return false;
   }
 
   internal static int ExportChebyshevSegments(

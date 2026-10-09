@@ -1,8 +1,14 @@
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
+#if OS_WIN
+#include <malloc.h>
+#endif
 
 #include "absl/log/check.h"
 #include "absl/log/log.h"
@@ -95,6 +101,92 @@ PRINCIPIA_EXPORT double __cdecl principia__GpuGetLastDmaWriteSeconds() {
 
 PRINCIPIA_EXPORT std::uint64_t __cdecl principia__GpuGetTotalDmaBytes() {
   return DxgiAdapterFactory::Instance().GetTotalDmaBytes();
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__GpuBenchmarkDmaTransfer(
+    int const segment_count,
+    double* const out_duration_seconds,
+    double* const out_bandwidth_gigabytes_per_second) {
+  if (segment_count <= 0 || out_duration_seconds == nullptr ||
+      out_bandwidth_gigabytes_per_second == nullptr) {
+    return false;
+  }
+
+  int const count = std::min(std::max(segment_count, 16), 65536);
+  std::size_t const total_bytes = static_cast<std::size_t>(count) * sizeof(ChebyshevSegmentData);
+
+#if OS_WIN
+  void* src_raw = _aligned_malloc(total_bytes, 64);
+  void* dst_raw = _aligned_malloc(total_bytes, 64);
+#else
+  void* src_raw = std::aligned_alloc(64, total_bytes);
+  void* dst_raw = std::aligned_alloc(64, total_bytes);
+#endif
+  if (src_raw == nullptr || dst_raw == nullptr) {
+#if OS_WIN
+    if (src_raw != nullptr) _aligned_free(src_raw);
+    if (dst_raw != nullptr) _aligned_free(dst_raw);
+#else
+    if (src_raw != nullptr) std::free(src_raw);
+    if (dst_raw != nullptr) std::free(dst_raw);
+#endif
+    return false;
+  }
+
+  auto* src = static_cast<ChebyshevSegmentData*>(src_raw);
+  auto* dst = static_cast<ChebyshevSegmentData*>(dst_raw);
+
+  for (int i = 0; i < count; ++i) {
+    src[i].t_min = 100.0f * i;
+    src[i].t_max = 100.0f * (i + 1);
+    src[i].degree = 4;
+    src[i].coeffs[0][0] = static_cast<float>(i);
+    src[i].coeffs[0][1] = static_cast<float>(i * 2);
+    src[i].coeffs[0][2] = static_cast<float>(i * 3);
+  }
+  std::memset(dst, 0, total_bytes);
+
+  auto const mode = DxgiAdapterFactory::Instance().GetDmaMode();
+
+  auto const start = std::chrono::high_resolution_clock::now();
+
+  for (int i = 0; i < count; ++i) {
+    ksp_plugin::_chebyshev_segment_export::WriteSegmentData(src[i], &dst[i], mode);
+  }
+
+  auto const end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> const elapsed = end - start;
+  double const duration_s = elapsed.count();
+
+  bool verified = true;
+  for (int i = 0; i < count; ++i) {
+    if (dst[i].t_min != src[i].t_min ||
+        dst[i].t_max != src[i].t_max ||
+        dst[i].coeffs[0][0] != src[i].coeffs[0][0]) {
+      verified = false;
+      break;
+    }
+  }
+
+#if OS_WIN
+  _aligned_free(src_raw);
+  _aligned_free(dst_raw);
+#else
+  std::free(src_raw);
+  std::free(dst_raw);
+#endif
+
+  if (!verified) {
+    return false;
+  }
+
+  *out_duration_seconds = duration_s;
+  *out_bandwidth_gigabytes_per_second =
+      duration_s > 0.0 ? ((static_cast<double>(total_bytes) / 1e9) / duration_s) : 0.0;
+
+  DxgiAdapterFactory::Instance().RecordDmaWrite(total_bytes, duration_s);
+
+  return true;
 }
 
 //=============================================================================

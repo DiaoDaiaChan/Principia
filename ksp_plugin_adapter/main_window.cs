@@ -314,61 +314,23 @@ internal class MainWindow : VesselSupervisedWindowRenderer {
       }
 
       using (new UnityEngine.GUILayout.HorizontalScope()) {
-        UnityEngine.GUILayout.Label("计算管线精度:", GUILayoutWidth(4));
-        bool is_native = HeterogeneousDynamicGovernor.IsNativeDoublePrecision;
-        bool set_native = UnityEngine.GUILayout.Toggle(
-            is_native,
-            "● 原生双精度 (CPU FP64)",
-            UnityEngine.GUI.skin.toggle);
-        bool set_gpu = UnityEngine.GUILayout.Toggle(
-            !is_native,
-            "⚡ GPGPU 异构加速",
-            UnityEngine.GUI.skin.toggle);
-        if (set_native && !is_native) {
-          HeterogeneousDynamicGovernor.PipelineMode =
-              ComputationPipelineMode.NativeDoublePrecision;
-        } else if (set_gpu && is_native) {
-          HeterogeneousDynamicGovernor.PipelineMode =
-              ComputationPipelineMode.GpuAccelerated;
-        }
-        if (UnityEngine.GUILayout.Button("⚡ GPU 诊断", GUILayoutWidth(3))) {
-          gpu_diagnostics_window_.Toggle();
-        }
-      }
-
-      if (HeterogeneousDynamicGovernor.IsNativeDoublePrecision) {
-        UnityEngine.GUILayout.Label(
-            "<color=lime>● 物理保真模式: 原生 C++ 双精度 (IEEE 754 FP64) 经典管线锁定中 (旧实现 100% 保持不动)</color>",
-            style: Style.Info(UnityEngine.GUI.skin.label));
-      } else {
-        UnityEngine.GUILayout.Label(
-            cached_gpu_label_,
-            style: Style.Info(UnityEngine.GUI.skin.label));
-
-        using (new UnityEngine.GUILayout.HorizontalScope()) {
-          UnityEngine.GUILayout.Label(
-              cached_render_budget_label_,
-              style: Style.Info(UnityEngine.GUI.skin.label));
-          if (UnityEngine.GUILayout.Button(
-                  $"调度倾向: {HeterogeneousDynamicGovernor.Affinity}",
-                  GUILayoutWidth(5))) {
-            HeterogeneousDynamicGovernor.Affinity = (HeterogeneousAffinity)(
-                ((int)HeterogeneousDynamicGovernor.Affinity + 1) % 3);
-          }
-        }
-      }
-
-      if (!string.IsNullOrEmpty(cached_ephem_label_)) {
-        UnityEngine.GUILayout.Label(
-            cached_ephem_label_,
-            style: Style.Info(UnityEngine.GUI.skin.label));
-      }
-
-      using (new UnityEngine.GUILayout.HorizontalScope()) {
         PerformanceProbe.ShowProfilingHud = UnityEngine.GUILayout.Toggle(
             PerformanceProbe.ShowProfilingHud,
-            PerformanceProbe.ShowProfilingHud ? "隐藏性能数据探针 (HUD)" : "打开实时数据探针 (HUD)",
-            UnityEngine.GUILayout.ExpandWidth(true));
+            "📊 性能探针",
+            UnityEngine.GUI.skin.button,
+            GUILayoutWidth(3));
+        if (UnityEngine.GUILayout.Button(
+                "⚡ GPU诊断",
+                GUILayoutWidth(3))) {
+          gpu_diagnostics_window_.Toggle();
+        }
+        bool is_native = HeterogeneousDynamicGovernor.IsNativeDoublePrecision;
+        string mode_title = is_native ? "● 原生FP64" : "⚡ 异构加速";
+        if (UnityEngine.GUILayout.Button(mode_title, GUILayoutWidth(2))) {
+          HeterogeneousDynamicGovernor.PipelineMode = is_native
+              ? ComputationPipelineMode.GpuAccelerated
+              : ComputationPipelineMode.NativeDoublePrecision;
+        }
       }
       history_length_.Render(enabled : true);
       if (FlightGlobals.ActiveVessel?.orbitTargeter != null &&
