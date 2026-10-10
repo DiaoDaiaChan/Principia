@@ -74,6 +74,7 @@
     <ClInclude Include="celestial_l1_cache.hpp" />
     <ClInclude Include="chebyshev_l2_tile_cache.hpp" />
     <ClInclude Include="ephemeris_l3_window_ring.hpp" />
+    <ClInclude Include="cpu_cache_topology.hpp" />
     <ClInclude Include="ephemeris.hpp" />
     <ClInclude Include="ephemeris_body.hpp" />
     <ClInclude Include="frame_field.hpp" />

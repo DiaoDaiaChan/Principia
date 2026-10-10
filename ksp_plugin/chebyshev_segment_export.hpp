@@ -11,6 +11,7 @@
 #include "geometry/instant.hpp"
 #include "ksp_plugin/dxgi_adapter_factory.hpp"
 #include "ksp_plugin/gpu_interop_types.hpp"
+#include "ksp_plugin/time_sliced_scheduler.hpp"
 #include "physics/degrees_of_freedom.hpp"
 #include "physics/discrete_trajectory_view.hpp"
 #include "physics/trajectory_view.hpp"
@@ -42,6 +43,8 @@ using _dxgi_adapter_factory::DxgiAdapterFactory;
 using _gpu_interop_types::ChebyshevSegmentData;
 using _gpu_interop_types::DmaTransferMode;
 using _gpu_interop_types::kMaxChebyshevDegree;
+using physics::_chebyshev_l2_tile_cache::ChebyshevTile256;
+using _time_sliced_scheduler::TimeSlicedScheduler;
 
 // Fast lookup table for Chebyshev-Gauss-Lobatto transform matrix:
 // M[k][j] = (2.0 / (N * c_k * c_j)) * cos(j * k * pi / N) for N = 16.
@@ -261,6 +264,19 @@ int ExportTrajectoryViewToChebyshevSegments(
     } else {
       std::memcpy(&dst_buffer[s], &seg, sizeof(ChebyshevSegmentData));
     }
+
+    // Populate CPU L2 tile cache and cascade-spill to L3/DRAM if evicted
+    ChebyshevTile256 l2_tile{};
+    l2_tile.t_min = (seg_t_start - Instant{}) / Second;
+    l2_tile.t_max = (seg_t_end - Instant{}) / Second;
+    l2_tile.degree = kMaxChebyshevDegree;
+    l2_tile.body_or_vessel_id = 0;
+    for (int k = 0; k <= kMaxChebyshevDegree; ++k) {
+      l2_tile.cx[k] = seg.coeffs[k][0];
+      l2_tile.cy[k] = seg.coeffs[k][1];
+      l2_tile.cz[k] = seg.coeffs[k][2];
+    }
+    TimeSlicedScheduler::Instance().InsertL2Tile(l2_tile);
   }
 
   // Drain write-combining store buffer once after entire trajectory view completes!

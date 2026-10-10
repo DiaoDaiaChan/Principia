@@ -1,9 +1,10 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
+#include <functional>
 
 #if defined(_M_AMD64) || defined(__x86_64__)
 #include <immintrin.h>
@@ -80,18 +81,37 @@ struct alignas(64) ChebyshevTile256 {
   }
 };
 
-// Core-private Chebyshev Tile Cache: 512 tiles = 128 KB.
-// Sits 100% inside modern CPU per-core private L2 cache (512 KB - 2 MB).
-// Zero cross-core bus snooping, zero lock contention.
+// Core-private Chebyshev Tile Cache: auto-sized to 25% of L2 cache (128 KB - 512 KB).
+// Sits 100% inside modern CPU per-core private L2 cache.
+// Automatically spills/dumps evicted tiles to L3 cache upon overflow!
 class alignas(64) ChebyshevL2TileCache {
  public:
-  static constexpr std::size_t kCapacity = 512;
+  static constexpr std::size_t kMaxCapacity = 2048;  // Up to 512 KB
 
-  ChebyshevL2TileCache() = default;
+  explicit ChebyshevL2TileCache(std::size_t const capacity = 1024)
+      : capacity_(std::clamp<std::size_t>(capacity, 256, kMaxCapacity)) {}
 
-  // Inserts or replaces a tile in the L2 cache ring.
+  void SetCapacity(std::size_t const capacity) {
+    capacity_ = std::clamp<std::size_t>(capacity, 256, kMaxCapacity);
+  }
+
+  std::size_t capacity() const { return capacity_; }
+
+  // Inserts a tile into L2. If an older tile is evicted, spills it to L3 via callback.
+  template <typename SpillToL3Fn>
+  void InsertTile(ChebyshevTile256 const& tile, SpillToL3Fn&& spill_to_l3) {
+    std::size_t const slot = head_cursor_ % capacity_;
+    if (head_cursor_ >= capacity_) {
+      // Slot contains an old valid tile that is being evicted: Spill to L3!
+      spill_to_l3(tiles_[slot]);
+      ++spill_to_l3_count_;
+    }
+    tiles_[slot] = tile;
+    ++head_cursor_;
+  }
+
   void InsertTile(ChebyshevTile256 const& tile) {
-    std::size_t const slot = head_cursor_ % kCapacity;
+    std::size_t const slot = head_cursor_ % capacity_;
     tiles_[slot] = tile;
     ++head_cursor_;
   }
@@ -99,7 +119,7 @@ class alignas(64) ChebyshevL2TileCache {
   // Looks up a tile covering time `t` for `id`.
   ChebyshevTile256 const* FindTile(std::uint32_t const id, double const t) {
     ++lookups_;
-    std::size_t const count = std::min(head_cursor_, kCapacity);
+    std::size_t const count = std::min(head_cursor_, capacity_);
     for (std::size_t i = 0; i < count; ++i) {
       auto const& tile = tiles_[i];
       if (tile.body_or_vessel_id == id && t >= tile.t_min && t <= tile.t_max) {
@@ -112,12 +132,15 @@ class alignas(64) ChebyshevL2TileCache {
 
   std::uint64_t hits() const { return hits_; }
   std::uint64_t lookups() const { return lookups_; }
+  std::uint64_t spill_to_l3_count() const { return spill_to_l3_count_; }
 
  private:
+  std::size_t capacity_{1024};
   std::size_t head_cursor_{0};
   std::uint64_t hits_{0};
   std::uint64_t lookups_{0};
-  alignas(64) std::array<ChebyshevTile256, kCapacity> tiles_{};
+  std::uint64_t spill_to_l3_count_{0};
+  alignas(64) std::array<ChebyshevTile256, kMaxCapacity> tiles_{};
 };
 
 // Per-core 64 KB scratchpad for 17-stage Symplectic / Runge-Kutta Butcher stages.

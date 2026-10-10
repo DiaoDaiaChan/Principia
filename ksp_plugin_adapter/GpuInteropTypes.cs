@@ -141,6 +141,18 @@ public struct CpuModuleThreadingStatus {
   public double budget_headroom_ratio;
   public int l3_ephemeris_ring_hit_count;
   public int padding;
+
+  // Hardware Topology & Safe Quota Telemetry:
+  public int detected_l1d_kb;
+  public int detected_l2_kb;
+  public int detected_l3_mb;
+  public int allocated_l2_kb;
+  public int allocated_l3_mb;
+
+  // Multi-Level Eviction Spill & DRAM Cascade Telemetry:
+  public int l2_to_l3_spill_count;
+  public int l3_to_dram_spill_count;
+  public int dram_hit_count;
 }
 
 }  // namespace ksp_plugin_adapter

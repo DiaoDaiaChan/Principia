@@ -13,6 +13,7 @@
 #include "geometry/instant.hpp"
 #include "physics/celestial_l1_cache.hpp"
 #include "physics/chebyshev_l2_tile_cache.hpp"
+#include "physics/cpu_cache_topology.hpp"
 #include "physics/ephemeris_l3_window_ring.hpp"
 
 namespace principia {
@@ -23,11 +24,12 @@ namespace internal {
 using namespace principia::geometry::_instant;
 using namespace principia::physics::_celestial_l1_cache;
 using namespace principia::physics::_chebyshev_l2_tile_cache;
+using namespace principia::physics::_cpu_cache_topology;
 using namespace principia::physics::_ephemeris_l3_window_ring;
 
 enum class VesselPriorityTier : std::int32_t {
   Critical = 0,    // 50Hz Real-time (Active vessel, thrusting, or <= 2.5 km)
-  Interactive = 1, // Auto-Adaptive 25Hz ~ 50Hz (Nearby 2.5 km - 50 km, flight plan)
+  Interactive = 1, // Auto-Adaptive 16.7Hz ~ 50Hz (Nearby 2.5 km - 50 km, flight plan)
   Deferred = 2     // Auto-Adaptive 2Hz ~ 25Hz (Distant > 50 km, debris, idle probes)
 };
 
@@ -62,6 +64,18 @@ struct alignas(64) CpuModuleThreadingStatus {
   double budget_headroom_ratio{0.5};
   std::int32_t l3_ephemeris_ring_hit_count{0};
   std::int32_t padding{0};  // Keeps 8-byte alignment clean
+
+  // Hardware Topology & Safe Quota Telemetry:
+  std::int32_t detected_l1d_kb{48};
+  std::int32_t detected_l2_kb{2048};
+  std::int32_t detected_l3_mb{36};
+  std::int32_t allocated_l2_kb{512};
+  std::int32_t allocated_l3_mb{5};
+
+  // Multi-Level Eviction Spill & DRAM Cascade Telemetry:
+  std::int32_t l2_to_l3_spill_count{0};
+  std::int32_t l3_to_dram_spill_count{0};
+  std::int32_t dram_hit_count{0};
 };
 
 // High-precision stopwatch guarding the physics frame budget.
@@ -248,6 +262,14 @@ class TimeSlicedScheduler {
     l3_ring_hits_.fetch_add(1, std::memory_order_relaxed);
   }
 
+  // Inserts a tile into the thread-local L2 cache.
+  // If an older tile is evicted, automatically spills/dumps it into the shared L3 ring!
+  void InsertL2Tile(ChebyshevTile256 const& tile) {
+    ThreadLocalL2Cache().InsertTile(tile, [](ChebyshevTile256 const& evicted) {
+      EphemerisL3WindowRing::Instance().InsertSegment(evicted.body_or_vessel_id, evicted);
+    });
+  }
+
   CpuModuleThreadingStatus GetStatusSnapshot(
       int const hardware_concurrency,
       int const pool_total_threads,
@@ -287,6 +309,18 @@ class TimeSlicedScheduler {
     status.budget_headroom_ratio = governor_.headroom_ratio();
     status.l3_ephemeris_ring_hit_count = l3_ring_hits_.load(std::memory_order_relaxed);
 
+    // Hardware Topology & Safe Quota Telemetry
+    status.detected_l1d_kb = static_cast<std::int32_t>(topology_.l1d_size_bytes / 1024);
+    status.detected_l2_kb = static_cast<std::int32_t>(topology_.l2_per_core_bytes / 1024);
+    status.detected_l3_mb = static_cast<std::int32_t>(topology_.l3_shared_bytes / (1024 * 1024));
+    status.allocated_l2_kb = static_cast<std::int32_t>(topology_.SafeL2Bytes() / 1024);
+    status.allocated_l3_mb = static_cast<std::int32_t>(topology_.SafeL3Bytes() / (1024 * 1024));
+
+    // Multi-Level Eviction Spill & DRAM Cascade Telemetry
+    status.l2_to_l3_spill_count = static_cast<std::int32_t>(ThreadLocalL2Cache().spill_to_l3_count());
+    status.l3_to_dram_spill_count = static_cast<std::int32_t>(EphemerisL3WindowRing::Instance().spill_to_dram_count());
+    status.dram_hit_count = static_cast<std::int32_t>(EphemerisL3WindowRing::Instance().dram_hits());
+
     return status;
   }
 
@@ -294,8 +328,8 @@ class TimeSlicedScheduler {
     return l1_cache_;
   }
 
-  ChebyshevL2TileCache& ThreadLocalL2Cache() {
-    thread_local ChebyshevL2TileCache l2_cache;
+  ChebyshevL2TileCache& ThreadLocalL2Cache() const {
+    thread_local ChebyshevL2TileCache l2_cache(topology_.L2TileCapacity());
     return l2_cache;
   }
 
@@ -303,8 +337,18 @@ class TimeSlicedScheduler {
     return EphemerisL3WindowRing::Instance();
   }
 
+  CpuCacheTopology const& topology() const {
+    return topology_;
+  }
+
  private:
-  TimeSlicedScheduler() = default;
+  TimeSlicedScheduler() {
+    topology_ = DetectCpuCacheTopology();
+    // Auto-size L3 window ring safely according to host CPU L3 capacity:
+    EphemerisL3WindowRing::Instance().SetSegmentsPerBody(topology_.L3SegmentsPerBody());
+  }
+
+  CpuCacheTopology topology_{};
 
   std::atomic<std::int64_t> budget_us_{8000};  // Default 8.0 ms (8000 us)
   std::atomic<double> last_frame_elapsed_ms_{0.0};
