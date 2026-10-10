@@ -169,6 +169,16 @@ class MockPlugin : public Plugin {
               WriteToMessage,
               (not_null<serialization::Plugin*> message),
               (const, override));
+
+  MOCK_METHOD(_time_sliced_scheduler::VesselPriorityTier,
+              ClassifyPileUp,
+              (PileUp const* pile_up),
+              (const, override));
+
+  MOCK_METHOD(_time_sliced_scheduler::CpuModuleThreadingStatus,
+              GetCpuModuleThreadingStatus,
+              (),
+              (const, override));
 };
 
 }  // namespace internal

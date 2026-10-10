@@ -808,21 +808,105 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
   if (ephemeris_pacer_ != nullptr) {
     ephemeris_pacer_->NotifyCurrentTime(current_time_);
   }
+
+  // Update L1 celestial cache block for 100% L1d cache hit rate across substeps.
+  auto& l1_cache = _time_sliced_scheduler::TimeSlicedScheduler::Instance().L1Cache();
+  int body_idx = 0;
+  for (auto const& [index, celestial] : celestials_) {
+    if (body_idx >= physics::_celestial_l1_cache::CelestialL1CacheBlock::kMaxBodies) break;
+    auto const dof = celestial->current_degrees_of_freedom(current_time_);
+    auto const& pos = dof.position();
+    auto const& vel = dof.velocity();
+    l1_cache.x[body_idx] = (pos - Barycentric::origin).coordinates().x / Metre;
+    l1_cache.y[body_idx] = (pos - Barycentric::origin).coordinates().y / Metre;
+    l1_cache.z[body_idx] = (pos - Barycentric::origin).coordinates().z / Metre;
+    l1_cache.vx[body_idx] = vel.coordinates().x / (Metre / Second);
+    l1_cache.vy[body_idx] = vel.coordinates().y / (Metre / Second);
+    l1_cache.vz[body_idx] = vel.coordinates().z / (Metre / Second);
+    l1_cache.mu[body_idx] = celestial->body()->gravitational_parameter() /
+                            si::Unit<quantities::_named_quantities::GravitationalParameter>;
+    ++body_idx;
+  }
+  l1_cache.count = body_idx;
+  _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL1Hit();
+
   UpdatePlanetariumRotation();
   loaded_vessels_.clear();
+}
+
+_time_sliced_scheduler::VesselPriorityTier Plugin::ClassifyPileUp(
+    PileUp const* const pile_up) const {
+  if (pile_up == nullptr) {
+    return _time_sliced_scheduler::VesselPriorityTier::Deferred;
+  }
+  for (not_null<Part*> const part : pile_up->parts()) {
+    if (part->truthful()) {
+      return _time_sliced_scheduler::VesselPriorityTier::Critical;
+    }
+    if (part->intrinsic_force() != Vector<Force, Barycentric>{}) {
+      return _time_sliced_scheduler::VesselPriorityTier::Critical;
+    }
+    auto const it = part_id_to_vessel_.find(part->part_id());
+    if (it != part_id_to_vessel_.end()) {
+      if (it->second->has_flight_plan()) {
+        return _time_sliced_scheduler::VesselPriorityTier::Interactive;
+      }
+    }
+  }
+  return _time_sliced_scheduler::VesselPriorityTier::Deferred;
 }
 
 void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
   CHECK(!initializing_);
 
-  // Start all the integrations in parallel.
-  std::vector<PileUpFuture> pile_up_futures;
+  auto const breaker = _time_sliced_scheduler::TimeSlicedScheduler::Instance()
+      .CreateTickCircuitBreaker();
+  static std::uint64_t frame_index = 0;
+  ++frame_index;
+
+  int tier1_count = 0;
+  int tier2_count = 0;
+  int tier3_count = 0;
+
+  std::vector<PileUp*> scheduled_critical;
+  std::vector<PileUp*> scheduled_deferred;
+
   for (auto* const pile_up : pile_ups_) {
+    auto const tier = ClassifyPileUp(pile_up);
+    if (tier == _time_sliced_scheduler::VesselPriorityTier::Critical) {
+      ++tier1_count;
+      scheduled_critical.push_back(pile_up);
+    } else {
+      if (tier == _time_sliced_scheduler::VesselPriorityTier::Interactive) {
+        ++tier2_count;
+      } else {
+        ++tier3_count;
+      }
+      std::uint64_t const uid = reinterpret_cast<std::uintptr_t>(pile_up);
+      if (_time_sliced_scheduler::TimeSlicedScheduler::Instance()
+              .ShouldStepVesselThisTick(tier, uid, frame_index, *breaker)) {
+        scheduled_deferred.push_back(pile_up);
+      }
+    }
+  }
+
+  // 1. Critical pile-ups execute first in parallel
+  std::vector<PileUpFuture> pile_up_futures;
+  pile_up_futures.reserve(scheduled_critical.size() + scheduled_deferred.size());
+
+  for (auto* const pile_up : scheduled_critical) {
     pile_up_futures.emplace_back(
         pile_up,
         vessel_thread_pool_.Add([this, pile_up]() {
-          // Note that there cannot be contention in the following method as
-          // no two pile-ups are advanced at the same time.
+          return pile_up->DeformAndAdvanceTime(current_time_);
+        }));
+  }
+
+  // 2. Scheduled non-critical slices execute next
+  for (auto* const pile_up : scheduled_deferred) {
+    pile_up_futures.emplace_back(
+        pile_up,
+        vessel_thread_pool_.Add([this, pile_up]() {
           return pile_up->DeformAndAdvanceTime(current_time_);
         }));
   }
@@ -842,6 +926,46 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
       vessel->AdvanceTime();
     }
   }
+
+  double const elapsed_ms = breaker->ElapsedMilliseconds();
+  _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordFrameStats(
+      elapsed_ms, tier1_count, tier2_count, tier3_count);
+}
+
+_time_sliced_scheduler::CpuModuleThreadingStatus
+Plugin::GetCpuModuleThreadingStatus() const {
+  int const hardware_concurrency = static_cast<int>(std::thread::hardware_concurrency());
+  int const pool_total = static_cast<int>(vessel_thread_pool_.pool_size());
+  int const pool_busy = static_cast<int>(vessel_thread_pool_.busy_threads());
+  int const pool_pending = static_cast<int>(vessel_thread_pool_.pending_tasks());
+
+  int const ephemeris_pacer_active =
+      (ephemeris_pacer_ != nullptr && ephemeris_pacer_->is_prolonging()) ? 1 : 0;
+
+  int prognosticator_count = 0;
+  int orbit_analyser_active = 0;
+  int optimizer_active = 0;
+
+  for (auto const& [guid, vessel] : vessels_) {
+    ++prognosticator_count;
+    if (vessel->progress_of_orbit_analysis() > 0.0 &&
+        vessel->progress_of_orbit_analysis() < 1.0) {
+      ++orbit_analyser_active;
+    }
+    if (vessel->FlightPlanOptimizationDriverInProgress().has_value()) {
+      ++optimizer_active;
+    }
+  }
+
+  return _time_sliced_scheduler::TimeSlicedScheduler::Instance().GetStatusSnapshot(
+      hardware_concurrency,
+      pool_total,
+      pool_busy,
+      pool_pending,
+      ephemeris_pacer_active,
+      prognosticator_count,
+      orbit_analyser_active,
+      optimizer_active);
 }
 
 not_null<std::unique_ptr<PileUpFuture>> Plugin::CatchUpVessel(

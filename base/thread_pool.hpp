@@ -41,6 +41,10 @@ class ThreadPool final {
   // busy waiting on `TryAdd`.
   bool WaitUntilIdleFor(absl::Duration duration);
 
+  std::int64_t pool_size() const;
+  std::int64_t busy_threads() const;
+  std::int64_t pending_tasks() const;
+
  private:
   // The queue element contains a `function` to execute and a `promise` used to
   // communicate the result to the caller.
@@ -53,7 +57,7 @@ class ThreadPool final {
   // execute it, and set its result in the promise.
   void DequeueCallAndExecute();
 
-  absl::Mutex lock_;
+  mutable absl::Mutex lock_;
   bool shutdown_ ABSL_GUARDED_BY(lock_) = false;
   std::deque<Call> calls_ ABSL_GUARDED_BY(lock_);
   std::int64_t busy_threads_ ABSL_GUARDED_BY(lock_) = 0;

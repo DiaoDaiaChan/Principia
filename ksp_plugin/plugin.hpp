@@ -35,6 +35,7 @@
 #include "ksp_plugin/pile_up.hpp"
 #include "ksp_plugin/planetarium.hpp"
 #include "ksp_plugin/renderer.hpp"
+#include "ksp_plugin/time_sliced_scheduler.hpp"
 #include "ksp_plugin/vessel.hpp"
 #include "numerics/elementary_functions.hpp"
 #include "physics/apsides.hpp"
@@ -333,6 +334,12 @@ class Plugin {
   // and returns true. If the future is not yet ready, leaves it intact and returns false.
   virtual bool TryHarvestVesselCatchUp(PileUpFuture& pile_up_future,
                                        VesselSet& collided_vessels);
+
+  virtual _time_sliced_scheduler::VesselPriorityTier ClassifyPileUp(
+      PileUp const* pile_up) const;
+
+  virtual _time_sliced_scheduler::CpuModuleThreadingStatus
+  GetCpuModuleThreadingStatus() const;
 
   // Returns the displacement and velocity of the vessel with GUID `vessel_guid`
   // relative to its parent at current time. For a KSP `Vessel` `v`, the

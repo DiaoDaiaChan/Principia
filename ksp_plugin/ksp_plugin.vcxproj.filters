@@ -104,6 +104,9 @@
     <ClInclude Include="trajectory_renderer_interop.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="time_sliced_scheduler.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="compute_pipeline.cpp">

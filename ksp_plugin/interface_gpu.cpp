@@ -546,5 +546,31 @@ PRINCIPIA_EXPORT void __cdecl principia__UnpackInactiveVesselsBatch(
   plugin->UnpackInactiveVesselsFromGpu(in_states, count);
 }
 
+//=============================================================================
+// CPU Time-Sliced Scheduling & Multi-Thread Module Telemetry
+//=============================================================================
+
+PRINCIPIA_EXPORT void __cdecl principia__GetCpuModuleThreadingStatus(
+    Plugin const* const plugin,
+    ksp_plugin::_time_sliced_scheduler::CpuModuleThreadingStatus* const status) {
+  if (status == nullptr) {
+    return;
+  }
+  if (plugin == nullptr) {
+    *status = ksp_plugin::_time_sliced_scheduler::TimeSlicedScheduler::Instance()
+        .GetStatusSnapshot(
+            static_cast<int>(std::thread::hardware_concurrency()),
+            0, 0, 0, 0, 0, 0, 0);
+    return;
+  }
+  *status = plugin->GetCpuModuleThreadingStatus();
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__SetFrameBudgetMilliseconds(
+    double const ms) {
+  ksp_plugin::_time_sliced_scheduler::TimeSlicedScheduler::Instance()
+      .SetFrameBudgetMilliseconds(ms);
+}
+
 }  // namespace interface
 }  // namespace principia

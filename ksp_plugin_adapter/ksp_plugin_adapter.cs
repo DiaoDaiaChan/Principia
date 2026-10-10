@@ -1862,6 +1862,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
 
       // Advance the lagging vessels and kill those which collided with a
       // celestial.
+      PerformanceProbe.PluginPointer = plugin_;
       using (PerformanceProbe.Measure(ProbeCategory.CppPhysics)) {
         plugin_.CatchUpLaggingVessels(out DisposableIterator collided_vessels);
         for (;

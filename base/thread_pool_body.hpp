@@ -94,6 +94,23 @@ bool ThreadPool<T>::WaitUntilIdleFor(absl::Duration const duration) {
 }
 
 template<typename T>
+std::int64_t ThreadPool<T>::pool_size() const {
+  return static_cast<std::int64_t>(threads_.size());
+}
+
+template<typename T>
+std::int64_t ThreadPool<T>::busy_threads() const {
+  absl::ReaderMutexLock l(&lock_);
+  return busy_threads_;
+}
+
+template<typename T>
+std::int64_t ThreadPool<T>::pending_tasks() const {
+  absl::ReaderMutexLock l(&lock_);
+  return static_cast<std::int64_t>(calls_.size());
+}
+
+template<typename T>
 void ThreadPool<T>::DequeueCallAndExecute() {
   for (;;) {
     Call this_call;

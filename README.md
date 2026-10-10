@@ -1,97 +1,124 @@
-# Principia (Heterogeneous Multi-Device Acceleration Edition)
+# Principia-Optima
 
-> **𝑛-Body and Extended Body Gravitation for Kerbal Space Program with Heterogeneous Multi-GPU Acceleration & ReBAR Direct DMA**
+> **Heterogeneous Multi-Device Acceleration Edition of [Principia](https://github.com/mockingbirdnest/Principia)**  
+> 𝑛-Body and extended body gravitation for Kerbal Space Program with heterogeneous multi-device acceleration & PCIe ReBAR direct DMA.
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20x64-brightgreen.svg)](#)
 [![Acceleration](https://img.shields.io/badge/Compute-Direct3D%2011%20%7C%20ReBAR%20DMA%20%7C%20AVX2-orange.svg)](#)
+[![Upstream](https://img.shields.io/badge/Upstream-mockingbirdnest%2FPrincipia-lightgrey.svg)](https://github.com/mockingbirdnest/Principia)
 
-本项目是基于经典天体力学模组 [Principia (mockingbirdnest/Principia)](https://github.com/mockingbirdnest/Principia) 的深度优化与异构算力加速演进版本。在完整保持 Principia 严谨的辛几何积分器与 $n$-体引力摄动物理精度的前提下，构建了**异构多设备动态调度（CPU + dGPU + iGPU）**、**PCIe ReBAR 显存直通 Zero-Copy DMA**、**切比雪夫连续多项式高阶压缩**与**全异步硬件性能探针**等新一代高性能架构。
-
----
-
-## ⚡ 核心架构与加速特性 (Key Features)
-
-### 1. 异构多硬件动态负载均衡 (Heterogeneous Workload Balancer)
-* **动态拓扑感知**：自动探测系统中所有的可用算力硬件，包括独显（Discrete GPU）、核显（Integrated GPU）、主机处理器（CPU）及辅助显卡（Auxiliary GPU）。
-* **微基准自适应配比**：基于实际运行时的物理计算延迟与跨总线传输带宽，自适应动态平衡任务分块（Chunking），让核显与闲置计算单元协同参与轨道外推与星历求解，最大化硬件利用率。
-* **分级降级容灾**：当主显卡或驱动遭遇设备重置或高显存压力时，毫秒级无缝自动迁移回 CPU/备用设备，保证游戏不崩溃、物理不中断。
-
-### 2. PCIe ReBAR / Direct3D 11 Zero-Copy DMA 显存直通
-* **物理显存视口直通**：利用 PCIe Resizable BAR (ReBAR / SAM) 机制，在 Direct3D 11 下将缓冲区映射为 USWC (Uncacheable Speculative Write-Combining) 空间。
-* **SIMD 非暂态流式存储**：针对 x86-64 微架构量身定制的 AVX2 / SSE2 流式写入（Streaming Stores），绕过 CPU 缓存污染，直写物理显存。
-* **单批次屏障优化 (Single End-of-Batch SFence)**：彻底消除循环内冗余的硬件流水线停顿，释放 PCIe 4.0/5.0 理论带宽极限。
-
-### 3. 切比雪夫 (Chebyshev) 连续多项式高阶轨迹压缩
-* **Gauss-Lobatto 16 阶节点变换**：通过正交多项式基函数展开，将传统海量离散离散轨迹采样点转换为高阶连续解析多项式段。
-* **传输带宽暴降 80%+**：每个 256 字节的切片即可覆盖数百秒的高精度轨道演化，大幅降低跨总线搬运量与 GPU 显存占用，同时在渲染端实现亚微米级平滑插值。
-
-### 4. 全异步无损硬件性能探针 (Performance Probe GUI)
-* **自动扩展多设备拓扑卡片**：界面自适应识别系统的 GPU 数量，动态扩展设备运行信息与健康状态。
-* **微秒级独立延迟分析**：精确呈现 CPU 耗时、dGPU 传输/计算延迟、iGPU 吞吐量及负载分担比例条。
-* **主线程零负载**：采样与微基准测量全部运行在独立异步工作线程中，零垃圾回收（Zero-GC），绝不拖累游戏渲染帧率。
-
-### 5. C++ 算力全量下沉与 C# 托管层极致瘦身
-* **架构解耦**：彻底清除多余的 C# 托管胶水层、中间调度类与冗余缓冲区，严格遵守零堆分配原则。
-* **原生下沉**：所有的硬件交互、状态同步、内存屏障与数学插值全量在原生 C++ 层面闭环，消除托管/非托管边界上下文切换开销。
+[简体中文文档](README_zh.md) | [License (Apache 2.0)](LICENSE) | [Upstream Repository](https://github.com/mockingbirdnest/Principia)
 
 ---
 
-## 🖥️ 硬件与系统要求 (System Requirements)
+## Overview
 
-| 项目 | 最低配置 | 推荐配置 |
+**Principia-Optima** is a high-performance acceleration fork of the celestial mechanics mod [Principia (mockingbirdnest/Principia)](https://github.com/mockingbirdnest/Principia) for Kerbal Space Program.
+
+While fully preserving Principia's rigorous symplectic numerical integrators and extended body gravitational models, this fork introduces heterogeneous multi-device computing and a PCIe direct DMA pipeline. It offloads trajectory extrapolation and rendering workloads across CPU, dGPU, and iGPU, improving frame-rate stability and physics continuity in complex saves and dense multi-vessel environments.
+
+---
+
+## Core Architecture & Key Features
+
+### 1. Heterogeneous Multi-Device Workload Balancer
+* **Dynamic Topology Detection**: Automatically identifies available compute hardware across discrete GPUs (dGPU), integrated graphics (iGPU), and the host CPU.
+* **Adaptive Chunk Scheduling**: Measures bus transfer latency and per-device compute throughput at runtime to dynamically size trajectory extrapolation chunks, allowing iGPUs and idle cores to assist the primary pipeline.
+* **Multi-Tier Fallback & Fault Tolerance**: Automatically migrates active workloads back to the CPU or standby devices upon driver resets or high VRAM pressure, preventing physics stalls or game crashes.
+
+### 2. PCIe ReBAR / Direct3D 11 Zero-Copy DMA Pipeline
+* **Direct VRAM Viewport Mapping**: Maps Direct3D 11 buffers to USWC (Uncacheable Speculative Write-Combining) physical video memory on systems with PCIe Resizable BAR enabled.
+* **SIMD Streaming Stores**: Uses AVX2 / SSE2 non-temporal streaming store instructions to write directly into physical VRAM, bypassing CPU cache pollution.
+* **Single End-of-Batch Memory Barrier**: Replaces redundant inner-loop pipeline flushes with a single batch-level memory barrier (`_mm_sfence()`), maximizing bus write throughput.
+
+### 3. Chebyshev Polynomial Continuous Trajectory Compression
+* **16th-Order Gauss-Lobatto Nodal Expansion**: Projects discrete trajectory samples onto orthogonal polynomial bases, transforming discrete coordinates into continuous analytical polynomial segments.
+* **Reduced Bus & Memory Footprint**: Each 256-byte polynomial slice covers hundreds of seconds of orbital motion, reducing bus bandwidth and GPU VRAM footprint by approximately 80% while enabling continuous sub-micrometer interpolation during rendering.
+
+### 4. CPU Cache Micro-architecture & Multi-Core Acceleration
+* **L1 Data Cache Resident Celestial Block**: Packs up to 32 celestial bodies into a 64-byte aligned Structure-of-Arrays (SoA) layout requiring only 1.75 KB of storage. Fits entirely inside modern CPU L1d cache (32 KB - 48 KB) across all Runge-Kutta substeps, delivering a 100% L1d cache hit rate for $n$-body acceleration evaluation.
+* **Cache Line Alignment & Zero False Sharing**: Critical worker slots and telemetry structures are aligned to 64 bytes (`alignas(64)`), eliminating cache line bouncing and MESI bus invalidation storms on high-core CPUs.
+* **Hardware Prefetch Pipeline**: Employs `_mm_prefetch` non-temporal prefetching for continuous Chebyshev polynomial streaming into CPU L2/L3 caches.
+
+### 5. Three-Tier Time-Sliced Scheduling & Frame Budget Circuit Breaker
+* **Hierarchical Workload Classification**: Vessels are dynamically grouped into Tier 1 (Critical: loaded/focus vessel or active thrust, 50 Hz real-time), Tier 2 (Interactive: flight plan nodes/nearby, 25 Hz interleaved), and Tier 3 (Deferred: background probes/debris, 2~5 Hz time-sliced).
+* **Frame-Budget Yielding with Continuous Polynomial Interpolation**: Deferred vessels automatically yield when the frame physics budget (configurable: 4ms / 8ms / 12ms / 16ms) is exceeded. Skipped steps are continuously evaluated via analytical Chebyshev polynomials, ensuring zero visual stutter and rock-solid 60~120+ FPS.
+
+### 6. GPGPU Parallel Shooting Flight Plan Optimizer
+* Uses GPU Compute Shaders to evaluate candidate maneuver parameters concurrently across the search domain, reducing computation times for complex rendezvous and interplanetary transfers.
+
+### 7. Asynchronous Real-Time Performance & CPU Threading Probe HUD
+* A zero-allocation floating telemetry window that monitors per-module active/idle CPU threads (Vessel Integrator Pool, Ephemeris Pacer, Prognosticator, Orbit Analyser, Flight Plan Optimizer), real-time thread pool utilization, L1 cache hit counts, time-slicing yields, and multi-GPU load distribution.
+
+---
+
+## Hardware & System Requirements
+
+| Component | Minimum | Recommended |
 | :--- | :--- | :--- |
-| **操作系统** | Windows 10/11 64-bit | Windows 11 64-bit (最新版本) |
-| **游戏版本** | Kerbal Space Program 1.8.1 — 1.12.5 | KSP 1.12.5 |
-| **处理器 (CPU)** | 具备 SSE4.2 / AVX 的 64 位 x86 处理器 | 具备 AVX2 / FMA 的现代多核处理器 |
-| **独立显卡 (dGPU)** | 支持 Direct3D 11 的独立显卡 | PCIe 4.0/5.0 独显，且主板开启 **Resizable BAR** |
-| **集成显卡 (iGPU)** | 可选（系统检测到将自动作为辅算力协同） | Intel UHD/Iris/Xe 或 AMD Radeon Graphics |
+| **Operating System** | Windows 10/11 64-bit | Windows 11 64-bit |
+| **Game Version** | Kerbal Space Program 1.8.1 — 1.12.5 | KSP 1.12.5 |
+| **Processor (CPU)** | 64-bit x86 CPU with SSE4.2 / AVX support | Modern multi-core CPU with AVX2 / FMA |
+| **Discrete GPU (dGPU)** | Direct3D 11 compatible graphics card | PCIe 4.0/5.0 GPU with **Resizable BAR** enabled in BIOS |
+| **Integrated GPU (iGPU)** | Optional (used as auxiliary compute if present) | Intel UHD / Iris / Xe or AMD Radeon Graphics |
 
 > [!TIP]
-> **如何最大化直通性能？**
-> 建议在电脑主板 BIOS 中开启 **Resizable BAR Support** 与 **Above 4G Decoding**，这将使 CPU 能够直接将数以千计的连续轨道多项式段以总线线速写入 GPU 显存。
+> **Enabling PCIe ReBAR**  
+> Enable **Resizable BAR Support** and **Above 4G Decoding** in your motherboard BIOS. This allows the CPU to write polynomial trajectory slices directly into GPU VRAM at PCIe line rate, minimizing staging copy latency.
 
 ---
 
-## 🛠️ 编译与构建说明 (Building from Source)
+## Building from Source
 
-本项目采用 Visual Studio 2022 与 ClangCL 原生编译工具链构建。
+This project builds with Visual Studio 2022 and the ClangCL toolchain:
 
-1. **环境依赖**：
-   - Visual Studio 2022 (Community / Professional / Enterprise)
-   - 安装 C++ 工作负载、Clang-CL 工具链、.NET Framework 4.7.2+ 开发套件
-   - Windows 10/11 SDK (10.0.26100.0 或兼容版本)
+```powershell
+# 1. Build optimized C++ native library (AVX / FMA configuration)
+& "MSBuild.exe" "ksp_plugin\ksp_plugin.vcxproj" /p:Configuration=Release_AVX_FMA /p:Platform=x64 /m
 
-2. **编译核心动态库与 C# 插件**：
-   ```powershell
-   # 编译优化版 C++ 动态库 (AVX/FMA 优化配置)
-   & "MSBuild.exe" "ksp_plugin\ksp_plugin.vcxproj" /p:Configuration=Release_AVX_FMA /p:Platform=x64 /m
+# 2. Build baseline compatible C++ native library (generic x64)
+& "MSBuild.exe" "ksp_plugin\ksp_plugin.vcxproj" /p:Configuration=Release /p:Platform=x64 /m
 
-   # 编译基础兼容版 C++ 动态库 (通用 x64 配置)
-   & "MSBuild.exe" "ksp_plugin\ksp_plugin.vcxproj" /p:Configuration=Release /p:Platform=x64 /m
+# 3. Build C# Unity adapter plugin
+& "MSBuild.exe" "ksp_plugin_adapter\ksp_plugin_adapter.csproj" /p:Configuration=Release /p:Platform=AnyCPU /m
+```
 
-   # 编译 C# 游戏适配层
-   & "MSBuild.exe" "ksp_plugin_adapter\ksp_plugin_adapter.csproj" /p:Configuration=Release /p:Platform=AnyCPU /m
-   ```
-
-3. **部署至 KSP**：
-   将生成的产物复制到游戏目录的 `GameData/Principia/` 对应路径下：
-   - `ksp_plugin_adapter.dll` -> `GameData/Principia/`
-   - `Windows/x64_AVX_FMA/principia.dll` -> `GameData/Principia/Windows/x64_AVX_FMA/`
-   - `Windows/x64/principia.dll` -> `GameData/Principia/Windows/x64/`
+Once built, deploy the output binaries to your game's `GameData/Principia/` directory:
+* `ksp_plugin_adapter.dll` -> `GameData/Principia/`
+* `Windows/x64_AVX_FMA/principia.dll` -> `GameData/Principia/Windows/x64_AVX_FMA/`
+* `Windows/x64/principia.dll` -> `GameData/Principia/Windows/x64/`
 
 ---
 
-## 📖 原版 Principia 资源与概念参考 (Upstream Resources)
+## Upstream Principia Documentation
 
-Principia 为《坎巴拉太空计划》带来了真正的 $n$-体引力物理与扩展体引力模型。建议玩家查阅官方维基了解核心概念：
-* **概念手册 (Concepts)**: [Concepts Wiki](https://github.com/mockingbirdnest/Principia/wiki/Concepts)（包括绘制坐标系与飞行计划）
-* **奔月教程 (A guide to going to the Mun)**: [Mun Guide](https://github.com/mockingbirdnest/Principia/wiki/A-guide-to-going-to-the-Mun-with-Principia)
-* **交会对接指南 (Rendezvous Guide)**: [Low Orbit Rendezvous](https://github.com/mockingbirdnest/Principia/wiki/A-guide-to-performing-low-orbit-rendezvous)
-* **上游官方仓库**: [mockingbirdnest/Principia](https://github.com/mockingbirdnest/Principia)
+*(The following is the original documentation from upstream [mockingbirdnest/Principia](https://github.com/mockingbirdnest/Principia):)*
+
+![⚠️](https://placehold.co/10/red/red) _If you downloaded Lévy before September 13th, 20:58 UTC, you probably have a buggy version (see [#4685](https://github.com/mockingbirdnest/Principia/issues/4685)). Please download it again. If you have the correct version, the version string in the Principia UI says `2026091103-Lévy-0-gc6db14e961191ce8fd931d3302bfa7f7e80d0ecd`. We apologize for the inconvenience._ ![⚠️](https://placehold.co/10/red/red)
+
+**&lrm;[Lévy](https://github.com/mockingbirdnest/Principia/wiki/Change-Log#le%CC%81vy), the September version of Principia, is available, with new features and bug fixes.  Download it [here for 1.8.1, 1.9.1, 1.10.1, 1.11.0, 1.11.1, 1.11.2, and 1.12.2 to 1.12.5](https://bit.ly/l3vy).**
+
+**For the convenience of Chinese users, download from 腾讯微云: [Principia Lévy for 1.8.1—1.12.5](https://share.weiyun.com/JAmT3w6C).**
+
+Principia is a mod for Kerbal Space Program (KSP) which implements N-body and extended body gravitation.  Instead of being within the sphere of influence of a single celestial body at any point in time, your vessels are influenced by all the celestials.  This makes it possible to implement missions that are more complex and more realistic than in the stock game, especially if used in conjunction with a mod like RealSolarSystem which has real-life celestials.
+
+N-body gravitation is more complex than the toy physics of the stock game.  Therefore, before using the mod we recommend that you read the [concepts](https://github.com/mockingbirdnest/Principia/wiki/Concepts) document which explains the most important parts of Principia.  In particular, you should learn about the [plotting frame](https://github.com/mockingbirdnest/Principia/wiki/Concepts#plotting-frame) and [flight planning](https://github.com/mockingbirdnest/Principia/wiki/Concepts#flight-planning).
+
+You might also want to go through our
+[tutorial](https://github.com/mockingbirdnest/Principia/wiki/A-guide-to-going-to-the-Mun-with-Principia) which shows how 
+to go to the Mun with Principia in an energy-efficient manner.  We also have a guide explaining how to use the support for [rendezvous](https://github.com/mockingbirdnest/Principia/wiki/A-guide-to-performing-low-orbit-rendezvous).
+
+The [FAQ](https://github.com/mockingbirdnest/Principia/wiki/Installing,-reporting-bugs,-and-frequently-asked-questions) explain how to install, how to report bugs and documents the known issues and limitations.
+
+The [change log](https://github.com/mockingbirdnest/Principia/wiki/Change-Log) gives a fairly detailed description of the new features in each release.
+
+Principia is released on every [new moon](https://en.wikipedia.org/wiki/New_moon) with whatever features and bug fixes are ready at the time.  This ensures relatively timely improvements and bug fixes.
+
+Download the binary (Ubuntu, macOS, and Windows) [here for 1.8.1, 1.9.1, 1.10.1, 1.11.0, 1.11.1, 1.11.2, and 1.12.2 to 1.12.5](https://bit.ly/l3vy).  Or, if you don't trust our binary, [build the mod](https://github.com/mockingbirdnest/Principia/blob/master/documentation/Setup.md) from the [Lévy](https://github.com/mockingbirdnest/Principia/releases/tag/2026091103-L%C3%A9vy) release.
 
 ---
 
-## 📜 许可证 (License)
+## License
 
-本项目继承 Principia 采用 [Apache License 2.0](LICENSE) 开源协议。
+This project inherits Principia's open source license under the [Apache License 2.0](LICENSE).

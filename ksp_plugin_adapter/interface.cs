@@ -486,6 +486,17 @@ internal static partial class Interface {
         Loader.LoadOptionalFunction<GpuGetMultiDeviceSummaryDelegate>("principia__GpuGetMultiDeviceSummary");
     public PartitionMultiDeviceBatchDelegate PartitionMultiDeviceBatch =
         Loader.LoadOptionalFunction<PartitionMultiDeviceBatchDelegate>("principia__PartitionMultiDeviceBatch");
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GetCpuModuleThreadingStatusDelegate(
+        IntPtr plugin, out CpuModuleThreadingStatus status);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void SetFrameBudgetMillisecondsDelegate(double ms);
+
+    public GetCpuModuleThreadingStatusDelegate GetCpuModuleThreadingStatus =
+        Loader.LoadOptionalFunction<GetCpuModuleThreadingStatusDelegate>("principia__GetCpuModuleThreadingStatus");
+    public SetFrameBudgetMillisecondsDelegate SetFrameBudgetMilliseconds =
+        Loader.LoadOptionalFunction<SetFrameBudgetMillisecondsDelegate>("principia__SetFrameBudgetMilliseconds");
   }
 
   internal static bool HasNativeEphemerisPacer() =>
@@ -630,6 +641,18 @@ internal static partial class Interface {
     }
   }
 
+  internal static void GetCpuModuleThreadingStatus(
+      this IntPtr plugin, out CpuModuleThreadingStatus status) {
+    if (symbols_?.GetCpuModuleThreadingStatus != null) {
+      symbols_.GetCpuModuleThreadingStatus(plugin, out status);
+    } else {
+      status = default;
+    }
+  }
+
+  internal static void SetFrameBudgetMilliseconds(double ms) {
+    symbols_?.SetFrameBudgetMilliseconds?.Invoke(ms);
+  }
 
   internal static void ApplyPartForcesBatch(
       this IntPtr plugin,

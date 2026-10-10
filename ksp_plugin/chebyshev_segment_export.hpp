@@ -130,6 +130,11 @@ inline void WriteSegmentDataBatch(
     DmaTransferMode const mode) {
   if (mode == DmaTransferMode::DirectDma) {
     for (int i = 0; i < count; ++i) {
+#if defined(_M_AMD64) || defined(__x86_64__)
+      if (i + 2 < count) {
+        _mm_prefetch(reinterpret_cast<char const*>(&src[i + 2]), _MM_HINT_T0);
+      }
+#endif
       StreamStoreSegment(src[i], &dst[i]);
     }
     FlushStoreBuffers();
@@ -246,6 +251,11 @@ int ExportTrajectoryViewToChebyshevSegments(
     }
 
     // Write to mapped VRAM / system buffer via streaming store without per-segment fence
+#if defined(_M_AMD64) || defined(__x86_64__)
+    if (s + 2 < num_segments) {
+      _mm_prefetch(reinterpret_cast<char const*>(&dst_buffer[s + 2]), _MM_HINT_T0);
+    }
+#endif
     if (dma_mode == DmaTransferMode::DirectDma) {
       StreamStoreSegment(seg, &dst_buffer[s]);
     } else {

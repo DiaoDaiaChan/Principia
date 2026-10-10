@@ -275,6 +275,14 @@ int __cdecl principia__RenderTrajectoryToNativeBuffer(
     ksp_plugin::_trajectory_renderer_interop::TrajectoryVertex* vertex_buffer,
     int max_vertices);
 
+extern "C" PRINCIPIA_DLL
+void __cdecl principia__GetCpuModuleThreadingStatus(
+    Plugin const* plugin,
+    ksp_plugin::_time_sliced_scheduler::CpuModuleThreadingStatus* status);
+
+extern "C" PRINCIPIA_DLL
+void __cdecl principia__SetFrameBudgetMilliseconds(double ms);
+
 }  // namespace interface
 }  // namespace principia
 

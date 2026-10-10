@@ -111,5 +111,29 @@ public struct WorkloadBalanceState {
   private byte[] padding2;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct CpuModuleThreadingStatus {
+  public int hardware_concurrency;
+  public int vessel_pool_total_threads;
+  public int vessel_pool_active_threads;
+  public int vessel_pool_pending_tasks;
+
+  public int ephemeris_pacer_active;
+  public int prognosticator_active_count;
+  public int orbit_analyser_active;
+  public int flight_plan_optimizer_active;
+
+  public double current_frame_physics_time_ms;
+  public double frame_budget_limit_ms;
+
+  public int tier1_vessel_count;
+  public int tier2_vessel_count;
+  public int tier3_vessel_count;
+  public int deferred_slices_yielded;
+
+  public int l1_celestial_cache_hit_count;
+  public int l2_chebyshev_tile_hit_count;
+}
+
 }  // namespace ksp_plugin_adapter
 }  // namespace principia

@@ -65,6 +65,7 @@
     <ClInclude Include="compute_pipeline.hpp" />
     <ClInclude Include="part_force_interop.hpp" />
     <ClInclude Include="trajectory_renderer_interop.hpp" />
+    <ClInclude Include="time_sliced_scheduler.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="celestial.cpp" />
