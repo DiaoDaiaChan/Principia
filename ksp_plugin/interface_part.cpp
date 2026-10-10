@@ -14,6 +14,7 @@
 #include "journal/profiles.hpp"  // 🧙 For generated profiles.
 #include "ksp_plugin/identification.hpp"
 #include "ksp_plugin/part.hpp"
+#include "ksp_plugin/part_force_interop.hpp"
 #include "physics/tensors.hpp"
 #include "quantities/named_quantities.hpp"
 #include "quantities/si.hpp"
@@ -81,6 +82,32 @@ void __cdecl principia__PartApplyIntrinsicForceAtPosition(
       Vector<Force, World>(FromXYZ(force_in_kilonewtons) * Kilo(Newton)),
       Displacement<World>(FromXYZ(lever_arm) * Metre));
   return m.Return();
+}
+
+void __cdecl principia__ApplyPartForcesBatch(
+    Plugin* const plugin,
+    ksp_plugin::_part_force_interop::PartForceEntry const* const entries,
+    int const count) {
+  CHECK(plugin != nullptr);
+  if (entries == nullptr || count <= 0) {
+    return;
+  }
+  for (int i = 0; i < count; ++i) {
+    auto const& entry = entries[i];
+    auto const force = Vector<Force, World>(
+        R3Element<double>{entry.force_in_kilonewtons[0],
+                          entry.force_in_kilonewtons[1],
+                          entry.force_in_kilonewtons[2]} * Kilo(Newton));
+    if (entry.lever_arm[0] == 0.0 && entry.lever_arm[1] == 0.0 && entry.lever_arm[2] == 0.0) {
+      plugin->ApplyPartIntrinsicForce(entry.part_id, force);
+    } else {
+      auto const lever_arm = Displacement<World>(
+          R3Element<double>{entry.lever_arm[0],
+                            entry.lever_arm[1],
+                            entry.lever_arm[2]} * Metre);
+      plugin->ApplyPartIntrinsicForceAtPosition(entry.part_id, force, lever_arm);
+    }
+  }
 }
 
 void __cdecl principia__PartApplyIntrinsicTorque(

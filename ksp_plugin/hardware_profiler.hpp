@@ -20,7 +20,10 @@ using _dxgi_adapter_factory::DxgiAdapterFactory;
 using _gpu_interop_types::ChebyshevSegmentData;
 using _gpu_interop_types::DmaTransferMode;
 using _gpu_interop_types::GpuAdapterInfo;
+using _gpu_interop_types::GpuDeviceRole;
+using _gpu_interop_types::GpuDeviceInfo;
 using _gpu_interop_types::HardwareProfile;
+using _gpu_interop_types::kMaxGpuAdapters;
 
 class HardwareProfiler final {
  public:
@@ -64,37 +67,88 @@ class HardwareProfiler final {
           : 500.0;
     }
 
-    // 2. DXGI Adapter Topology Discovery & Multi-GPU Routing
+    // 2. DXGI Adapter Topology Discovery & Multi-GPU Intelligent Routing
     int const adapter_count = DxgiAdapterFactory::Instance().GetAdapterCount();
     profile.adapter_count = adapter_count;
     profile.has_integrated_gpu = false;
     profile.has_discrete_gpu = false;
+    profile.active_gpu_count = 0;
+    profile.igpu_compute_score = 0.0;
+    profile.primary_gpu_compute_score = 0.0;
+    profile.total_gpu_compute_score = 0.0;
+    profile.is_heterogeneous_tri_engine = false;
 
+    devices_.clear();
     int igpu_idx = -1;
-    int dgpu_idx = -1;
+    int primary_dgpu_idx = -1;
 
-    for (int i = 0; i < adapter_count; ++i) {
+    for (int i = 0; i < adapter_count && i < kMaxGpuAdapters; ++i) {
       GpuAdapterInfo info{};
       if (DxgiAdapterFactory::Instance().GetAdapterInfo(i, &info)) {
+        GpuDeviceInfo dev{};
+        dev.adapter_index = i;
+        std::memcpy(dev.description, info.description, sizeof(dev.description));
+        dev.dedicated_video_memory = info.dedicated_video_memory;
+        dev.shared_system_memory = info.shared_system_memory;
+        dev.vendor_id = info.vendor_id;
+        dev.device_id = info.device_id;
+        dev.is_integrated = info.is_integrated;
+        dev.supports_compute = info.supports_compute;
+
         if (info.is_integrated) {
           profile.has_integrated_gpu = true;
+          dev.compute_score = profile.cpu_fp64_gflops_score * 2.2;
+          profile.igpu_compute_score = dev.compute_score;
           if (igpu_idx < 0) igpu_idx = i;
         } else {
           profile.has_discrete_gpu = true;
-          if (dgpu_idx < 0) dgpu_idx = i;
+          double const vram_gb = static_cast<double>(info.dedicated_video_memory) / (1024.0 * 1024.0 * 1024.0);
+          double const scale = 4.2 + std::min(4.0, vram_gb / 2.0);
+          dev.compute_score = profile.cpu_fp64_gflops_score * scale;
+          if (primary_dgpu_idx < 0) {
+            primary_dgpu_idx = i;
+            profile.primary_gpu_compute_score = dev.compute_score;
+          }
         }
+        profile.total_gpu_compute_score += dev.compute_score;
+        profile.active_gpu_count++;
+        devices_.push_back(dev);
       }
     }
 
-    // Intelligent Asymmetric Multi-GPU Strategy:
-    // If system possesses both dedicated GPU (dGPU) and integrated GPU (iGPU):
-    // Bind compute workloads to iGPU so dGPU is 100% dedicated to 3D rendering.
+    // Intelligent Asymmetric Multi-GPU Topology Strategy:
     if (profile.has_integrated_gpu && profile.has_discrete_gpu) {
+      // Heterogeneous Tri-Engine Mode: CPU + iGPU + dGPU
+      profile.is_heterogeneous_tri_engine = true;
+      for (auto& dev : devices_) {
+        if (dev.is_integrated) {
+          dev.role = GpuDeviceRole::UmaCompute; // Zero-copy UMA compute engine
+        } else if (dev.adapter_index == primary_dgpu_idx) {
+          dev.role = GpuDeviceRole::PrimaryRender; // 3D Render Master
+        } else {
+          dev.role = GpuDeviceRole::DedicatedCompute; // Secondary dGPU compute accelerator
+        }
+      }
+      profile.recommended_compute_adapter = igpu_idx; // iGPU for zero-copy background compute
+    } else if (profile.has_discrete_gpu) {
+      // Multi-dGPU or Single dGPU without iGPU
+      for (auto& dev : devices_) {
+        if (dev.adapter_index == primary_dgpu_idx) {
+          dev.role = GpuDeviceRole::PrimaryRender;
+        } else {
+          dev.role = GpuDeviceRole::DedicatedCompute;
+        }
+      }
+      profile.recommended_compute_adapter = primary_dgpu_idx;
+    } else if (profile.has_integrated_gpu) {
+      // iGPU only
+      for (auto& dev : devices_) {
+        dev.role = GpuDeviceRole::UmaCompute;
+      }
       profile.recommended_compute_adapter = igpu_idx;
-    } else if (dgpu_idx >= 0) {
-      profile.recommended_compute_adapter = dgpu_idx;
+      profile.primary_gpu_compute_score = profile.igpu_compute_score;
     } else {
-      profile.recommended_compute_adapter = -1; // Auto / System Default
+      profile.recommended_compute_adapter = -1;
     }
 
     // 3. PCIe / UMA DMA Bandwidth & Latency Benchmark
@@ -123,9 +177,7 @@ class HardwareProfiler final {
         auto const mode = DxgiAdapterFactory::Instance().GetDmaMode();
         auto const start_dma = std::chrono::high_resolution_clock::now();
 
-        for (int i = 0; i < segment_count; ++i) {
-          _chebyshev_segment_export::WriteSegmentData(src[i], &dst[i], mode);
-        }
+        _chebyshev_segment_export::WriteSegmentDataBatch(src, dst, segment_count, mode);
 
         auto const end_dma = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> const elapsed_dma = end_dma - start_dma;
@@ -147,15 +199,6 @@ class HardwareProfiler final {
 #endif
     }
 
-    // 4. Primary GPU Compute Score Estimation
-    if (profile.has_discrete_gpu) {
-      profile.primary_gpu_compute_score = profile.cpu_fp64_gflops_score * 4.8;
-    } else if (profile.has_integrated_gpu) {
-      profile.primary_gpu_compute_score = profile.cpu_fp64_gflops_score * 2.2;
-    } else {
-      profile.primary_gpu_compute_score = profile.cpu_fp64_gflops_score * 1.5;
-    }
-
     profile.is_calibrated = true;
     cached_profile_ = profile;
 
@@ -173,11 +216,51 @@ class HardwareProfiler final {
     return cached_profile_;
   }
 
+  bool GetDeviceInfo(int const index, GpuDeviceInfo* const out_info) {
+    if (out_info == nullptr) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cached_profile_.is_calibrated) {
+      mutex_.unlock();
+      RunCalibration();
+      mutex_.lock();
+    }
+    if (index >= 0 && index < static_cast<int>(devices_.size())) {
+      *out_info = devices_[index];
+      return true;
+    }
+    return false;
+  }
+
+  void SetDeviceRole(int const index, GpuDeviceRole const role) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index >= 0 && index < static_cast<int>(devices_.size())) {
+      devices_[index].role = role;
+    }
+  }
+
+  void SetDeviceDynamicRatio(int const index, double const ratio) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index >= 0 && index < static_cast<int>(devices_.size())) {
+      devices_[index].dynamic_workload_ratio = ratio;
+    }
+  }
+
+  int GetDeviceCount() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!cached_profile_.is_calibrated) {
+      mutex_.unlock();
+      RunCalibration();
+      mutex_.lock();
+    }
+    return static_cast<int>(devices_.size());
+  }
+
  private:
   HardwareProfiler() = default;
 
   std::mutex mutex_;
   HardwareProfile cached_profile_{};
+  std::vector<GpuDeviceInfo> devices_{};
 };
 
 }  // namespace internal

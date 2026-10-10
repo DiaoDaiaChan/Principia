@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -244,8 +245,9 @@ class ContinuousTrajectory : public Trajectory<Frame> {
   // multithreading it may be that different threads would want to access
   // polynomials at different indices, but by and large the threads progress in
   // parallel, and benchmarks show that there is no adverse performance effects.
-  // Any value in the range of `polynomials_` or 0 is correct.
-  mutable std::int64_t last_accessed_polynomial_ ABSL_GUARDED_BY(lock_) = 0;
+  // Lookup cursor is cached thread-locally in FindPolynomialForInstantLocked to
+  // eliminate cross-thread cache thrashing and data races under reader locks.
+  mutable std::atomic<std::int64_t> last_accessed_polynomial_{0};
 
   // The time at which this trajectory starts.  Set for a nonempty trajectory.
   std::optional<Instant> first_time_ ABSL_GUARDED_BY(lock_);

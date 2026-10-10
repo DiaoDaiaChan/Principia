@@ -10,6 +10,7 @@ namespace internal {
 
 constexpr int kMaxChebyshevDegree = 16;
 constexpr int kMaxCelestialsForGpu = 128;
+constexpr int kMaxGpuAdapters = 8;
 
 // Matches ChebyshevSegmentData in TrajectoryTessellator.compute.
 // Total size: 16 bytes header + 17 * 12 bytes coeffs + 36 bytes padding = 256 bytes (4 cache lines, 8 AVX2 vectors).
@@ -23,7 +24,6 @@ struct alignas(32) ChebyshevSegmentData {
 };
 static_assert(sizeof(ChebyshevSegmentData) == 256, "ChebyshevSegmentData must be 256 bytes for 32-byte AVX2 alignment.");
 
-
 // Hardware adapter telemetry and classification.
 struct alignas(8) GpuAdapterInfo {
   int adapter_index;
@@ -35,6 +35,33 @@ struct alignas(8) GpuAdapterInfo {
   bool is_integrated;
   bool supports_compute;
 };
+
+// Device compute role in heterogeneous multi-GPU topologies.
+enum class GpuDeviceRole : std::int32_t {
+  Disabled = 0,
+  PrimaryRender = 1,     // Primary dGPU / display adapter; throttles compute under render pressure
+  DedicatedCompute = 2,  // Dedicated compute accelerator (secondary dGPU / eGPU); never throttles on render pressure
+  UmaCompute = 3,        // Integrated GPU (iGPU) with UMA zero-copy shared memory
+  Auxiliary = 4          // Auxiliary compute device
+};
+
+// Detailed multi-device hardware telemetry entry.
+struct alignas(8) GpuDeviceInfo {
+  std::int32_t adapter_index;
+  char description[128];
+  std::uint8_t padding_desc[4];
+  std::uint64_t dedicated_video_memory;
+  std::uint64_t shared_system_memory;
+  std::uint32_t vendor_id;
+  std::uint32_t device_id;
+  bool is_integrated;
+  bool supports_compute;
+  std::uint8_t padding_flags[2];
+  GpuDeviceRole role;
+  double compute_score;
+  double dynamic_workload_ratio;
+};
+static_assert(sizeof(GpuDeviceInfo) == 184, "GpuDeviceInfo must be 184 bytes.");
 
 // DMA runtime mode.
 enum class DmaTransferMode : std::int32_t {
@@ -119,7 +146,7 @@ enum class KspSceneType : std::int32_t {
   Other             = 5
 };
 
-// Full hardware calibration profile.
+// Full hardware calibration profile with multi-GPU topology support.
 struct alignas(8) HardwareProfile {
   double cpu_fp64_gflops_score;      // CPU FP64 throughput score (k steps / s)
   double primary_gpu_compute_score;  // Primary GPU compute score
@@ -129,29 +156,45 @@ struct alignas(8) HardwareProfile {
   bool has_integrated_gpu;           // System has iGPU (Intel UHD/Iris or AMD APU)
   bool has_discrete_gpu;             // System has dGPU (NVIDIA/AMD)
   bool is_calibrated;                // True if calibrated
-  std::uint8_t padding[5];           // Pad to 8-byte alignment (40 bytes total)
+  std::uint8_t padding[5];           // Pad to 8-byte alignment (40 bytes)
+  // Multi-GPU Extension:
+  double igpu_compute_score;         // iGPU compute score
+  double total_gpu_compute_score;    // Sum of all GPU compute scores
+  std::int32_t active_gpu_count;     // Number of GPUs with compute capability
+  bool is_heterogeneous_tri_engine;  // CPU + iGPU + dGPU tri-engine active
+  std::uint8_t padding2[3];          // Pad to 8-byte alignment (64 bytes total)
 };
-static_assert(sizeof(HardwareProfile) == 40, "HardwareProfile must be 40 bytes.");
+static_assert(sizeof(HardwareProfile) == 64, "HardwareProfile must be 64 bytes.");
 
-// Real-time workload balance state.
+// Real-time multi-channel workload balance state.
 struct alignas(8) WorkloadBalanceState {
-  double dynamic_gpu_ratio;          // Dynamically calculated GPU workload ratio [0.0, 1.0]
+  double dynamic_gpu_ratio;          // Dynamically calculated total GPU workload ratio [0.0, 1.0]
   double smoothed_render_ms;         // EWMA smoothed render time (ms)
   double smoothed_physics_ms;        // EWMA smoothed physics time (ms)
   std::int32_t current_scene;        // KspSceneType
   bool is_master_bypassed;           // 100% classic CPU native bypass
   bool is_render_pressure_active;    // GPU render frame protection throttled
   bool is_manual_override;           // User manually locked ratio
-  std::uint8_t padding[1];           // Pad to 8-byte alignment (32 bytes total)
+  std::uint8_t padding[1];           // Pad to 8-byte alignment (32 bytes)
+  // Multi-Engine Asymmetric distribution:
+  double dynamic_cpu_ratio;          // CPU workload share [0.0, 1.0]
+  double dynamic_igpu_ratio;         // iGPU workload share [0.0, 1.0] (zero-copy UMA)
+  double dynamic_dgpu_ratio;         // Primary dGPU workload share [0.0, 1.0]
+  double dynamic_aux_ratio;          // Secondary / Aux GPU workload share [0.0, 1.0]
+  std::int32_t active_device_count;  // Number of active GPU devices participating
+  std::uint8_t padding2[4];          // Pad to 8-byte alignment (72 bytes total)
 };
-static_assert(sizeof(WorkloadBalanceState) == 32, "WorkloadBalanceState must be 32 bytes.");
+static_assert(sizeof(WorkloadBalanceState) == 72, "WorkloadBalanceState must be 72 bytes.");
 
 }  // namespace internal
 
 using internal::kMaxChebyshevDegree;
 using internal::kMaxCelestialsForGpu;
+using internal::kMaxGpuAdapters;
 using internal::ChebyshevSegmentData;
 using internal::GpuAdapterInfo;
+using internal::GpuDeviceRole;
+using internal::GpuDeviceInfo;
 using internal::DmaTransferMode;
 using internal::CelestialBodyGpuState;
 using internal::ShootingContextGpu;

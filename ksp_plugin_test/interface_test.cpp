@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -663,6 +664,72 @@ TEST_F(InterfaceTestWithoutPlugin, DeserializePlugin) {
   EXPECT_THAT(plugin_reader, IsNull());
   principia__DeletePlugin(&plugin);
   EXPECT_THAT(plugin, IsNull());
+}
+
+TEST_F(InterfaceTestWithoutPlugin, PluginSaveAndLoadRoundTrip) {
+  std::filesystem::path const temp_file =
+      std::filesystem::current_path() / "principia_test_roundtrip.bin";
+  std::filesystem::path const temp_file_tmp =
+      std::filesystem::path(temp_file).concat(".tmp");
+  std::filesystem::remove(temp_file);
+  std::filesystem::remove(temp_file_tmp);
+
+  auto const message = ParseFromBytes<principia::serialization::Plugin>(
+      serialized_simple_plugin_);
+
+  {
+    auto plugin = make_not_null_unique<StrictMock<MockPlugin>>();
+    EXPECT_CALL(*plugin, WriteToMessage(_)).WillOnce(SetArgPointee<0>(message));
+    bool const saved = principia__PluginSaveToFile(
+        plugin.get(),
+        temp_file.string().c_str(),
+        /*compressor=*/"");
+    EXPECT_TRUE(saved);
+  }  // `plugin` is destroyed here so no plugin is active.
+
+  EXPECT_TRUE(std::filesystem::exists(temp_file));
+
+  PluginReader* reader = nullptr;
+  bool const load_started = principia__PluginLoadFromFile(
+      temp_file.string().c_str(),
+      /*compressor=*/"",
+      &reader);
+  EXPECT_TRUE(load_started);
+  EXPECT_THAT(reader, NotNull());
+
+  Plugin const* loaded_plugin = principia__PluginReaderAwait(&reader);
+  EXPECT_THAT(loaded_plugin, NotNull());
+  EXPECT_THAT(reader, IsNull());
+  principia__DeletePlugin(&loaded_plugin);
+  EXPECT_THAT(loaded_plugin, IsNull());
+
+  std::filesystem::remove(temp_file);
+  std::filesystem::remove(temp_file_tmp);
+}
+
+TEST_F(InterfaceTest, ApplyPartForcesBatch) {
+  // Gracefully handles empty or null batches.
+  principia__ApplyPartForcesBatch(plugin_.get(), nullptr, 0);
+
+  ksp_plugin::_part_force_interop::PartForceEntry entries[2]{};
+  entries[0].part_id = 42;
+  entries[0].force_in_kilonewtons[0] = 10.0;
+  entries[0].force_in_kilonewtons[1] = 20.0;
+  entries[0].force_in_kilonewtons[2] = 30.0;
+  // lever arm all 0 => CoM force
+
+  entries[1].part_id = 43;
+  entries[1].force_in_kilonewtons[0] = 40.0;
+  entries[1].force_in_kilonewtons[1] = 50.0;
+  entries[1].force_in_kilonewtons[2] = 60.0;
+  entries[1].lever_arm[0] = 1.0;
+  entries[1].lever_arm[1] = 2.0;
+  entries[1].lever_arm[2] = 3.0;
+
+  EXPECT_CALL(*plugin_, ApplyPartIntrinsicForce(42, _)).Times(1);
+  EXPECT_CALL(*plugin_, ApplyPartIntrinsicForceAtPosition(43, _, _)).Times(1);
+
+  principia__ApplyPartForcesBatch(plugin_.get(), entries, 2);
 }
 
 }  // namespace interface

@@ -128,6 +128,16 @@ std::int64_t NumberOfThreadsForVesselDeserialization() {
   return number_of_threads_for_vessel_deserialization;
 }
 
+std::int64_t NumberOfThreadsForVesselIntegration() {
+  unsigned int const hc = std::thread::hardware_concurrency();
+  if (hc <= 2) {
+    return 1;
+  }
+  // Reserve 1 hardware thread for the KSP Unity main thread & rendering engine,
+  // allocating all remaining P+E logical cores to background parallel integration.
+  return std::max(static_cast<std::int64_t>(2), static_cast<std::int64_t>(hc) - 1);
+}
+
 }  // namespace
 
 Plugin::Plugin(std::string const& game_epoch,
@@ -136,8 +146,7 @@ Plugin::Plugin(std::string const& game_epoch,
     : history_downsampling_parameters_(DefaultDownsamplingParameters()),
       history_fixed_step_parameters_(DefaultHistoryParameters()),
       psychohistory_parameters_(DefaultPsychohistoryParameters()),
-      vessel_thread_pool_(
-          /*pool_size=*/2 * std::thread::hardware_concurrency()),
+      vessel_thread_pool_(NumberOfThreadsForVesselIntegration()),
       planetarium_rotation_(planetarium_rotation),
       game_epoch_(ParseTT(game_epoch)),
       current_time_(ParseTT(solar_system_epoch)) {
@@ -1837,8 +1846,7 @@ Plugin::Plugin(
     : history_downsampling_parameters_(DefaultDownsamplingParameters()),
       history_fixed_step_parameters_(std::move(history_parameters)),
       psychohistory_parameters_(std::move(psychohistory_parameters)),
-      vessel_thread_pool_(
-          /*pool_size=*/2 * std::thread::hardware_concurrency()) {}
+      vessel_thread_pool_(NumberOfThreadsForVesselIntegration()) {}
 
 void Plugin::InitializeIndices(std::string const& name,
                                Index const celestial_index,

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectGuid>{7B174B21-0837-4BEE-864E-08AD3C74046A}</ProjectGuid>
@@ -12,6 +12,11 @@
     <Import Project="..\shared\testing_utilities.vcxitems" Label="Shared" />
     <Import Project="..\shared\astronomy.vcxitems" Label="Shared" />
   </ImportGroup>
+  <ItemDefinitionGroup>
+    <Link>
+      <AdditionalDependencies>OneCore.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\ksp_plugin\planetarium.cpp" />
     <ClCompile Include="approximation_benchmark.cpp" />

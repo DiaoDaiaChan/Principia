@@ -89,6 +89,50 @@ class DxgiAdapterFactory final {
     return total_dma_bytes_.load(std::memory_order_relaxed);
   }
 
+#if OS_WIN
+  bool GetSelectedDxgiAdapter(IDXGIAdapter1** const out_adapter) {
+    if (out_adapter == nullptr) return false;
+    *out_adapter = nullptr;
+
+    HMODULE dxgi_module = LoadLibraryW(L"dxgi.dll");
+    if (dxgi_module == nullptr) return false;
+
+    using PFN_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID, void**);
+    auto pfn_create_factory = reinterpret_cast<PFN_CreateDXGIFactory1>(
+        GetProcAddress(dxgi_module, "CreateDXGIFactory1"));
+    if (pfn_create_factory == nullptr) {
+      FreeLibrary(dxgi_module);
+      return false;
+    }
+
+    IDXGIFactory1* factory = nullptr;
+    HRESULT hr = pfn_create_factory(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory));
+    if (FAILED(hr) || factory == nullptr) {
+      FreeLibrary(dxgi_module);
+      return false;
+    }
+
+    int selected_idx = selected_adapter_index_.load(std::memory_order_relaxed);
+    if (selected_idx < 0) selected_idx = 0;
+
+    IDXGIAdapter1* adapter = nullptr;
+    for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+      if (static_cast<int>(i) == selected_idx) {
+        *out_adapter = adapter;
+        factory->Release();
+        FreeLibrary(dxgi_module);
+        return true;
+      }
+      adapter->Release();
+      adapter = nullptr;
+    }
+
+    factory->Release();
+    FreeLibrary(dxgi_module);
+    return false;
+  }
+#endif
+
  private:
   DxgiAdapterFactory() {
     RefreshAdapters();
@@ -137,10 +181,12 @@ class DxgiAdapterFactory final {
           info.vendor_id = desc.VendorId;
           info.device_id = desc.DeviceId;
 
-          // Intel = 0x8086. Standard iGPU heuristic: DedicatedVideoMemory <= 512MB or Intel vendor.
-          // AMD APUs also typically report low dedicated memory (or 0) with system memory fallback.
-          info.is_integrated = (desc.VendorId == 0x8086) ||
-                               (desc.DedicatedVideoMemory <= 512 * 1024 * 1024ULL);
+          // Intel = 0x8086. Heuristic:
+          // Intel Arc discrete cards have >= 4GB dedicated VRAM.
+          // Intel UHD / Iris Xe iGPUs report 0 or <= 1024 MB dedicated VRAM.
+          // AMD APUs also report <= 512 MB dedicated memory.
+          info.is_integrated = (desc.DedicatedVideoMemory <= 512 * 1024 * 1024ULL) ||
+                               (desc.VendorId == 0x8086 && desc.DedicatedVideoMemory <= 1024 * 1024 * 1024ULL);
           info.supports_compute = true;
 
           adapters_.push_back(info);

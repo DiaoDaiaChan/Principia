@@ -75,24 +75,67 @@ class ChebyshevLobattoTransform16 final {
   }
 };
 
-// Stream-stores a 256-byte Chebyshev segment using non-temporal streaming stores
-// directly to PCIe Write-Combined mapped VRAM or standard staging memory copy.
+// Stream-stores a single 256-byte Chebyshev segment without pipeline flush.
+inline void StreamStoreSegment(
+    ChebyshevSegmentData const& src,
+    ChebyshevSegmentData* const dst) {
+#if defined(__AVX__) || defined(__AVX2__)
+  auto const* in = reinterpret_cast<__m256i const*>(&src);
+  auto* out = reinterpret_cast<__m256i*>(dst);
+  // 256 bytes per segment = 8 * 32 bytes AVX non-temporal streaming stores
+  _mm256_stream_si256(&out[0], _mm256_loadu_si256(&in[0]));
+  _mm256_stream_si256(&out[1], _mm256_loadu_si256(&in[1]));
+  _mm256_stream_si256(&out[2], _mm256_loadu_si256(&in[2]));
+  _mm256_stream_si256(&out[3], _mm256_loadu_si256(&in[3]));
+  _mm256_stream_si256(&out[4], _mm256_loadu_si256(&in[4]));
+  _mm256_stream_si256(&out[5], _mm256_loadu_si256(&in[5]));
+  _mm256_stream_si256(&out[6], _mm256_loadu_si256(&in[6]));
+  _mm256_stream_si256(&out[7], _mm256_loadu_si256(&in[7]));
+#elif defined(_M_AMD64) || defined(__x86_64__)
+  auto const* in = reinterpret_cast<__m128i const*>(&src);
+  auto* out = reinterpret_cast<__m128i*>(dst);
+  // 256 bytes per segment = 16 * 16 bytes SSE2 non-temporal streaming stores
+  for (int i = 0; i < 16; ++i) {
+    _mm_stream_si128(&out[i], _mm_loadu_si128(&in[i]));
+  }
+#else
+  std::memcpy(dst, &src, sizeof(ChebyshevSegmentData));
+#endif
+}
+
+inline void FlushStoreBuffers() {
+#if defined(_M_AMD64) || defined(__x86_64__)
+  _mm_sfence();
+#endif
+}
+
 inline void WriteSegmentData(
     ChebyshevSegmentData const& src,
     ChebyshevSegmentData* const dst,
     DmaTransferMode const mode) {
-#if defined(_M_AMD64) || defined(__x86_64__)
   if (mode == DmaTransferMode::DirectDma) {
-    auto const* in = reinterpret_cast<__m128i const*>(&src);
-    auto* out = reinterpret_cast<__m128i*>(dst);
-    for (int i = 0; i < 16; ++i) {
-      _mm_stream_si128(&out[i], _mm_loadu_si128(&in[i]));
-    }
-    _mm_sfence();
+    StreamStoreSegment(src, dst);
+    FlushStoreBuffers();
     return;
   }
-#endif
   std::memcpy(dst, &src, sizeof(ChebyshevSegmentData));
+}
+
+// Ultra-fast streaming batch transfer: unrolls all segments into write-combining buffer,
+// and issues a SINGLE sfence once at the end of the entire batch!
+inline void WriteSegmentDataBatch(
+    ChebyshevSegmentData const* const src,
+    ChebyshevSegmentData* const dst,
+    int const count,
+    DmaTransferMode const mode) {
+  if (mode == DmaTransferMode::DirectDma) {
+    for (int i = 0; i < count; ++i) {
+      StreamStoreSegment(src[i], &dst[i]);
+    }
+    FlushStoreBuffers();
+    return;
+  }
+  std::memcpy(dst, src, count * sizeof(ChebyshevSegmentData));
 }
 
 // Converts a TrajectoryView into a sequence of continuous Chebyshev polynomial segments.
@@ -202,8 +245,17 @@ int ExportTrajectoryViewToChebyshevSegments(
       seg.coeffs[k][2] = cz;
     }
 
-    // Write to mapped VRAM / system buffer via streaming store or copy
-    WriteSegmentData(seg, &dst_buffer[s], dma_mode);
+    // Write to mapped VRAM / system buffer via streaming store without per-segment fence
+    if (dma_mode == DmaTransferMode::DirectDma) {
+      StreamStoreSegment(seg, &dst_buffer[s]);
+    } else {
+      std::memcpy(&dst_buffer[s], &seg, sizeof(ChebyshevSegmentData));
+    }
+  }
+
+  // Drain write-combining store buffer once after entire trajectory view completes!
+  if (dma_mode == DmaTransferMode::DirectDma) {
+    FlushStoreBuffers();
   }
 
 #if OS_WIN
@@ -226,6 +278,9 @@ int ExportTrajectoryViewToChebyshevSegments(
 
 using internal::ChebyshevLobattoTransform16;
 using internal::WriteSegmentData;
+using internal::WriteSegmentDataBatch;
+using internal::StreamStoreSegment;
+using internal::FlushStoreBuffers;
 using internal::ExportTrajectoryViewToChebyshevSegments;
 
 }  // namespace _chebyshev_segment_export

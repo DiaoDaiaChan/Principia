@@ -3,6 +3,8 @@
 #include "physics/continuous_trajectory.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -144,7 +146,9 @@ void ContinuousTrajectory<Frame>::Prepend(ContinuousTrajectory&& prefix) {
     degree_ = prefix.degree_;
     degree_age_ = prefix.degree_age_;
     polynomials_ = std::move(prefix.polynomials_);
-    last_accessed_polynomial_ = prefix.last_accessed_polynomial_;
+    last_accessed_polynomial_.store(
+        prefix.last_accessed_polynomial_.load(std::memory_order_relaxed),
+        std::memory_order_relaxed);
     first_time_ = prefix.first_time_;
     last_points_ = prefix.last_points_;
   } else {
@@ -658,7 +662,7 @@ ContinuousTrajectory<Frame>::MakeCheckpointerReader() {
           first_time_ = oldest_time;
         }
       }
-      last_accessed_polynomial_ = 0;  // Always a valid value.
+      last_accessed_polynomial_.store(0, std::memory_order_relaxed);
 
       return absl::OkStatus();
     };
@@ -861,27 +865,45 @@ template<typename Frame>
 typename ContinuousTrajectory<Frame>::InstantPolynomialPairs::const_iterator
 ContinuousTrajectory<Frame>::FindPolynomialForInstantLocked(
     Instant const& time) const {
-  // This returns the first polynomial `p` such that `time <= p.t_max`.
-  {
+  // A thread-local direct-mapped cache allows each thread (e.g. background
+  // prediction, vessel integration, rendering) to maintain its own O(1)
+  // polynomial lookup cursor without cross-thread cache thrashing or data races
+  // on shared state under reader locks.
+  struct ThreadLocalCacheEntry {
+    ContinuousTrajectory<Frame> const* trajectory = nullptr;
+    std::int64_t index = 0;
+  };
+  constexpr std::size_t cache_capacity = 32;
+  thread_local std::array<ThreadLocalCacheEntry, cache_capacity>
+      thread_local_cache{};
+
+  std::size_t const slot =
+      (reinterpret_cast<std::uintptr_t>(this) >> 6) % cache_capacity;
+  auto& entry = thread_local_cache[slot];
+
+  // Try the cached index if it belongs to this trajectory.
+  if (entry.trajectory == this && entry.index >= 0 &&
+      static_cast<std::size_t>(entry.index) < polynomials_.size()) {
     auto const begin = polynomials_.begin();
-    auto const it = begin + last_accessed_polynomial_;
-    if (it != polynomials_.end() && time <= it->t_max &&
-        (it == begin || std::prev(it)->t_max < time)) {
+    auto const it = begin + entry.index;
+    if (time <= it->t_max && (it == begin || std::prev(it)->t_max < time)) {
       return it;
     }
   }
-  {
-    auto const it =
-        std::lower_bound(polynomials_.begin(),
-                         polynomials_.end(),
-                         time,
-                         [](InstantPolynomialPair const& left,
-                            Instant const& right) {
-                           return left.t_max < right;
-                         });
-    last_accessed_polynomial_ = it - polynomials_.begin();
-    return it;
-  }
+
+  // Fallback to binary search and record the result in the thread's cache slot.
+  auto const it =
+      std::lower_bound(polynomials_.begin(),
+                       polynomials_.end(),
+                       time,
+                       [](InstantPolynomialPair const& left,
+                          Instant const& right) {
+                         return left.t_max < right;
+                       });
+  entry.trajectory = this;
+  entry.index = it - polynomials_.begin();
+  last_accessed_polynomial_.store(entry.index, std::memory_order_relaxed);
+  return it;
 }
 
 }  // namespace internal

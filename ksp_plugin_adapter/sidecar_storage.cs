@@ -1,17 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Text;
 
 namespace principia {
 namespace ksp_plugin_adapter {
 
 internal static class SidecarStorage {
-  private static readonly byte[] MagicHeader =
-      Encoding.ASCII.GetBytes("PRNC_SIDECAR_V2\0");
-  private static readonly byte[] MagicFooter =
-      Encoding.ASCII.GetBytes("PRNCDONE");
-
   public const int CurrentFormatVersion = 2;
 
   public static string GetSaveDirectory() {
@@ -27,22 +21,16 @@ internal static class SidecarStorage {
     if (string.IsNullOrEmpty(sidecar_filename)) {
       return null;
     }
-
-    // 1. Check active save folder
     string primary_path = Path.Combine(GetSaveDirectory(), sidecar_filename);
     if (File.Exists(primary_path)) {
       return primary_path;
     }
-
-    // 2. Check PluginStates global folder
     string global_path = Path.Combine(KSPUtil.ApplicationRootPath, "GameData",
                                       "Principia", "PluginStates",
                                       sidecar_filename);
     if (File.Exists(global_path)) {
       return global_path;
     }
-
-    // 3. Search all save folders if save folder was renamed or moved
     string saves_root = Path.Combine(KSPUtil.ApplicationRootPath, "saves");
     if (Directory.Exists(saves_root)) {
       try {
@@ -55,7 +43,6 @@ internal static class SidecarStorage {
         Log.Warning("Exception while searching for sidecar file: " + e);
       }
     }
-
     return null;
   }
 
@@ -63,7 +50,7 @@ internal static class SidecarStorage {
                                    string compression,
                                    out int chunk_count,
                                    out long total_bytes) {
-    chunk_count = 0;
+    chunk_count = 1;
     total_bytes = 0;
 
     string save_dir = GetSaveDirectory();
@@ -72,7 +59,7 @@ internal static class SidecarStorage {
     }
 
     string sidecar_guid = Guid.NewGuid().ToString("N");
-    string sidecar_filename = $"principia_{sidecar_guid}.principia_cache";
+    string sidecar_filename = $"principia_{sidecar_guid}.principia_bin";
     string full_path = Path.Combine(save_dir, sidecar_filename);
 
     if (string.IsNullOrEmpty(compression)) {
@@ -80,47 +67,19 @@ internal static class SidecarStorage {
     }
 
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    bool ok = Interface.PluginSaveToFile(plugin, full_path, compression);
+    stopwatch.Stop();
 
-    using (var fs = new FileStream(full_path, FileMode.Create,
-                                   FileAccess.Write, FileShare.None,
-                                   bufferSize: 1048576))
-    using (var writer = new BinaryWriter(fs, Encoding.UTF8)) {
-      writer.Write(MagicHeader);
-      writer.Write(CurrentFormatVersion);
-      writer.Write(compression);
-
-      long chunk_count_placeholder_pos = fs.Position;
-      writer.Write((int)0); // Placeholder for chunk count
-
-      IntPtr serializer = IntPtr.Zero;
-      for (;;) {
-        string serialization = plugin.SerializePlugin(
-            ref serializer,
-            compression,
-            encoder: "base64");
-        if (serialization == null) {
-          break;
-        }
-
-        writer.Write(serialization);
-        total_bytes += serialization.Length;
-        chunk_count++;
-      }
-
-      // Fill in actual chunk count
-      fs.Seek(chunk_count_placeholder_pos, SeekOrigin.Begin);
-      writer.Write(chunk_count);
-      fs.Seek(0, SeekOrigin.End);
-
-      writer.Write(MagicFooter);
-      writer.Flush();
+    if (!ok || !File.Exists(full_path)) {
+      Log.Error($"Failed to save Principia sidecar to {full_path}");
+      throw new IOException("Failed to save Principia binary state");
     }
 
-    stopwatch.Stop();
-    Log.Info($"Principia sidecar saved: {sidecar_filename} " +
-             $"({chunk_count} chunks, {total_bytes} bytes in {stopwatch.ElapsedMilliseconds} ms)");
+    var fi = new FileInfo(full_path);
+    total_bytes = fi.Length;
+    Log.Info($"Principia sidecar saved directly to {sidecar_filename} " +
+             $"({total_bytes} bytes in {stopwatch.ElapsedMilliseconds} ms)");
 
-    // Clean up older unreferenced sidecars in the background
     try {
       PruneOrphanedSidecars(save_dir, sidecar_filename);
     } catch (Exception e) {
@@ -131,9 +90,9 @@ internal static class SidecarStorage {
   }
 
   public static bool LoadSidecar(string sidecar_filename,
-                                 ref IntPtr deserializer,
-                                 ref IntPtr plugin_reader,
+                                 out IntPtr plugin_reader,
                                  string default_compression) {
+    plugin_reader = IntPtr.Zero;
     string full_path = FindSidecarPath(sidecar_filename);
     if (full_path == null || !File.Exists(full_path)) {
       Log.Error($"Could not find Principia sidecar file: {sidecar_filename}");
@@ -141,56 +100,19 @@ internal static class SidecarStorage {
     }
 
     var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+    string compressor = string.IsNullOrEmpty(default_compression) ? "gipfeli" : default_compression;
+    bool ok = Interface.PluginLoadFromFile(
+        full_path,
+        compressor,
+        out plugin_reader);
+    stopwatch.Stop();
 
-    using (var fs = new FileStream(full_path, FileMode.Open,
-                                   FileAccess.Read, FileShare.Read,
-                                   bufferSize: 1048576))
-    using (var reader = new BinaryReader(fs, Encoding.UTF8)) {
-      byte[] header = reader.ReadBytes(MagicHeader.Length);
-      if (header.Length != MagicHeader.Length) {
-        Log.Error("Sidecar header truncated");
-        return false;
-      }
-      for (int i = 0; i < MagicHeader.Length; ++i) {
-        if (header[i] != MagicHeader[i]) {
-          Log.Error("Invalid Principia sidecar magic header or unsupported legacy version");
-          return false;
-        }
-      }
-
-      int version = reader.ReadInt32();
-      if (version > CurrentFormatVersion) {
-        Log.Error($"Unsupported sidecar format version: {version}");
-        return false;
-      }
-
-      string compression = reader.ReadString();
-      if (string.IsNullOrEmpty(compression)) {
-        compression = default_compression ?? "gipfeli";
-      }
-
-      int chunk_count = reader.ReadInt32();
-      Log.Info($"Loading Principia sidecar with {chunk_count} chunks (v{version}, {compression})");
-
-      for (int i = 0; i < chunk_count; ++i) {
-        string chunk_base64 = reader.ReadString();
-        Interface.DeserializePlugin(chunk_base64,
-                                    ref deserializer,
-                                    ref plugin_reader,
-                                    compression,
-                                    encoder: "base64");
-      }
-
-      // Signal end of stream
-      Interface.DeserializePlugin("",
-                                  ref deserializer,
-                                  ref plugin_reader,
-                                  compression,
-                                  encoder: "base64");
+    if (!ok || plugin_reader == IntPtr.Zero) {
+      Log.Error($"Failed to load Principia sidecar from {full_path}");
+      return false;
     }
 
-    stopwatch.Stop();
-    Log.Info($"Principia sidecar loaded in {stopwatch.ElapsedMilliseconds} ms");
+    Log.Info($"Principia sidecar loaded directly in {stopwatch.ElapsedMilliseconds} ms");
     return true;
   }
 
@@ -198,18 +120,14 @@ internal static class SidecarStorage {
     if (!Directory.Exists(save_dir)) {
       return;
     }
-
-    string[] cache_files = Directory.GetFiles(save_dir, "principia_*.principia_cache");
+    string[] cache_files = Directory.GetFiles(save_dir, "principia_*.principia_bin");
     if (cache_files.Length <= 15) {
-      return; // Keep recent cache files without scanning
+      return;
     }
-
-    // Collect all referenced sidecar filenames from .sfs files in save_dir
     var active_sidecars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     if (!string.IsNullOrEmpty(current_sidecar_filename)) {
       active_sidecars.Add(current_sidecar_filename);
     }
-
     string[] sfs_files = Directory.GetFiles(save_dir, "*.sfs");
     foreach (string sfs_path in sfs_files) {
       try {
@@ -225,29 +143,24 @@ internal static class SidecarStorage {
           }
         }
       } catch {
-        // Skip unreadable sfs file
       }
     }
-
     DateTime recent_threshold = DateTime.UtcNow.AddHours(-2);
     DateTime old_threshold = DateTime.UtcNow.AddDays(-2);
-
     foreach (string cache_path in cache_files) {
       string filename = Path.GetFileName(cache_path);
       if (active_sidecars.Contains(filename)) {
         continue;
       }
       DateTime last_write = File.GetLastWriteTimeUtc(cache_path);
-      // NEVER delete files modified within the last 2 hours
       if (last_write > recent_threshold) {
         continue;
       }
       if (last_write < old_threshold || cache_files.Length > 40) {
         try {
           File.Delete(cache_path);
-          Log.Info($"Pruned orphaned sidecar cache: {filename}");
+          Log.Info($"Pruned orphaned sidecar: {filename}");
         } catch {
-          // Ignore deletion errors for locked files
         }
       }
     }

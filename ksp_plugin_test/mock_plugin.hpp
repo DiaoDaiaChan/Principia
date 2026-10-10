@@ -62,6 +62,19 @@ class MockPlugin : public Plugin {
               (override));
 
   MOCK_METHOD(void,
+              ApplyPartIntrinsicForce,
+              (PartId part_id,
+               (Vector<Force, World> const& force)),
+              (const, override));
+
+  MOCK_METHOD(void,
+              ApplyPartIntrinsicForceAtPosition,
+              (PartId part_id,
+               (Vector<Force, World> const& force),
+               Displacement<World> const& lever_arm),
+              (const, override));
+
+  MOCK_METHOD(void,
               AdvanceTime,
               (Instant const& t, Angle const& planetarium_rotation),
               (override));

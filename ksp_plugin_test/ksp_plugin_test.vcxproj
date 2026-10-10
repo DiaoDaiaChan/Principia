@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Label="Globals">
     <ProjectGuid>{A942ADF0-62F4-435C-85B2-934D5B666DB8}</ProjectGuid>
@@ -17,9 +17,14 @@
     <ClCompile>
       <PreprocessorDefinitions>PRINCIPIA_CAN_OVERRIDE_FMA_USAGE_AT_RUNTIME=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ClCompile>
+    <Link>
+      <AdditionalDependencies>OneCore.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="..\ksp_plugin\celestial.cpp" />
+    <ClCompile Include="..\ksp_plugin\compute_pipeline.cpp" />
+    <ClCompile Include="..\ksp_plugin\ephemeris_pacer.cpp" />
     <ClCompile Include="..\ksp_plugin\equator_relevance_threshold.cpp" />
     <ClCompile Include="..\ksp_plugin\flight_plan.cpp" />
     <ClCompile Include="..\ksp_plugin\flight_plan_optimization_driver.cpp" />
@@ -50,6 +55,7 @@
     <ClCompile Include="..\ksp_plugin\vessel.cpp" />
     <ClCompile Include="benchmark.cpp" />
     <ClCompile Include="celestial_test.cpp" />
+    <ClCompile Include="compute_pipeline_test.cpp" />
     <ClCompile Include="equator_relevance_threshold_test.cpp" />
     <ClCompile Include="flight_plan_optimizer_test.cpp" />
     <ClCompile Include="flight_plan_test.cpp" />

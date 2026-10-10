@@ -22,6 +22,7 @@
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/planetarium.hpp"
 #include "ksp_plugin/renderer.hpp"
+#include "ksp_plugin/trajectory_renderer_interop.hpp"
 #include "physics/discrete_trajectory.hpp"
 #include "physics/discrete_trajectory_view.hpp"
 #include "physics/trajectory_view.hpp"
@@ -656,6 +657,77 @@ void __cdecl principia__PlanetariumPlotEquipotential(
       },
       vertices_size);
   return m.Return();
+}
+
+extern "C" PRINCIPIA_DLL
+int __cdecl principia__RenderTrajectoryToNativeBuffer(
+    Plugin const* const plugin,
+    char const* const vessel_guid,
+    int const trajectory_kind,
+    XYZ const sun_world_position,
+    ksp_plugin::_trajectory_renderer_interop::TrajectoryVertex* const vertex_buffer,
+    int const max_vertices) {
+  if (plugin == nullptr || vessel_guid == nullptr || vertex_buffer == nullptr || max_vertices <= 0) {
+    return 0;
+  }
+  if (!plugin->HasVessel(vessel_guid)) {
+    return 0;
+  }
+  Vessel const& vessel = *plugin->GetVessel(vessel_guid);
+  Position<World> const sun_pos = FromXYZ<Position<World>>(sun_world_position);
+  auto const planetarium_rotation = plugin->PlanetariumRotation();
+  int vertex_count = 0;
+
+  auto append_entry = [vertex_buffer, &vertex_count, max_vertices, plugin, sun_pos, planetarium_rotation](
+      DegreesOfFreedom<Barycentric> const& dof,
+      Instant const& t) {
+    if (vertex_count >= max_vertices) return;
+    auto const world_pos = plugin->renderer().BarycentricToWorld(
+        t, sun_pos, planetarium_rotation)(dof.position());
+    auto const world_vel = plugin->renderer().BarycentricToWorld(
+        planetarium_rotation)(dof.velocity());
+    auto const r3_pos = (world_pos - World::origin).coordinates();
+    auto const r3_vel = world_vel.coordinates();
+
+    auto& v = vertex_buffer[vertex_count++];
+    v.position[0] = static_cast<float>(r3_pos.x / Metre);
+    v.position[1] = static_cast<float>(r3_pos.y / Metre);
+    v.position[2] = static_cast<float>(r3_pos.z / Metre);
+    v.velocity[0] = static_cast<float>(r3_vel.x / (Metre / Second));
+    v.velocity[1] = static_cast<float>(r3_vel.y / (Metre / Second));
+    v.velocity[2] = static_cast<float>(r3_vel.z / (Metre / Second));
+    v.colour[0] = 0.2f;
+    v.colour[1] = 0.8f;
+    v.colour[2] = 1.0f;
+    v.colour[3] = 1.0f;
+    v.time_seconds = (t - plugin->CurrentTime()) / Second;
+  };
+
+  if (trajectory_kind == 0) {
+    auto const psychohistory = vessel.psychohistory();
+    for (auto const& pt : *psychohistory) {
+      if (vertex_count >= max_vertices) break;
+      append_entry(pt.degrees_of_freedom, pt.time);
+    }
+  } else if (trajectory_kind == 1) {
+    auto const prediction = vessel.prediction();
+    for (auto const& pt : *prediction) {
+      if (vertex_count >= max_vertices) break;
+      append_entry(pt.degrees_of_freedom, pt.time);
+    }
+  } else if (trajectory_kind >= 2 && vessel.has_flight_plan()) {
+    FlightPlan const& flight_plan = vessel.flight_plan();
+    int const segment_index = trajectory_kind - 2;
+    if (segment_index < flight_plan.number_of_segments()) {
+      auto const segment = flight_plan.GetSegment(segment_index);
+      for (auto const& pt : *segment) {
+        if (vertex_count >= max_vertices) break;
+        append_entry(pt.degrees_of_freedom, pt.time);
+      }
+    }
+  }
+
+  return vertex_count;
 }
 
 }  // namespace interface

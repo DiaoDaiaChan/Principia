@@ -87,6 +87,9 @@ using namespace principia::quantities::_quantities;
 using namespace principia::quantities::_si;
 using namespace principia::testing_utilities::_solar_system_factory;
 
+#undef near
+#undef far
+
 constexpr Length near = 40'000 * Kilo(Metre);
 constexpr Length far = 400'000 * Kilo(Metre);
 constexpr Length focal = 1 * Metre;
@@ -478,14 +481,14 @@ void BM_PlanetariumPlotMethod4ContinuousTrajectory(
                     (perspective),                                 \
                     far,                                           \
                     (plotting_frame))                              \
-      ->Unit(benchmark::kMillisecond)
+      ->Unit(benchmark::kMillisecond);
 
 #define PRINCIPIA_BENCHMARK_PLANETARIUM_PLOT_METHODS_POLAR_AND_EQUATORIAL( \
     name, plotting_frame)                                                  \
   PRINCIPIA_BENCHMARK_PLANETARIUM_PLOT_METHODS_NEAR_AND_FAR(               \
       PolarPerspective##name, &PolarPerspective, (plotting_frame));        \
   PRINCIPIA_BENCHMARK_PLANETARIUM_PLOT_METHODS_NEAR_AND_FAR(               \
-      EquatorialPerspective##name, &EquatorialPerspective, (plotting_frame))
+      EquatorialPerspective##name, &EquatorialPerspective, (plotting_frame));
 
 PRINCIPIA_BENCHMARK_PLANETARIUM_PLOT_METHODS_POLAR_AND_EQUATORIAL(
     ECI,

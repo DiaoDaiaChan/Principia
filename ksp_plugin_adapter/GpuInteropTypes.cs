@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.InteropServices;
-using UnityEngine;
 
 namespace principia {
 namespace ksp_plugin_adapter {
@@ -26,65 +25,32 @@ public struct GpuAdapterInfo {
   public bool supports_compute;
 }
 
-[StructLayout(LayoutKind.Sequential, Size = 256)]
-public struct ChebyshevSegmentData {
-  public float t_min;
-  public float t_max;
-  public uint degree;
-  public float padding;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 51)]
-  public float[] coeffs;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 9)]
-  public float[] reserved;
+public enum GpuDeviceRole : int {
+  Disabled = 0,
+  PrimaryRender = 1,     // Primary dGPU / display adapter; throttles compute under render pressure
+  DedicatedCompute = 2,  // Dedicated compute accelerator (secondary dGPU / eGPU); never throttles on render pressure
+  UmaCompute = 3,        // Integrated GPU (iGPU) with UMA zero-copy shared memory
+  Auxiliary = 4          // Auxiliary compute device
 }
 
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-public struct DoubleSingle {
-  public float hi;
-  public float lo;
-
-  public static DoubleSingle FromDouble(double v) {
-    float hi = (float)v;
-    float lo = (float)(v - (double)hi);
-    return new DoubleSingle { hi = hi, lo = lo };
-  }
-
-  public double ToDouble() => (double)hi + (double)lo;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-public struct DsVec3 {
-  public DoubleSingle x;
-  public DoubleSingle y;
-  public DoubleSingle z;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-public struct OrbitalState64 {
-  public DsVec3 position;
-  public DsVec3 velocity;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 16)]
-public struct ShootingContextGpu {
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-  public float[] initial_pos;
-  public float initial_time;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-  public float[] initial_vel;
-  public float step_size_seconds;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-  public float[] base_delta_v;
-  public float span_delta_t;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
-  public float[] span_delta_v;
-  public float target_periapsis_altitude;
-  public uint target_celestial_index;
-  public uint celestial_count;
-  public uint step_count;
-  public uint candidate_count;
-  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 128)]
-  public CelestialBodyGpuState[] celestials;
+[StructLayout(LayoutKind.Sequential, Pack = 8, CharSet = CharSet.Ansi)]
+public struct GpuDeviceInfo {
+  public int adapter_index;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+  public string description;
+  private byte pad0, pad1, pad2, pad3;
+  public ulong dedicated_video_memory;
+  public ulong shared_system_memory;
+  public uint vendor_id;
+  public uint device_id;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_integrated;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool supports_compute;
+  private byte pad4, pad5;
+  public GpuDeviceRole role;
+  public double compute_score;
+  public double dynamic_workload_ratio;
 }
 
 public enum KspSceneType : int {
@@ -111,6 +77,14 @@ public struct HardwareProfile {
   public bool is_calibrated;
   [MarshalAs(UnmanagedType.ByValArray, SizeConst = 5)]
   private byte[] padding;
+  // Multi-GPU Extension:
+  public double igpu_compute_score;
+  public double total_gpu_compute_score;
+  public int active_gpu_count;
+  [MarshalAs(UnmanagedType.I1)]
+  public bool is_heterogeneous_tri_engine;
+  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 3)]
+  private byte[] padding2;
 }
 
 [StructLayout(LayoutKind.Sequential, Pack = 8)]
@@ -127,7 +101,15 @@ public struct WorkloadBalanceState {
   public bool is_manual_override;
   [MarshalAs(UnmanagedType.ByValArray, SizeConst = 1)]
   private byte[] padding;
+  // Multi-Engine Asymmetric distribution:
+  public double dynamic_cpu_ratio;
+  public double dynamic_igpu_ratio;
+  public double dynamic_dgpu_ratio;
+  public double dynamic_aux_ratio;
+  public int active_device_count;
+  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 4)]
+  private byte[] padding2;
 }
 
-} // namespace ksp_plugin_adapter
-} // namespace principia
+}  // namespace ksp_plugin_adapter
+}  // namespace principia

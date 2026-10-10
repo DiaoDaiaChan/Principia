@@ -292,6 +292,17 @@ internal partial class NavigationFrameParameters : IReferenceFrameParameters {
   }
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 8)]
+public struct PartForceEntry {
+  public uint part_id;
+  public double force_x;
+  public double force_y;
+  public double force_z;
+  public double lever_arm_x;
+  public double lever_arm_y;
+  public double lever_arm_z;
+}
+
 internal static partial class Interface {
   internal const string dll_path = "principia";
 
@@ -313,439 +324,233 @@ internal static partial class Interface {
 
   private partial class Symbols {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate IntPtr StateBusCreateChannelDelegate();
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void StateBusDestroyChannelDelegate(ref IntPtr channel);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void StateBusCommitWriteDelegate(IntPtr channel, [In] ref DensePolynomialSlice slice);
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool PluginSaveToFileDelegate(
+        IntPtr plugin,
+        [MarshalAs(UnmanagedType.LPStr)] string file_path,
+        [MarshalAs(UnmanagedType.LPStr)] string compressor);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
-    public delegate bool StateBusAcquireReadDelegate(IntPtr channel, out DensePolynomialSlice out_slice);
+    public delegate bool PluginLoadFromFileDelegate(
+        [MarshalAs(UnmanagedType.LPStr)] string file_path,
+        [MarshalAs(UnmanagedType.LPStr)] string compressor,
+        out IntPtr plugin_reader);
+
+    public PluginSaveToFileDelegate PluginSaveToFile =
+        Loader.LoadOptionalFunction<PluginSaveToFileDelegate>(
+            "principia__PluginSaveToFile");
+
+    public PluginLoadFromFileDelegate PluginLoadFromFile =
+        Loader.LoadOptionalFunction<PluginLoadFromFileDelegate>(
+            "principia__PluginLoadFromFile");
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate IntPtr CommandBusCreateDelegate();
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void CommandBusDestroyDelegate(ref IntPtr queue);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public delegate bool CommandBusTryPushDelegate(IntPtr queue, [In] ref CommandPacket packet);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public delegate bool CommandBusTryPopDelegate(IntPtr queue, out CommandPacket out_packet);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void BatchInsertOrKeepLoadedPartsDelegate(
+    public delegate void ApplyPartForcesBatchDelegate(
         IntPtr plugin,
-        [In] PartBatchInsertState[] states,
+        [In] PartForceEntry[] entries,
         int count);
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void BatchPartSetApparentRigidMotionDelegate(
-        IntPtr plugin,
-        [In] PartBatchApparentMotion[] states,
-        int count);
+    public ApplyPartForcesBatchDelegate ApplyPartForcesBatch =
+        Loader.LoadOptionalFunction<ApplyPartForcesBatchDelegate>(
+            "principia__ApplyPartForcesBatch");
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void BatchPartGetActualRigidMotionDelegate(
-        IntPtr plugin,
-        [In] ref Origin origin,
-        [In] uint[] part_ids,
-        [Out] QPRW[] motions_out,
-        int count);
-
+    // Ephemeris Pacer
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate double EphemerisGetHorizonSecondsDelegate(IntPtr plugin);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate double EphemerisGetTargetExtendedTimeDelegate(IntPtr plugin);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool EphemerisIsProlongingDelegate(IntPtr plugin);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void EphemerisForceProlongDelegate(IntPtr plugin);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void EphemerisAdjustHorizonDelegate(IntPtr plugin, double delta_seconds);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void EphemerisTogglePauseDelegate(IntPtr plugin);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool EphemerisIsPausedDelegate(IntPtr plugin);
 
+    public EphemerisGetHorizonSecondsDelegate EphemerisGetHorizonSeconds =
+        Loader.LoadOptionalFunction<EphemerisGetHorizonSecondsDelegate>("principia__EphemerisGetHorizonSeconds");
+    public EphemerisGetTargetExtendedTimeDelegate EphemerisGetTargetExtendedTime =
+        Loader.LoadOptionalFunction<EphemerisGetTargetExtendedTimeDelegate>("principia__EphemerisGetTargetExtendedTime");
+    public EphemerisIsProlongingDelegate EphemerisIsProlonging =
+        Loader.LoadOptionalFunction<EphemerisIsProlongingDelegate>("principia__EphemerisIsProlonging");
+    public EphemerisForceProlongDelegate EphemerisForceProlong =
+        Loader.LoadOptionalFunction<EphemerisForceProlongDelegate>("principia__EphemerisForceProlong");
+    public EphemerisAdjustHorizonDelegate EphemerisAdjustHorizon =
+        Loader.LoadOptionalFunction<EphemerisAdjustHorizonDelegate>("principia__EphemerisAdjustHorizon");
+    public EphemerisTogglePauseDelegate EphemerisTogglePause =
+        Loader.LoadOptionalFunction<EphemerisTogglePauseDelegate>("principia__EphemerisTogglePause");
+    public EphemerisIsPausedDelegate EphemerisIsPaused =
+        Loader.LoadOptionalFunction<EphemerisIsPausedDelegate>("principia__EphemerisIsPaused");
+
+    // DXGI, Hardware Profiler & Dynamic Workload Balancer
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int GpuGetAdapterCountDelegate();
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool GpuGetAdapterInfoDelegate(int index, out GpuAdapterInfo info);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void GpuSelectComputeAdapterDelegate(int adapter_index);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int GpuGetSelectedAdapterDelegate();
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void GpuSetDmaModeDelegate(int mode);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate int GpuGetDmaModeDelegate();
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate double GpuGetLastDmaWriteSecondsDelegate();
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate ulong GpuGetTotalDmaBytesDelegate();
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool GpuBenchmarkDmaTransferDelegate(
-        int segment_count,
-        out double duration_seconds,
-        out double bandwidth_gigabytes_per_second);
+        int segment_count, out double duration_seconds, out double bandwidth_gbps);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool RunHardwareCalibrationDelegate(out HardwareProfile profile);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool GetHardwareProfileDelegate(out HardwareProfile profile);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void UpdateSceneFeedbackDelegate(
         int scene_type, double render_time_ms, double physics_time_ms);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void GetWorkloadBalanceStateDelegate(out WorkloadBalanceState state);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void SetWorkloadBypassDelegate(
         [MarshalAs(UnmanagedType.I1)] bool master_bypass, int module_mask);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void SetManualWorkloadOverrideDelegate(
         [MarshalAs(UnmanagedType.I1)] bool enable_manual, double manual_gpu_ratio);
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void PartitionVesselBatchDelegate(
         int total_vessels, out int cpu_count, out int gpu_count);
 
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int ExportChebyshevSegmentsDelegate(
-        IntPtr planetarium,
-        IntPtr plugin,
-        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
-        int segment_index,
-        in double t_max,
-        IntPtr buffer,
-        int max_segments,
-        [MarshalAs(UnmanagedType.I1)] bool is_d3d11_buffer);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int ExportPredictionChebyshevSegmentsDelegate(
-        IntPtr planetarium,
-        IntPtr plugin,
-        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
-        in double t_max,
-        IntPtr buffer,
-        int max_segments,
-        [MarshalAs(UnmanagedType.I1)] bool is_d3d11_buffer);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    [return: MarshalAs(UnmanagedType.I1)]
-    public delegate bool FlightPlanExportShootingContextDelegate(
-        IntPtr plugin,
-        [MarshalAs(UnmanagedType.LPStr)] string vessel_guid,
-        int burn_index,
-        out ShootingContextGpu context);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int PackInactiveVesselsBatchDelegate(
-        IntPtr plugin,
-        [Out] OrbitalState64[] out_states,
-        int max_states);
-
-    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate void UnpackInactiveVesselsBatchDelegate(
-        IntPtr plugin,
-        [In] OrbitalState64[] in_states,
-        int count);
-
-    public StateBusCreateChannelDelegate StateBusCreateChannel =
-        Loader.LoadOptionalFunction<StateBusCreateChannelDelegate>("principia__StateBusCreateChannel");
-
-    public StateBusDestroyChannelDelegate StateBusDestroyChannel =
-        Loader.LoadOptionalFunction<StateBusDestroyChannelDelegate>("principia__StateBusDestroyChannel");
-
-    public StateBusCommitWriteDelegate StateBusCommitWrite =
-        Loader.LoadOptionalFunction<StateBusCommitWriteDelegate>("principia__StateBusCommitWrite");
-
-    public StateBusAcquireReadDelegate StateBusAcquireRead =
-        Loader.LoadOptionalFunction<StateBusAcquireReadDelegate>("principia__StateBusAcquireRead");
-
-    public CommandBusCreateDelegate CommandBusCreate =
-        Loader.LoadOptionalFunction<CommandBusCreateDelegate>("principia__CommandBusCreate");
-
-    public CommandBusDestroyDelegate CommandBusDestroy =
-        Loader.LoadOptionalFunction<CommandBusDestroyDelegate>("principia__CommandBusDestroy");
-
-    public CommandBusTryPushDelegate CommandBusTryPush =
-        Loader.LoadOptionalFunction<CommandBusTryPushDelegate>("principia__CommandBusTryPush");
-
-    public CommandBusTryPopDelegate CommandBusTryPop =
-        Loader.LoadOptionalFunction<CommandBusTryPopDelegate>("principia__CommandBusTryPop");
-
-    public BatchInsertOrKeepLoadedPartsDelegate BatchInsertOrKeepLoadedParts =
-        Loader.LoadOptionalFunction<BatchInsertOrKeepLoadedPartsDelegate>("principia__BatchInsertOrKeepLoadedParts");
-
-    public BatchPartSetApparentRigidMotionDelegate BatchPartSetApparentRigidMotion =
-        Loader.LoadOptionalFunction<BatchPartSetApparentRigidMotionDelegate>("principia__BatchPartSetApparentRigidMotion");
-
-    public BatchPartGetActualRigidMotionDelegate BatchPartGetActualRigidMotion =
-        Loader.LoadOptionalFunction<BatchPartGetActualRigidMotionDelegate>("principia__BatchPartGetActualRigidMotion");
-
-    public EphemerisGetHorizonSecondsDelegate EphemerisGetHorizonSeconds =
-        Loader.LoadOptionalFunction<EphemerisGetHorizonSecondsDelegate>("principia__EphemerisGetHorizonSeconds");
-
-    public EphemerisGetTargetExtendedTimeDelegate EphemerisGetTargetExtendedTime =
-        Loader.LoadOptionalFunction<EphemerisGetTargetExtendedTimeDelegate>("principia__EphemerisGetTargetExtendedTime");
-
-    public EphemerisIsProlongingDelegate EphemerisIsProlonging =
-        Loader.LoadOptionalFunction<EphemerisIsProlongingDelegate>("principia__EphemerisIsProlonging");
-
-    public EphemerisForceProlongDelegate EphemerisForceProlong =
-        Loader.LoadOptionalFunction<EphemerisForceProlongDelegate>("principia__EphemerisForceProlong");
-
-    public EphemerisAdjustHorizonDelegate EphemerisAdjustHorizon =
-        Loader.LoadOptionalFunction<EphemerisAdjustHorizonDelegate>("principia__EphemerisAdjustHorizon");
-
-    public EphemerisTogglePauseDelegate EphemerisTogglePause =
-        Loader.LoadOptionalFunction<EphemerisTogglePauseDelegate>("principia__EphemerisTogglePause");
-
-    public EphemerisIsPausedDelegate EphemerisIsPaused =
-        Loader.LoadOptionalFunction<EphemerisIsPausedDelegate>("principia__EphemerisIsPaused");
-
     public GpuGetAdapterCountDelegate GpuGetAdapterCount =
         Loader.LoadOptionalFunction<GpuGetAdapterCountDelegate>("principia__GpuGetAdapterCount");
-
     public GpuGetAdapterInfoDelegate GpuGetAdapterInfo =
         Loader.LoadOptionalFunction<GpuGetAdapterInfoDelegate>("principia__GpuGetAdapterInfo");
-
     public GpuSelectComputeAdapterDelegate GpuSelectComputeAdapter =
         Loader.LoadOptionalFunction<GpuSelectComputeAdapterDelegate>("principia__GpuSelectComputeAdapter");
-
     public GpuGetSelectedAdapterDelegate GpuGetSelectedAdapter =
         Loader.LoadOptionalFunction<GpuGetSelectedAdapterDelegate>("principia__GpuGetSelectedAdapter");
-
     public GpuSetDmaModeDelegate GpuSetDmaMode =
         Loader.LoadOptionalFunction<GpuSetDmaModeDelegate>("principia__GpuSetDmaMode");
-
     public GpuGetDmaModeDelegate GpuGetDmaMode =
         Loader.LoadOptionalFunction<GpuGetDmaModeDelegate>("principia__GpuGetDmaMode");
-
     public GpuGetLastDmaWriteSecondsDelegate GpuGetLastDmaWriteSeconds =
         Loader.LoadOptionalFunction<GpuGetLastDmaWriteSecondsDelegate>("principia__GpuGetLastDmaWriteSeconds");
-
     public GpuGetTotalDmaBytesDelegate GpuGetTotalDmaBytes =
         Loader.LoadOptionalFunction<GpuGetTotalDmaBytesDelegate>("principia__GpuGetTotalDmaBytes");
-
     public GpuBenchmarkDmaTransferDelegate GpuBenchmarkDmaTransfer =
         Loader.LoadOptionalFunction<GpuBenchmarkDmaTransferDelegate>("principia__GpuBenchmarkDmaTransfer");
 
     public RunHardwareCalibrationDelegate RunHardwareCalibration =
         Loader.LoadOptionalFunction<RunHardwareCalibrationDelegate>("principia__RunHardwareCalibration");
-
     public GetHardwareProfileDelegate GetHardwareProfile =
         Loader.LoadOptionalFunction<GetHardwareProfileDelegate>("principia__GetHardwareProfile");
-
     public UpdateSceneFeedbackDelegate UpdateSceneFeedback =
         Loader.LoadOptionalFunction<UpdateSceneFeedbackDelegate>("principia__UpdateSceneFeedback");
-
     public GetWorkloadBalanceStateDelegate GetWorkloadBalanceState =
         Loader.LoadOptionalFunction<GetWorkloadBalanceStateDelegate>("principia__GetWorkloadBalanceState");
-
     public SetWorkloadBypassDelegate SetWorkloadBypass =
         Loader.LoadOptionalFunction<SetWorkloadBypassDelegate>("principia__SetWorkloadBypass");
-
     public SetManualWorkloadOverrideDelegate SetManualWorkloadOverride =
         Loader.LoadOptionalFunction<SetManualWorkloadOverrideDelegate>("principia__SetManualWorkloadOverride");
-
     public PartitionVesselBatchDelegate PartitionVesselBatch =
         Loader.LoadOptionalFunction<PartitionVesselBatchDelegate>("principia__PartitionVesselBatch");
 
-    public ExportChebyshevSegmentsDelegate ExportChebyshevSegments =
-        Loader.LoadOptionalFunction<ExportChebyshevSegmentsDelegate>("principia__ExportChebyshevSegments");
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool GpuGetDeviceInfoDelegate(int index, out GpuDeviceInfo info);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GpuSetDeviceRoleDelegate(int adapter_index, int role);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void GpuGetMultiDeviceSummaryDelegate(
+        out int device_count, out int active_count, out double total_compute_score);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate void PartitionMultiDeviceBatchDelegate(
+        int total_work, [Out] int[] out_device_counts, int max_devices);
 
-    public ExportPredictionChebyshevSegmentsDelegate ExportPredictionChebyshevSegments =
-        Loader.LoadOptionalFunction<ExportPredictionChebyshevSegmentsDelegate>("principia__ExportPredictionChebyshevSegments");
-
-    public FlightPlanExportShootingContextDelegate FlightPlanExportShootingContext =
-        Loader.LoadOptionalFunction<FlightPlanExportShootingContextDelegate>("principia__FlightPlanExportShootingContext");
-
-    public PackInactiveVesselsBatchDelegate PackInactiveVesselsBatch =
-        Loader.LoadOptionalFunction<PackInactiveVesselsBatchDelegate>("principia__PackInactiveVesselsBatch");
-
-    public UnpackInactiveVesselsBatchDelegate UnpackInactiveVesselsBatch =
-        Loader.LoadOptionalFunction<UnpackInactiveVesselsBatchDelegate>("principia__UnpackInactiveVesselsBatch");
+    public GpuGetDeviceInfoDelegate GpuGetDeviceInfo =
+        Loader.LoadOptionalFunction<GpuGetDeviceInfoDelegate>("principia__GpuGetDeviceInfo");
+    public GpuSetDeviceRoleDelegate GpuSetDeviceRole =
+        Loader.LoadOptionalFunction<GpuSetDeviceRoleDelegate>("principia__GpuSetDeviceRole");
+    public GpuGetMultiDeviceSummaryDelegate GpuGetMultiDeviceSummary =
+        Loader.LoadOptionalFunction<GpuGetMultiDeviceSummaryDelegate>("principia__GpuGetMultiDeviceSummary");
+    public PartitionMultiDeviceBatchDelegate PartitionMultiDeviceBatch =
+        Loader.LoadOptionalFunction<PartitionMultiDeviceBatchDelegate>("principia__PartitionMultiDeviceBatch");
   }
 
-  internal static bool HasDirectVramSupport =>
-      symbols_?.PlanetariumPlotPredictionDirect != null;
-  internal static bool HasNonBlockingHarvestSupport =>
-      symbols_?.FutureTryHarvestVesselCatchUp != null;
-  internal static bool HasStateBusSupport =>
-      symbols_?.StateBusCreateChannel != null;
-  internal static bool HasCommandBusSupport =>
-      symbols_?.CommandBusCreate != null;
-  internal static bool HasBatchSyncSupport =>
-      symbols_?.BatchInsertOrKeepLoadedParts != null;
+  internal static bool HasNativeEphemerisPacer() =>
+      symbols_?.EphemerisGetHorizonSeconds != null;
 
-  internal static IntPtr StateBusCreateChannel() {
-    return symbols_?.StateBusCreateChannel != null ? symbols_.StateBusCreateChannel() : IntPtr.Zero;
-  }
+  internal static double EphemerisGetHorizonSeconds(this IntPtr plugin) =>
+      symbols_?.EphemerisGetHorizonSeconds != null ? symbols_.EphemerisGetHorizonSeconds(plugin) : 0.0;
 
-  internal static void StateBusDestroyChannel(ref IntPtr channel) {
-    symbols_?.StateBusDestroyChannel?.Invoke(ref channel);
-  }
+  internal static double EphemerisGetTargetExtendedTime(this IntPtr plugin) =>
+      symbols_?.EphemerisGetTargetExtendedTime != null ? symbols_.EphemerisGetTargetExtendedTime(plugin) : 0.0;
 
-  internal static void StateBusCommitWrite(IntPtr channel, ref DensePolynomialSlice slice) {
-    symbols_?.StateBusCommitWrite?.Invoke(channel, ref slice);
-  }
+  internal static bool EphemerisIsProlonging(this IntPtr plugin) =>
+      symbols_?.EphemerisIsProlonging != null && symbols_.EphemerisIsProlonging(plugin);
 
-  internal static bool StateBusAcquireRead(IntPtr channel, out DensePolynomialSlice out_slice) {
-    if (symbols_?.StateBusAcquireRead != null) {
-      return symbols_.StateBusAcquireRead(channel, out out_slice);
-    }
-    out_slice = default(DensePolynomialSlice);
-    return false;
-  }
+  internal static void EphemerisForceProlong(this IntPtr plugin) =>
+      symbols_?.EphemerisForceProlong?.Invoke(plugin);
 
-  internal static IntPtr CommandBusCreate() {
-    return symbols_?.CommandBusCreate != null ? symbols_.CommandBusCreate() : IntPtr.Zero;
-  }
+  internal static void EphemerisAdjustHorizon(this IntPtr plugin, double delta_seconds) =>
+      symbols_?.EphemerisAdjustHorizon?.Invoke(plugin, delta_seconds);
 
-  internal static void CommandBusDestroy(ref IntPtr queue) {
-    symbols_?.CommandBusDestroy?.Invoke(ref queue);
-  }
+  internal static void EphemerisTogglePause(this IntPtr plugin) =>
+      symbols_?.EphemerisTogglePause?.Invoke(plugin);
 
-  internal static bool CommandBusTryPush(IntPtr queue, ref CommandPacket packet) {
-    return symbols_?.CommandBusTryPush != null && symbols_.CommandBusTryPush(queue, ref packet);
-  }
-
-  internal static bool CommandBusTryPop(IntPtr queue, out CommandPacket out_packet) {
-    if (symbols_?.CommandBusTryPop != null) {
-      return symbols_.CommandBusTryPop(queue, out out_packet);
-    }
-    out_packet = default(CommandPacket);
-    return false;
-  }
-
-  internal static void BatchInsertOrKeepLoadedParts(this IntPtr plugin, PartBatchInsertState[] states, int count) {
-    symbols_?.BatchInsertOrKeepLoadedParts?.Invoke(plugin, states, count);
-  }
-
-  internal static void BatchPartSetApparentRigidMotion(this IntPtr plugin, PartBatchApparentMotion[] states, int count) {
-    symbols_?.BatchPartSetApparentRigidMotion?.Invoke(plugin, states, count);
-  }
-
-  internal static void BatchPartGetActualRigidMotion(this IntPtr plugin, ref Origin origin, uint[] part_ids, QPRW[] motions_out, int count) {
-    symbols_?.BatchPartGetActualRigidMotion?.Invoke(plugin, ref origin, part_ids, motions_out, count);
-  }
-
-  internal static bool HasNativeEphemerisPacer() {
-    return symbols_?.EphemerisGetHorizonSeconds != null;
-  }
-
-  internal static double EphemerisGetHorizonSeconds(this IntPtr plugin) {
-    return symbols_?.EphemerisGetHorizonSeconds != null ? symbols_.EphemerisGetHorizonSeconds(plugin) : 0.0;
-  }
-
-  internal static double EphemerisGetTargetExtendedTime(this IntPtr plugin) {
-    return symbols_?.EphemerisGetTargetExtendedTime != null ? symbols_.EphemerisGetTargetExtendedTime(plugin) : 0.0;
-  }
-
-  internal static bool EphemerisIsProlonging(this IntPtr plugin) {
-    return symbols_?.EphemerisIsProlonging != null && symbols_.EphemerisIsProlonging(plugin);
-  }
-
-  internal static void EphemerisForceProlong(this IntPtr plugin) {
-    symbols_?.EphemerisForceProlong?.Invoke(plugin);
-  }
-
-  internal static void EphemerisAdjustHorizon(this IntPtr plugin, double delta_seconds) {
-    symbols_?.EphemerisAdjustHorizon?.Invoke(plugin, delta_seconds);
-  }
-
-  internal static void EphemerisTogglePause(this IntPtr plugin) {
-    symbols_?.EphemerisTogglePause?.Invoke(plugin);
-  }
-
-  internal static bool EphemerisIsPaused(this IntPtr plugin) {
-    return symbols_?.EphemerisIsPaused != null && symbols_.EphemerisIsPaused(plugin);
-  }
+  internal static bool EphemerisIsPaused(this IntPtr plugin) =>
+      symbols_?.EphemerisIsPaused != null && symbols_.EphemerisIsPaused(plugin);
 
   internal static bool HasGpuInteropSupport =>
       symbols_?.GpuGetAdapterCount != null;
 
-  internal static int GpuGetAdapterCount() {
-    return symbols_?.GpuGetAdapterCount != null ? symbols_.GpuGetAdapterCount() : 0;
-  }
+  internal static int GpuGetAdapterCount() =>
+      symbols_?.GpuGetAdapterCount != null ? symbols_.GpuGetAdapterCount() : 0;
 
   internal static bool GpuGetAdapterInfo(int index, out GpuAdapterInfo info) {
     if (symbols_?.GpuGetAdapterInfo != null) {
       return symbols_.GpuGetAdapterInfo(index, out info);
     }
-    info = default(GpuAdapterInfo);
+    info = default;
     return false;
   }
 
-  internal static void GpuSelectComputeAdapter(int adapter_index) {
-    symbols_?.GpuSelectComputeAdapter?.Invoke(adapter_index);
-  }
+  internal static void GpuSelectComputeAdapter(int adapter_index) =>
+      symbols_?.GpuSelectComputeAdapter?.Invoke(adapter_index);
 
-  internal static int GpuGetSelectedAdapter() {
-    return symbols_?.GpuGetSelectedAdapter != null ? symbols_.GpuGetSelectedAdapter() : -1;
-  }
+  internal static int GpuGetSelectedAdapter() =>
+      symbols_?.GpuGetSelectedAdapter != null ? symbols_.GpuGetSelectedAdapter() : -1;
 
-  internal static void GpuSetDmaMode(DmaTransferMode mode) {
-    symbols_?.GpuSetDmaMode?.Invoke((int)mode);
-  }
+  internal static void GpuSetDmaMode(DmaTransferMode mode) =>
+      symbols_?.GpuSetDmaMode?.Invoke((int)mode);
 
-  internal static DmaTransferMode GpuGetDmaMode() {
-    return symbols_?.GpuGetDmaMode != null
-        ? (DmaTransferMode)symbols_.GpuGetDmaMode()
-        : DmaTransferMode.StagingFallback;
-  }
+  internal static DmaTransferMode GpuGetDmaMode() =>
+      symbols_?.GpuGetDmaMode != null ? (DmaTransferMode)symbols_.GpuGetDmaMode() : DmaTransferMode.PureCpu;
 
-  internal static double GpuGetLastDmaWriteSeconds() {
-    return symbols_?.GpuGetLastDmaWriteSeconds != null ? symbols_.GpuGetLastDmaWriteSeconds() : 0.0;
-  }
+  internal static double GpuGetLastDmaWriteSeconds() =>
+      symbols_?.GpuGetLastDmaWriteSeconds != null ? symbols_.GpuGetLastDmaWriteSeconds() : 0.0;
 
-  internal static ulong GpuGetTotalDmaBytes() {
-    return symbols_?.GpuGetTotalDmaBytes != null ? symbols_.GpuGetTotalDmaBytes() : 0UL;
-  }
+  internal static ulong GpuGetTotalDmaBytes() =>
+      symbols_?.GpuGetTotalDmaBytes != null ? symbols_.GpuGetTotalDmaBytes() : 0;
 
   internal static bool GpuBenchmarkDmaTransfer(
-      int segment_count,
-      out double duration_seconds,
-      out double bandwidth_gigabytes_per_second) {
+      int segment_count, out double duration_seconds, out double bandwidth_gbps) {
     if (symbols_?.GpuBenchmarkDmaTransfer != null) {
-      return symbols_.GpuBenchmarkDmaTransfer(
-          segment_count, out duration_seconds, out bandwidth_gigabytes_per_second);
+      return symbols_.GpuBenchmarkDmaTransfer(segment_count, out duration_seconds, out bandwidth_gbps);
     }
     duration_seconds = 0.0;
-    bandwidth_gigabytes_per_second = 0.0;
+    bandwidth_gbps = 0.0;
     return false;
   }
 
@@ -753,7 +558,7 @@ internal static partial class Interface {
     if (symbols_?.RunHardwareCalibration != null) {
       return symbols_.RunHardwareCalibration(out profile);
     }
-    profile = default(HardwareProfile);
+    profile = default;
     return false;
   }
 
@@ -761,29 +566,26 @@ internal static partial class Interface {
     if (symbols_?.GetHardwareProfile != null) {
       return symbols_.GetHardwareProfile(out profile);
     }
-    profile = default(HardwareProfile);
+    profile = default;
     return false;
   }
 
-  internal static void UpdateSceneFeedback(KspSceneType scene_type, double render_time_ms, double physics_time_ms) {
-    symbols_?.UpdateSceneFeedback?.Invoke((int)scene_type, render_time_ms, physics_time_ms);
-  }
+  internal static void UpdateSceneFeedback(KspSceneType scene_type, double render_time_ms, double physics_time_ms) =>
+      symbols_?.UpdateSceneFeedback?.Invoke((int)scene_type, render_time_ms, physics_time_ms);
 
   internal static void GetWorkloadBalanceState(out WorkloadBalanceState state) {
     if (symbols_?.GetWorkloadBalanceState != null) {
       symbols_.GetWorkloadBalanceState(out state);
       return;
     }
-    state = default(WorkloadBalanceState);
+    state = default;
   }
 
-  internal static void SetWorkloadBypass(bool master_bypass, int module_mask = ~0) {
-    symbols_?.SetWorkloadBypass?.Invoke(master_bypass, module_mask);
-  }
+  internal static void SetWorkloadBypass(bool master_bypass, int module_mask = ~0) =>
+      symbols_?.SetWorkloadBypass?.Invoke(master_bypass, module_mask);
 
-  internal static void SetManualWorkloadOverride(bool enable_manual, double manual_gpu_ratio) {
-    symbols_?.SetManualWorkloadOverride?.Invoke(enable_manual, manual_gpu_ratio);
-  }
+  internal static void SetManualWorkloadOverride(bool enable_manual, double manual_gpu_ratio) =>
+      symbols_?.SetManualWorkloadOverride?.Invoke(enable_manual, manual_gpu_ratio);
 
   internal static void PartitionVesselBatch(int total_vessels, out int cpu_count, out int gpu_count) {
     if (symbols_?.PartitionVesselBatch != null) {
@@ -794,59 +596,68 @@ internal static partial class Interface {
     gpu_count = 0;
   }
 
-  internal static int ExportChebyshevSegments(
-      IntPtr planetarium,
-      IntPtr plugin,
-      string vessel_guid,
-      int segment_index,
-      in double t_max,
-      IntPtr buffer,
-      int max_segments,
-      bool is_d3d11_buffer) {
-    return symbols_?.ExportChebyshevSegments != null
-        ? symbols_.ExportChebyshevSegments(planetarium, plugin, vessel_guid, segment_index, in t_max, buffer, max_segments, is_d3d11_buffer)
-        : 0;
-  }
-
-  internal static int ExportPredictionChebyshevSegments(
-      IntPtr planetarium,
-      IntPtr plugin,
-      string vessel_guid,
-      in double t_max,
-      IntPtr buffer,
-      int max_segments,
-      bool is_d3d11_buffer) {
-    return symbols_?.ExportPredictionChebyshevSegments != null
-        ? symbols_.ExportPredictionChebyshevSegments(planetarium, plugin, vessel_guid, in t_max, buffer, max_segments, is_d3d11_buffer)
-        : 0;
-  }
-
-  internal static bool FlightPlanExportShootingContext(
-      IntPtr plugin,
-      string vessel_guid,
-      int burn_index,
-      out ShootingContextGpu context) {
-    if (symbols_?.FlightPlanExportShootingContext != null) {
-      return symbols_.FlightPlanExportShootingContext(plugin, vessel_guid, burn_index, out context);
+  internal static bool GpuGetDeviceInfo(int index, out GpuDeviceInfo info) {
+    if (symbols_?.GpuGetDeviceInfo != null) {
+      return symbols_.GpuGetDeviceInfo(index, out info);
     }
-    context = default(ShootingContextGpu);
+    info = default;
     return false;
   }
 
-  internal static int PackInactiveVesselsBatch(
-      this IntPtr plugin,
-      OrbitalState64[] out_states,
-      int max_states) {
-    return symbols_?.PackInactiveVesselsBatch != null
-        ? symbols_.PackInactiveVesselsBatch(plugin, out_states, max_states)
-        : 0;
+  internal static void GpuSetDeviceRole(int adapter_index, GpuDeviceRole role) =>
+      symbols_?.GpuSetDeviceRole?.Invoke(adapter_index, (int)role);
+
+  internal static void GpuGetMultiDeviceSummary(
+      out int device_count, out int active_count, out double total_compute_score) {
+    if (symbols_?.GpuGetMultiDeviceSummary != null) {
+      symbols_.GpuGetMultiDeviceSummary(out device_count, out active_count, out total_compute_score);
+      return;
+    }
+    device_count = 0;
+    active_count = 0;
+    total_compute_score = 0.0;
   }
 
-  internal static void UnpackInactiveVesselsBatch(
+  internal static void PartitionMultiDeviceBatch(
+      int total_work, int[] out_device_counts, int max_devices = 8) {
+    if (symbols_?.PartitionMultiDeviceBatch != null) {
+      symbols_.PartitionMultiDeviceBatch(total_work, out_device_counts, max_devices);
+      return;
+    }
+    if (out_device_counts != null && out_device_counts.Length > 0) {
+      Array.Clear(out_device_counts, 0, out_device_counts.Length);
+      out_device_counts[0] = total_work; // CPU fallback
+    }
+  }
+
+
+  internal static void ApplyPartForcesBatch(
       this IntPtr plugin,
-      OrbitalState64[] in_states,
+      PartForceEntry[] entries,
       int count) {
-    symbols_?.UnpackInactiveVesselsBatch?.Invoke(plugin, in_states, count);
+    symbols_?.ApplyPartForcesBatch?.Invoke(plugin, entries, count);
+  }
+
+  internal static bool PluginSaveToFile(
+      this IntPtr plugin,
+      string file_path,
+      string compressor) {
+    if (symbols_?.PluginSaveToFile != null) {
+      return symbols_.PluginSaveToFile(plugin, file_path, compressor);
+    }
+    return false;
+  }
+
+  internal static bool PluginLoadFromFile(
+      string file_path,
+      string compressor,
+      out IntPtr plugin_reader) {
+    if (symbols_?.PluginLoadFromFile != null) {
+      return symbols_.PluginLoadFromFile(
+          file_path, compressor, out plugin_reader);
+    }
+    plugin_reader = IntPtr.Zero;
+    return false;
   }
 
   internal static void LoadSymbols() {

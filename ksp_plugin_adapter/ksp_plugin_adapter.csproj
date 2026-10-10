@@ -89,10 +89,6 @@
       <HintPath>$(KSPManaged)\UnityEngine.CoreModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="UnityEngine.AssetBundleModule">
-      <HintPath>$(KSPManaged)\UnityEngine.AssetBundleModule.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
     <Reference Include="UnityEngine.ImageConversionModule">
       <HintPath>$(KSPManaged)\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>False</Private>
@@ -140,9 +136,13 @@
     <Compile Include="localization_extensions.cs" />
     <Compile Include="logging.cs" />
     <Compile Include="lru_cache.cs" />
+    <Compile Include="GpuInteropTypes.cs" />
     <Compile Include="main_window.cs" />
     <Compile Include="manœuvre_marker.cs" />
+    <Compile Include="MapMarkerEventGovernor.cs" />
     <Compile Include="map_node_pool.cs" />
+    <Compile Include="performance_probe.cs" />
+    <Compile Include="rolling_ephemeris_driver.cs" />
     <Compile Include="marshalers.generated.cs" />
     <Compile Include="migration_monitor.cs" />
     <Compile Include="ownership_transfer_marshaler.cs" />
@@ -156,33 +156,6 @@
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="reference_frame_selector.cs" />
     <Compile Include="sidecar_storage.cs" />
-    <Compile Include="rolling_ephemeris_driver.cs" />
-    <Compile Include="PrincipiaGPGPUContext.cs" />
-    <Compile Include="HeterogeneousDynamicGovernor.cs" />
-    <Compile Include="VacuumBypassGovernor.cs" />
-    <Compile Include="MapMarkerEventGovernor.cs" />
-    <Compile Include="CelestialTrajectoryBinaryCache.cs" />
-    <Compile Include="GpuFlightPlanOptimizer.cs" />
-    <Compile Include="GpuTrajectoryRenderer.cs" />
-    <Compile Include="GpuModuleTelemetry.cs" />
-    <Compile Include="gpu_diagnostics_window.cs" />
-    <Compile Include="NativeZeroCopyTrajectoryPipeline.cs" />
-    <Compile Include="NativeStateSnapshotChannel.cs" />
-    <Compile Include="DensePolynomialSlice.cs" />
-    <Compile Include="GpuInteropTypes.cs" />
-    <Compile Include="TripleBufferStateBus.cs" />
-    <Compile Include="SpscCommandBus.cs" />
-    <Compile Include="BatchStateSync.cs" />
-    <Compile Include="DualClockBridge.cs" />
-    <Compile Include="SceneGraphDecoupler.cs" />
-    <Compile Include="GpuVirtualProjection.cs" />
-    <Compile Include="SmoothPlottingBridge.cs" />
-    <Compile Include="FrameBudgetCircuitBreaker.cs" />
-    <Compile Include="ZeroAllocationForceCache.cs" />
-    <Compile Include="HeterogeneousWorkloadBalancer.cs" />
-    <Compile Include="GpuFlightPlanShootingOptimizer.cs" />
-    <Compile Include="performance_probe.cs" />
-    <Compile Include="TelemetryLogger.cs" />
     <Compile Include="source_location.cs" />
     <Compile Include="style.cs" />
     <Compile Include="mono_marshaler.cs" />

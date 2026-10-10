@@ -14,7 +14,9 @@ namespace internal {
 
 using namespace std::chrono_literals;
 
-constexpr std::int64_t max_ephemeris_steps_per_frame = 4096;
+// Micro-sliced to 64 steps (~1.5ms hold time) to ensure the exclusive write
+// lock does not block the Unity main thread or prediction threads.
+constexpr std::int64_t max_ephemeris_steps_per_frame = 64;
 
 EphemerisPacer::EphemerisPacer(not_null<Ephemeris<Barycentric>*> const ephemeris)
     : ephemeris_(ephemeris) {}
@@ -69,7 +71,7 @@ void EphemerisPacer::Start() {
 
       while (ephemeris_->t_max() < target) {
         RETURN_IF_STOPPED;
-        std::this_thread::sleep_for(20ms);
+        std::this_thread::yield();
         RETURN_IF_STOPPED;
         ephemeris_->Prolong(target, max_ephemeris_steps_per_frame).IgnoreError();
       }

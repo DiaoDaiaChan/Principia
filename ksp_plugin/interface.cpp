@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <ios>
 #include <limits>
@@ -1098,6 +1099,144 @@ char const* __cdecl principia__SerializePlugin(
                                encoder);
 #endif
   return m.Return(hexadecimal.data.release());
+}
+
+bool __cdecl principia__PluginSaveToFile(
+    Plugin const* const plugin,
+    char const* const file_path,
+    char const* const compressor) {
+  CHECK(plugin != nullptr);
+  CHECK(file_path != nullptr);
+
+  std::filesystem::path const target_path(file_path);
+  std::filesystem::path const temp_file_path = std::filesystem::path(target_path).concat(".tmp");
+  std::error_code ec;
+  if (target_path.has_parent_path()) {
+    std::filesystem::create_directories(target_path.parent_path(), ec);
+  }
+  std::filesystem::remove(temp_file_path, ec);
+
+  std::ofstream stream(temp_file_path, std::ios::binary | std::ios::trunc);
+  if (!stream.is_open()) {
+    LOG(ERROR) << "Failed to open file for writing: " << temp_file_path
+               << " (errno: " << errno << ", error: " << std::strerror(errno)
+               << ", GetLastError: " << GetLastError() << ")";
+    return false;
+  }
+
+  constexpr char magic[16] = "PRINCIPIA_BIN";
+  stream.write(magic, sizeof(magic));
+
+  PullSerializer serializer(
+      chunk_size,
+      number_of_chunks,
+      NewCompressor(compressor != nullptr && std::strlen(compressor) > 0
+                        ? compressor
+                        : gipfeli_compressor));
+
+  not_null<serialization::Plugin*> const message =
+      Arena::Create<serialization::Plugin>(arena);
+  plugin->WriteToMessage(message);
+  serializer.Start(message);
+
+  for (;;) {
+    Array<std::uint8_t> bytes = serializer.Pull();
+    std::uint32_t const size = static_cast<std::uint32_t>(bytes.size);
+    stream.write(reinterpret_cast<char const*>(&size), sizeof(size));
+    if (size == 0) {
+      break;
+    }
+    stream.write(reinterpret_cast<char const*>(bytes.data), size);
+  }
+
+  stream.flush();
+  bool const stream_ok = stream.good();
+  stream.close();
+  arena->Reset();
+
+  if (!stream_ok) {
+    LOG(ERROR) << "Failed writing data to temporary file: " << temp_file_path;
+    std::filesystem::remove(temp_file_path, ec);
+    return false;
+  }
+
+  std::filesystem::rename(temp_file_path, file_path, ec);
+  if (ec) {
+    LOG(ERROR) << "Failed to rename " << temp_file_path << " to " << file_path
+               << ": " << ec.message();
+    std::filesystem::remove(temp_file_path, ec);
+    return false;
+  }
+  return true;
+}
+
+bool __cdecl principia__PluginLoadFromFile(
+    char const* const file_path,
+    char const* const compressor,
+    PluginReader** const plugin_reader) {
+  CHECK(file_path != nullptr);
+  CHECK(plugin_reader != nullptr);
+  *plugin_reader = nullptr;
+
+  std::filesystem::path const target_path(file_path);
+  std::ifstream stream(target_path, std::ios::binary);
+  if (!stream.is_open()) {
+    LOG(ERROR) << "Failed to open file for reading: " << target_path.string()
+               << " (errno: " << errno << ", error: " << std::strerror(errno)
+               << ", GetLastError: " << GetLastError() << ")";
+    return false;
+  }
+
+  char magic[16] = {};
+  stream.read(magic, sizeof(magic));
+  if (std::memcmp(magic, "PRINCIPIA_BIN", 13) != 0) {
+    LOG(ERROR) << "Invalid file header in " << file_path;
+    return false;
+  }
+
+  auto deserializer = std::make_unique<PushDeserializer>(
+      chunk_size,
+      number_of_chunks,
+      NewCompressor(compressor != nullptr && std::strlen(compressor) > 0
+                        ? compressor
+                        : gipfeli_compressor));
+
+  auto load_arena = make_not_null_unique<Arena>(ArenaOptions{
+      .max_block_size = 16 * chunk_size,
+      .initial_block_size = chunk_size,
+  });
+
+  not_null<serialization::Plugin*> const message =
+      Arena::Create<serialization::Plugin>(load_arena.get());
+
+  deserializer->Start(
+      message,
+      [plugin_reader, arena = std::move(load_arena)](
+          google::protobuf::Message const& message) mutable {
+        *plugin_reader = new PluginReader(
+            static_cast<serialization::Plugin const&>(message),
+            std::move(arena));
+      });
+
+  while (stream.good()) {
+    std::uint32_t size = 0;
+    if (!stream.read(reinterpret_cast<char*>(&size), sizeof(size))) {
+      break;
+    }
+    if (size == 0) {
+      deserializer->Push(Array<std::uint8_t>(), nullptr);
+      break;
+    }
+    UniqueArray<std::uint8_t> chunk(size);
+    if (!stream.read(reinterpret_cast<char*>(chunk.data.get()), size)) {
+      LOG(ERROR) << "Failed to read chunk data from " << file_path;
+      return false;
+    }
+    deserializer->Push(std::move(chunk));
+  }
+
+  deserializer.reset();
+  return *plugin_reader != nullptr;
 }
 
 // Log messages at a level `<= max_severity` are buffered.

@@ -481,6 +481,15 @@ class Ephemeris {
       std::vector<Vector<Acceleration, Frame>>& accelerations) const
       ABSL_LOCKS_EXCLUDED(lock_);
 
+  // Same as above, but requires reader lock to already be held by the caller.
+  // Used by FlowODEWithAdaptiveStep to avoid lock acquisition on every stage.
+  absl::StatusCode
+  ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
+      Instant const& t,
+      std::vector<Position<Frame>> const& positions,
+      std::vector<Vector<Acceleration, Frame>>& accelerations) const
+      ABSL_SHARED_LOCKS_REQUIRED(lock_);
+
   // Computes the potential resulting from the massive bodies in `bodies_`.  The
   // potentials are computed at the given `positions`.
   void ComputeGravitationalPotentialsOfAllMassiveBodies(

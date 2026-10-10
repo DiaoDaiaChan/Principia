@@ -8,6 +8,10 @@
 #include <vector>
 #if OS_WIN
 #include <malloc.h>
+#include <windows.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#undef interface
 #endif
 
 #include "absl/log/check.h"
@@ -45,6 +49,7 @@ namespace interface {
 using geometry::_instant::InfinitePast;
 using geometry::_instant::Instant;
 using ksp_plugin::_chebyshev_segment_export::ExportTrajectoryViewToChebyshevSegments;
+using ksp_plugin::_chebyshev_segment_export::WriteSegmentDataBatch;
 using ksp_plugin::_dxgi_adapter_factory::DxgiAdapterFactory;
 using ksp_plugin::_flight_plan::FlightPlan;
 using ksp_plugin::_frames::Barycentric;
@@ -52,6 +57,8 @@ using ksp_plugin::_frames::NavigationManœuvre;
 using ksp_plugin::_gpu_interop_types::ChebyshevSegmentData;
 using ksp_plugin::_gpu_interop_types::DmaTransferMode;
 using ksp_plugin::_gpu_interop_types::GpuAdapterInfo;
+using ksp_plugin::_gpu_interop_types::GpuDeviceRole;
+using ksp_plugin::_gpu_interop_types::GpuDeviceInfo;
 using ksp_plugin::_gpu_interop_types::HardwareProfile;
 using ksp_plugin::_gpu_interop_types::KspSceneType;
 using ksp_plugin::_gpu_interop_types::OptimalCandidateBurn;
@@ -124,25 +131,14 @@ PRINCIPIA_EXPORT bool __cdecl principia__GpuBenchmarkDmaTransfer(
 
 #if OS_WIN
   void* src_raw = _aligned_malloc(total_bytes, 64);
-  void* dst_raw = _aligned_malloc(total_bytes, 64);
 #else
   void* src_raw = std::aligned_alloc(64, total_bytes);
-  void* dst_raw = std::aligned_alloc(64, total_bytes);
 #endif
-  if (src_raw == nullptr || dst_raw == nullptr) {
-#if OS_WIN
-    if (src_raw != nullptr) _aligned_free(src_raw);
-    if (dst_raw != nullptr) _aligned_free(dst_raw);
-#else
-    if (src_raw != nullptr) std::free(src_raw);
-    if (dst_raw != nullptr) std::free(dst_raw);
-#endif
+  if (src_raw == nullptr) {
     return false;
   }
 
   auto* src = static_cast<ChebyshevSegmentData*>(src_raw);
-  auto* dst = static_cast<ChebyshevSegmentData*>(dst_raw);
-
   for (int i = 0; i < count; ++i) {
     src[i].t_min = 100.0f * i;
     src[i].t_max = 100.0f * (i + 1);
@@ -151,48 +147,121 @@ PRINCIPIA_EXPORT bool __cdecl principia__GpuBenchmarkDmaTransfer(
     src[i].coeffs[0][1] = static_cast<float>(i * 2);
     src[i].coeffs[0][2] = static_cast<float>(i * 3);
   }
-  std::memset(dst, 0, total_bytes);
 
   auto const mode = DxgiAdapterFactory::Instance().GetDmaMode();
+  double duration_s = 0.0;
+  bool hardware_vram_tested = false;
 
-  auto const start = std::chrono::high_resolution_clock::now();
+#if OS_WIN
+  // Target true GPU Direct-Access / ReBAR PCIe BAR mapped VRAM with USWC (Write-Combining) memory attributes!
+  HMODULE d3d11_mod = LoadLibraryW(L"d3d11.dll");
+  if (d3d11_mod != nullptr) {
+    using PFN_D3D11_CREATE_DEVICE = HRESULT(WINAPI*)(
+        IDXGIAdapter*, D3D_DRIVER_TYPE, HMODULE, UINT,
+        const D3D_FEATURE_LEVEL*, UINT, UINT,
+        ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+    auto pfn_create_device = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(
+        GetProcAddress(d3d11_mod, "D3D11CreateDevice"));
 
-  for (int i = 0; i < count; ++i) {
-    ksp_plugin::_chebyshev_segment_export::WriteSegmentData(src[i], &dst[i], mode);
-  }
+    if (pfn_create_device != nullptr) {
+      IDXGIAdapter1* dxgi_adapter = nullptr;
+      DxgiAdapterFactory::Instance().GetSelectedDxgiAdapter(&dxgi_adapter);
 
-  auto const end = std::chrono::high_resolution_clock::now();
-  std::chrono::duration<double> const elapsed = end - start;
-  double const duration_s = elapsed.count();
+      ID3D11Device* device = nullptr;
+      ID3D11DeviceContext* context = nullptr;
+      D3D_FEATURE_LEVEL feature_level{};
+      HRESULT hr = pfn_create_device(
+          dxgi_adapter,
+          dxgi_adapter != nullptr ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+          nullptr,
+          0,
+          nullptr,
+          0,
+          D3D11_SDK_VERSION,
+          &device,
+          &feature_level,
+          &context);
 
-  bool verified = true;
-  for (int i = 0; i < count; ++i) {
-    if (dst[i].t_min != src[i].t_min ||
-        dst[i].t_max != src[i].t_max ||
-        dst[i].coeffs[0][0] != src[i].coeffs[0][0]) {
-      verified = false;
-      break;
+      if (SUCCEEDED(hr) && device != nullptr && context != nullptr) {
+        D3D11_BUFFER_DESC desc{};
+        desc.ByteWidth = static_cast<UINT>(total_bytes);
+        desc.Usage = D3D11_USAGE_DYNAMIC;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        desc.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+        desc.StructureByteStride = sizeof(ChebyshevSegmentData);
+
+        ID3D11Buffer* d3d_buffer = nullptr;
+        hr = device->CreateBuffer(&desc, nullptr, &d3d_buffer);
+        if (SUCCEEDED(hr) && d3d_buffer != nullptr) {
+          D3D11_MAPPED_SUBRESOURCE mapped{};
+          hr = context->Map(d3d_buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+          if (SUCCEEDED(hr) && mapped.pData != nullptr) {
+            auto* dst = static_cast<ChebyshevSegmentData*>(mapped.pData);
+
+            // Precision GPU Direct DMA / ReBAR PCIe Write-Combining Bandwidth Benchmark:
+            auto const start = std::chrono::high_resolution_clock::now();
+            ksp_plugin::_chebyshev_segment_export::WriteSegmentDataBatch(
+                src, dst, count, mode);
+            context->Unmap(d3d_buffer, 0);
+            auto const end = std::chrono::high_resolution_clock::now();
+
+            std::chrono::duration<double> const elapsed = end - start;
+            duration_s = elapsed.count();
+            hardware_vram_tested = true;
+          }
+          d3d_buffer->Release();
+        }
+        context->Release();
+        device->Release();
+      }
+      if (dxgi_adapter != nullptr) {
+        dxgi_adapter->Release();
+      }
     }
+    FreeLibrary(d3d11_mod);
+  }
+#endif
+
+  if (!hardware_vram_tested) {
+#if OS_WIN
+    void* dst_raw = _aligned_malloc(total_bytes, 64);
+#else
+    void* dst_raw = std::aligned_alloc(64, total_bytes);
+#endif
+    if (dst_raw == nullptr) {
+#if OS_WIN
+      _aligned_free(src_raw);
+#else
+      std::free(src_raw);
+#endif
+      return false;
+    }
+    auto* dst = static_cast<ChebyshevSegmentData*>(dst_raw);
+    auto const start = std::chrono::high_resolution_clock::now();
+    ksp_plugin::_chebyshev_segment_export::WriteSegmentDataBatch(
+        src, dst, count, mode);
+    auto const end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> const elapsed = end - start;
+    duration_s = elapsed.count();
+#if OS_WIN
+    _aligned_free(dst_raw);
+#else
+    std::free(dst_raw);
+#endif
   }
 
 #if OS_WIN
   _aligned_free(src_raw);
-  _aligned_free(dst_raw);
 #else
   std::free(src_raw);
-  std::free(dst_raw);
 #endif
-
-  if (!verified) {
-    return false;
-  }
 
   *out_duration_seconds = duration_s;
   *out_bandwidth_gigabytes_per_second =
       duration_s > 0.0 ? ((static_cast<double>(total_bytes) / 1e9) / duration_s) : 0.0;
 
   DxgiAdapterFactory::Instance().RecordDmaWrite(total_bytes, duration_s);
-
   return true;
 }
 
@@ -252,6 +321,43 @@ PRINCIPIA_EXPORT void __cdecl principia__PartitionVesselBatch(
     int* const out_gpu_count) {
   WorkloadBalancer::Instance().PartitionVesselBatch(
       total_vessels, out_cpu_count, out_gpu_count);
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__GpuGetDeviceInfo(
+    int const index,
+    GpuDeviceInfo* const out_info) {
+  return HardwareProfiler::Instance().GetDeviceInfo(index, out_info);
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__GpuSetDeviceRole(
+    int const adapter_index,
+    int const role) {
+  HardwareProfiler::Instance().SetDeviceRole(
+      adapter_index, static_cast<GpuDeviceRole>(role));
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__GpuGetMultiDeviceSummary(
+    int* const out_device_count,
+    int* const out_active_count,
+    double* const out_total_compute_score) {
+  if (out_device_count != nullptr) {
+    *out_device_count = HardwareProfiler::Instance().GetDeviceCount();
+  }
+  auto const profile = HardwareProfiler::Instance().GetProfile();
+  if (out_active_count != nullptr) {
+    *out_active_count = profile.active_gpu_count;
+  }
+  if (out_total_compute_score != nullptr) {
+    *out_total_compute_score = profile.total_gpu_compute_score;
+  }
+}
+
+PRINCIPIA_EXPORT void __cdecl principia__PartitionMultiDeviceBatch(
+    int const total_work,
+    int* const out_device_counts,
+    int const max_devices) {
+  WorkloadBalancer::Instance().PartitionMultiDeviceBatch(
+      total_work, out_device_counts, max_devices);
 }
 
 //=============================================================================

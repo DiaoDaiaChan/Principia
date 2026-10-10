@@ -21,11 +21,13 @@
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/iterators.hpp"
 #include "ksp_plugin/orbit_analyser.hpp"
+#include "ksp_plugin/part_force_interop.hpp"
 #include "ksp_plugin/pile_up.hpp"
 #include "ksp_plugin/planetarium.hpp"
 #include "ksp_plugin/plugin.hpp"
 #include "ksp_plugin/plugin_reader.hpp"
 #include "ksp_plugin/renderer.hpp"
+#include "ksp_plugin/trajectory_renderer_interop.hpp"
 #include "ksp_plugin/vessel.hpp"
 #include "physics/apsides.hpp"
 #include "physics/degrees_of_freedom.hpp"
@@ -245,6 +247,33 @@ not_null<OrbitAnalysis*> NewOrbitAnalysis(
     int ground_track_revolution);
 
 FlightPlan& GetFlightPlan(Plugin const& plugin, char const* vessel_guid);
+
+extern "C" PRINCIPIA_DLL
+bool __cdecl principia__PluginSaveToFile(
+    Plugin const* plugin,
+    char const* file_path,
+    char const* compressor);
+
+extern "C" PRINCIPIA_DLL
+bool __cdecl principia__PluginLoadFromFile(
+    char const* file_path,
+    char const* compressor,
+    PluginReader** plugin_reader);
+
+extern "C" PRINCIPIA_DLL
+void __cdecl principia__ApplyPartForcesBatch(
+    Plugin* plugin,
+    ksp_plugin::_part_force_interop::PartForceEntry const* entries,
+    int count);
+
+extern "C" PRINCIPIA_DLL
+int __cdecl principia__RenderTrajectoryToNativeBuffer(
+    Plugin const* plugin,
+    char const* vessel_guid,
+    int trajectory_kind,
+    XYZ sun_world_position,
+    ksp_plugin::_trajectory_renderer_interop::TrajectoryVertex* vertex_buffer,
+    int max_vertices);
 
 }  // namespace interface
 }  // namespace principia

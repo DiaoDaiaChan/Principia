@@ -149,6 +149,9 @@
         -Xclang --system-header-prefix=gmock/
         -Xclang --system-header-prefix=zfp/
       </AdditionalOptions>
+      <AdditionalOptions Condition="$(PrincipiaCompilerClangLLVM) and $(PlatformWithCPUFeatures.Contains('FMA'))">
+        -mfma %(AdditionalOptions)
+      </AdditionalOptions>
       <AssemblerOutput Condition="$(ProjectName) == nanobenchmarks">AssemblyCode</AssemblerOutput>
       <CallingConvention>vectorcall</CallingConvention>
       <EnableEnhancedInstructionSet Condition="$(PlatformWithCPUFeatures.Contains('AVX'))">AdvancedVectorExtensions</EnableEnhancedInstructionSet>

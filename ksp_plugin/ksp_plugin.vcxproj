@@ -13,24 +13,13 @@
     <Import Project="..\shared\astronomy.vcxitems" Label="Shared" />
     <Import Project="..\shared\version.generated.vcxitems" Label="Shared" />
   </ImportGroup>
-  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" />
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+  <ItemDefinitionGroup>
     <Manifest>
       <AdditionalManifestFiles>$(ProjectDir)principia.manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
     </Manifest>
     <Link>
-      <AdditionalDependencies>OneCore.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>OneCore.lib;Synchronization.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
-    <Manifest>
-      <AdditionalManifestFiles>$(ProjectDir)principia.manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
-    </Manifest>
-  </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release_LLVM|x64'">
-    <Manifest>
-      <AdditionalManifestFiles>$(ProjectDir)principia.manifest %(AdditionalManifestFiles)</AdditionalManifestFiles>
-    </Manifest>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="celestial.hpp" />
@@ -71,9 +60,15 @@
     <ClInclude Include="gpu_interop_types.hpp" />
     <ClInclude Include="dxgi_adapter_factory.hpp" />
     <ClInclude Include="chebyshev_segment_export.hpp" />
+    <ClInclude Include="hardware_profiler.hpp" />
+    <ClInclude Include="workload_balancer.hpp" />
+    <ClInclude Include="compute_pipeline.hpp" />
+    <ClInclude Include="part_force_interop.hpp" />
+    <ClInclude Include="trajectory_renderer_interop.hpp" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="celestial.cpp" />
+    <ClCompile Include="compute_pipeline.cpp" />
     <ClCompile Include="ephemeris_pacer.cpp" />
     <ClCompile Include="equator_relevance_threshold.cpp" />
     <ClCompile Include="flight_plan.cpp" />
@@ -96,7 +91,6 @@
     <ClCompile Include="interface_renderer.cpp" />
     <ClCompile Include="interface_vessel.cpp" />
     <ClCompile Include="interface_gpu.cpp" />
-    <ClCompile Include="interface_snapshot.cpp" />
     <ClCompile Include="orbit_analyser.cpp" />
     <ClCompile Include="part.cpp" />
     <ClCompile Include="part_subsets.cpp" />

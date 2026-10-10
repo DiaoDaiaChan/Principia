@@ -2,6 +2,7 @@
 [Tt]humbs.db
 *.DS_Store
 *.swp
+Desktop.ini
 
 # Visual Studio files
 *.[Oo]bj
@@ -35,16 +36,36 @@ ipch/
 .vs/
 /ksp_plugin_adapter/Properties/AssemblyInfo.cs
 
-# Clang output
+# MSBuild / Build Outputs & Intermediates
+x64/
+x86/
+ARM64/
+ARM/
+*.tlog
+*.idb
+*.lastcodeanalysissucceeded
+*.recipe
+
+# Clang / Language Server
 *.o
 *.d
+compile_commands.json
+.cache/
+
+# Visual Studio Code & JetBrains IDEs
+.vscode/
+.idea/
+*.DotSettings.user
+*.sln.DotSettings
 
 # MonoDevelop
 *.pidb
 *.userprefs
 
-# Tooling
+# Tooling & Tests
 [Tt]est[Rr]esult*
+TestResults/
+*.testsettings
 
 # Project files
 [Bb]uild/
@@ -58,18 +79,15 @@ ipch/
 # NuGet
 packages/
 *.nupkg
+.nuget/
 
 # visual studio database projects
 *.dbmdl
-
-# Test files
-*.testsettings
 
 # LaTeX stuff
 *.aux
 *.glo
 *.idx
-*.log
 *.toc
 *.ist
 *.acn
@@ -122,11 +140,12 @@ unity/
 # Vagrant
 .vagrant/
 
-# Visual Studio Code
-.vscode/
-
-# Nuget
-.nuget/
+# Crash dumps & game logs
+*.dmp
+*.mdmp
+KSP.log
+Player.log
+output_log.txt
 
 # Telemetry & WorkBuddy
 PrincipiaTelemetry*

@@ -437,7 +437,7 @@ absl::Status Ephemeris<Frame>::FlowWithAdaptiveStep(
       std::vector<Position<Frame>> const& positions,
       std::vector<Vector<Acceleration, Frame>>& accelerations) {
     auto const error =
-        ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodies(
+        ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
             t,
             positions,
             accelerations);
@@ -470,7 +470,7 @@ absl::Status Ephemeris<Frame>::FlowWithAdaptiveStep(
           std::vector<Velocity<Frame>> const& velocities,
           std::vector<Vector<Acceleration, Frame>>& accelerations) {
         auto const error =
-            ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodies(
+            ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
                 t,
                 positions,
                 accelerations);
@@ -1567,18 +1567,17 @@ Ephemeris<Frame>::ComputeGravitationalAccelerationBetweenAllMassiveBodies(
 template<typename Frame>
 absl::StatusCode
 Ephemeris<Frame>::
-ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodies(
+ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
     Instant const& t,
     std::vector<Position<Frame>> const& positions,
     std::vector<Vector<Acceleration, Frame>>& accelerations) const {
+  lock_.AssertReaderHeld();
   CHECK_EQ(positions.size(), accelerations.size());
   accelerations.assign(accelerations.size(), Vector<Acceleration, Frame>());
   // TODO(phl): Use std::to_underlying when we have C++23.
   auto error = static_cast<std::underlying_type_t<absl::StatusCode>>(
       absl::StatusCode::kOk);
 
-  // Locking ensures that we see a consistent state of all the trajectories.
-  absl::ReaderMutexLock l(&lock_);
   for (std::size_t b1 = 0; b1 < number_of_oblate_bodies_; ++b1) {
     MassiveBody const& body1 = *bodies_[b1];
     error |= ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies<
@@ -1601,6 +1600,19 @@ ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodies(
                  accelerations);
   }
   return static_cast<absl::StatusCode>(error);
+}
+
+template<typename Frame>
+absl::StatusCode
+Ephemeris<Frame>::
+ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodies(
+    Instant const& t,
+    std::vector<Position<Frame>> const& positions,
+    std::vector<Vector<Acceleration, Frame>>& accelerations) const {
+  // Locking ensures that we see a consistent state of all the trajectories.
+  absl::ReaderMutexLock l(&lock_);
+  return ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
+      t, positions, accelerations);
 }
 
 template<typename Frame>
@@ -1653,6 +1665,10 @@ absl::Status Ephemeris<Frame>::FlowODEWithAdaptiveStep(
   Prolong(t, max_ephemeris_steps).IgnoreError();
   RETURN_IF_STOPPED;
   Instant const t_final = std::min(t, t_max());
+
+  // Acquire the reader lock once for the entire ODE integration to eliminate
+  // atomic bus locking storms across thousands of Runge-Kutta stages.
+  absl::ReaderMutexLock l(&lock_);
 
   InitialValueProblem<ODE> problem;
   problem.equation.compute_acceleration = std::move(compute_acceleration);
