@@ -133,6 +133,14 @@ public struct CpuModuleThreadingStatus {
 
   public int l1_celestial_cache_hit_count;
   public int l2_chebyshev_tile_hit_count;
+
+  public double effective_tier2_hz;
+  public double effective_tier3_hz;
+  public int tier2_stride;
+  public int tier3_stride;
+  public double budget_headroom_ratio;
+  public int l3_ephemeris_ring_hit_count;
+  public int padding;
 }
 
 }  // namespace ksp_plugin_adapter

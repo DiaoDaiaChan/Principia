@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -11,6 +12,8 @@
 #include "base/macros.hpp"
 #include "geometry/instant.hpp"
 #include "physics/celestial_l1_cache.hpp"
+#include "physics/chebyshev_l2_tile_cache.hpp"
+#include "physics/ephemeris_l3_window_ring.hpp"
 
 namespace principia {
 namespace ksp_plugin {
@@ -19,11 +22,13 @@ namespace internal {
 
 using namespace principia::geometry::_instant;
 using namespace principia::physics::_celestial_l1_cache;
+using namespace principia::physics::_chebyshev_l2_tile_cache;
+using namespace principia::physics::_ephemeris_l3_window_ring;
 
 enum class VesselPriorityTier : std::int32_t {
   Critical = 0,    // 50Hz Real-time (Active vessel, thrusting, or <= 2.5 km)
-  Interactive = 1, // 25Hz Interleaved (Nearby 2.5 km - 50 km)
-  Deferred = 2     // 2Hz - 5Hz Sliced (Distant > 50 km, debris, idle probes)
+  Interactive = 1, // Auto-Adaptive 25Hz ~ 50Hz (Nearby 2.5 km - 50 km, flight plan)
+  Deferred = 2     // Auto-Adaptive 2Hz ~ 25Hz (Distant > 50 km, debris, idle probes)
 };
 
 // 64-byte cache-line aligned telemetry and control structure matching C# P/Invoke.
@@ -39,7 +44,7 @@ struct alignas(64) CpuModuleThreadingStatus {
   std::int32_t flight_plan_optimizer_active{0};
 
   double current_frame_physics_time_ms{0.0};
-  double frame_budget_limit_ms{3.0};
+  double frame_budget_limit_ms{8.0};
 
   std::int32_t tier1_vessel_count{0};
   std::int32_t tier2_vessel_count{0};
@@ -48,6 +53,15 @@ struct alignas(64) CpuModuleThreadingStatus {
 
   std::int32_t l1_celestial_cache_hit_count{0};
   std::int32_t l2_chebyshev_tile_hit_count{0};
+
+  // Auto-Adaptive Dynamic Cadence & L3 Cache Telemetry:
+  double effective_tier2_hz{50.0};
+  double effective_tier3_hz{10.0};
+  std::int32_t tier2_stride{1};
+  std::int32_t tier3_stride{5};
+  double budget_headroom_ratio{0.5};
+  std::int32_t l3_ephemeris_ring_hit_count{0};
+  std::int32_t padding{0};  // Keeps 8-byte alignment clean
 };
 
 // High-precision stopwatch guarding the physics frame budget.
@@ -80,7 +94,72 @@ class alignas(64) FrameBudgetCircuitBreaker {
   std::chrono::high_resolution_clock::time_point const start_time_;
 };
 
-// Time-sliced scheduler coordinating priority tiers, frame budget, and cache hits.
+// Dynamic Cadence Governor automatically adapting vessel stepping strides
+// based on real-time EWMA physics budget headroom.
+class alignas(64) DynamicCadenceGovernor {
+ public:
+  void UpdateFrame(double const frame_elapsed_ms, double const budget_limit_ms) {
+    if (budget_limit_ms <= 0.0) return;
+
+    // EWMA smoothing with alpha = 0.15 to avoid oscillating on single spike frames
+    if (smoothed_physics_ms_ <= 0.001) {
+      smoothed_physics_ms_ = frame_elapsed_ms;
+    } else {
+      smoothed_physics_ms_ = 0.85 * smoothed_physics_ms_ + 0.15 * frame_elapsed_ms;
+    }
+
+    double const headroom = (budget_limit_ms - smoothed_physics_ms_) / budget_limit_ms;
+    headroom_ratio_ = headroom;
+
+    // Tier 2: Interactive
+    // When headroom is plentiful (>= 40%), step at full 50Hz (stride 1).
+    // When moderate, step at 25Hz (stride 2).
+    // When tight (< 10%), step at 16.7Hz (stride 3).
+    if (headroom >= 0.40) {
+      tier2_stride_ = 1;
+    } else if (headroom >= 0.10) {
+      tier2_stride_ = 2;
+    } else {
+      tier2_stride_ = 3;
+    }
+
+    // Tier 3: Deferred
+    // Dynamically scales from 25Hz down to 2Hz based on available headroom:
+    if (headroom >= 0.70) {
+      tier3_stride_ = 2;  // 25.0 Hz: Plentiful headroom, no need to defer!
+    } else if (headroom >= 0.45) {
+      tier3_stride_ = 3;  // 16.7 Hz
+    } else if (headroom >= 0.25) {
+      tier3_stride_ = 5;  // 10.0 Hz
+    } else if (headroom >= 0.10) {
+      tier3_stride_ = 8;  // 6.25 Hz
+    } else if (headroom >= 0.0) {
+      tier3_stride_ = 12; // 4.17 Hz
+    } else {
+      tier3_stride_ = 25; // 2.00 Hz emergency throttle under high pressure
+    }
+
+    effective_tier2_hz_ = 50.0 / static_cast<double>(tier2_stride_);
+    effective_tier3_hz_ = 50.0 / static_cast<double>(tier3_stride_);
+  }
+
+  std::int32_t tier2_stride() const { return tier2_stride_; }
+  std::int32_t tier3_stride() const { return tier3_stride_; }
+  double effective_tier2_hz() const { return effective_tier2_hz_; }
+  double effective_tier3_hz() const { return effective_tier3_hz_; }
+  double headroom_ratio() const { return headroom_ratio_; }
+  double smoothed_physics_ms() const { return smoothed_physics_ms_; }
+
+ private:
+  double smoothed_physics_ms_{0.0};
+  double headroom_ratio_{0.5};
+  std::int32_t tier2_stride_{1};
+  std::int32_t tier3_stride_{5};
+  double effective_tier2_hz_{50.0};
+  double effective_tier3_hz_{10.0};
+};
+
+// Time-sliced scheduler coordinating auto-adaptive cadence, frame budget, and cache hierarchies.
 class TimeSlicedScheduler {
  public:
   static TimeSlicedScheduler& Instance() {
@@ -101,6 +180,8 @@ class TimeSlicedScheduler {
         std::chrono::microseconds(budget_us_.load(std::memory_order_relaxed)));
   }
 
+  // Determines whether a vessel should step in the current physics tick.
+  // Uses Fibonacci golden ratio hash to ensure 100% uniform dispersal across frames.
   bool ShouldStepVesselThisTick(
       VesselPriorityTier const tier,
       std::uint64_t const vessel_uid,
@@ -110,9 +191,15 @@ class TimeSlicedScheduler {
       return true;  // Critical vessels step 100% of ticks unconditionally
     }
 
+    // Knuth's 64-bit Fibonacci golden ratio multiplicative hash (2^64 / phi)
+    // Evenly spreads vessels across frames without harmonic clustering spikes.
+    auto const hash = static_cast<std::uint64_t>(
+        (vessel_uid * 11400714819323198485ULL) >> 32);
+
     if (tier == VesselPriorityTier::Interactive) {
-      // 25Hz: Step on even frames (or odd frames based on UID to interleave)
-      if ((frame_index + vessel_uid) % 2 != 0) {
+      std::uint64_t const stride = static_cast<std::uint64_t>(
+          std::max(1, governor_.tier2_stride()));
+      if (stride > 1 && ((frame_index + hash) % stride != 0)) {
         return false;
       }
       if (breaker.HasExceededBudget()) {
@@ -122,8 +209,10 @@ class TimeSlicedScheduler {
       return true;
     }
 
-    // Deferred tier (2Hz ~ 5Hz): Step once every 10 frames, interleaved by UID
-    if ((frame_index + vessel_uid) % 10 != 0) {
+    // Deferred tier
+    std::uint64_t const stride = static_cast<std::uint64_t>(
+        std::max(1, governor_.tier3_stride()));
+    if (stride > 1 && ((frame_index + hash) % stride != 0)) {
       return false;
     }
     if (breaker.HasExceededBudget()) {
@@ -142,6 +231,9 @@ class TimeSlicedScheduler {
     tier1_vessels_.store(tier1_count, std::memory_order_relaxed);
     tier2_vessels_.store(tier2_count, std::memory_order_relaxed);
     tier3_vessels_.store(tier3_count, std::memory_order_relaxed);
+
+    double const budget_ms = budget_us_.load(std::memory_order_relaxed) / 1000.0;
+    governor_.UpdateFrame(elapsed_ms, budget_ms);
   }
 
   void RecordL1Hit() {
@@ -150,6 +242,10 @@ class TimeSlicedScheduler {
 
   void RecordL2TileHit() {
     l2_tile_hits_.fetch_add(1, std::memory_order_relaxed);
+  }
+
+  void RecordL3Hit() {
+    l3_ring_hits_.fetch_add(1, std::memory_order_relaxed);
   }
 
   CpuModuleThreadingStatus GetStatusSnapshot(
@@ -182,6 +278,15 @@ class TimeSlicedScheduler {
 
     status.l1_celestial_cache_hit_count = l1_hits_.load(std::memory_order_relaxed);
     status.l2_chebyshev_tile_hit_count = l2_tile_hits_.load(std::memory_order_relaxed);
+
+    // Auto-Adaptive Cadence Telemetry
+    status.effective_tier2_hz = governor_.effective_tier2_hz();
+    status.effective_tier3_hz = governor_.effective_tier3_hz();
+    status.tier2_stride = governor_.tier2_stride();
+    status.tier3_stride = governor_.tier3_stride();
+    status.budget_headroom_ratio = governor_.headroom_ratio();
+    status.l3_ephemeris_ring_hit_count = l3_ring_hits_.load(std::memory_order_relaxed);
+
     return status;
   }
 
@@ -189,10 +294,19 @@ class TimeSlicedScheduler {
     return l1_cache_;
   }
 
+  ChebyshevL2TileCache& ThreadLocalL2Cache() {
+    thread_local ChebyshevL2TileCache l2_cache;
+    return l2_cache;
+  }
+
+  EphemerisL3WindowRing& L3Ring() {
+    return EphemerisL3WindowRing::Instance();
+  }
+
  private:
   TimeSlicedScheduler() = default;
 
-  std::atomic<std::int64_t> budget_us_{3000};  // Default 3.0 ms (3000 us)
+  std::atomic<std::int64_t> budget_us_{8000};  // Default 8.0 ms (8000 us)
   std::atomic<double> last_frame_elapsed_ms_{0.0};
   std::atomic<std::int32_t> tier1_vessels_{0};
   std::atomic<std::int32_t> tier2_vessels_{0};
@@ -200,7 +314,9 @@ class TimeSlicedScheduler {
   std::atomic<std::int32_t> yielded_slices_{0};
   std::atomic<std::int32_t> l1_hits_{0};
   std::atomic<std::int32_t> l2_tile_hits_{0};
+  std::atomic<std::int32_t> l3_ring_hits_{0};
 
+  DynamicCadenceGovernor governor_{};
   CelestialL1CacheBlock l1_cache_{};
 };
 
@@ -209,6 +325,7 @@ class TimeSlicedScheduler {
 using internal::VesselPriorityTier;
 using internal::CpuModuleThreadingStatus;
 using internal::FrameBudgetCircuitBreaker;
+using internal::DynamicCadenceGovernor;
 using internal::TimeSlicedScheduler;
 
 }  // namespace _time_sliced_scheduler

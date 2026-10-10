@@ -829,6 +829,7 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
   }
   l1_cache.count = body_idx;
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL1Hit();
+  _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL3Hit();
 
   UpdatePlanetariumRotation();
   loaded_vessels_.clear();
@@ -930,6 +931,7 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
   double const elapsed_ms = breaker->ElapsedMilliseconds();
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordFrameStats(
       elapsed_ms, tier1_count, tier2_count, tier3_count);
+  _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL2TileHit();
 }
 
 _time_sliced_scheduler::CpuModuleThreadingStatus

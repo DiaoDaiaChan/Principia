@@ -56,6 +56,12 @@
     <ClInclude Include="celestial_l1_cache.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="chebyshev_l2_tile_cache.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ephemeris_l3_window_ring.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="ephemeris.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>

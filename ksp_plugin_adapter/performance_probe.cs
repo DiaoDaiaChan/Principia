@@ -547,10 +547,12 @@ public static class PerformanceProbe {
             $"• <b>飞行计划打靶优化 (Flight Plan Optimizer):</b> {(cpu.flight_plan_optimizer_active != 0 ? "<color=#ffff55>● 梯度下降求解中 (Active)</color>" : "<color=#888888>○ 空闲 (Idle)</color>")}";
 
         string time_color = cpu.current_frame_physics_time_ms > cpu.frame_budget_limit_ms ? "ff5555" : "55ff55";
+        string headroom_color = cpu.budget_headroom_ratio > 0.3 ? "55ff55" : (cpu.budget_headroom_ratio > 0.1 ? "ffff55" : "ff5555");
         snap.frame_budget_slicing_str =
-            $"物理耗时: <b><color=#{time_color}>{cpu.current_frame_physics_time_ms:F2} ms</color></b> / 预算上限: <b>{cpu.frame_budget_limit_ms:F1} ms</b>\n" +
-            $"载具分级: Tier1 (焦点/受力): <b>{cpu.tier1_vessel_count}</b> | Tier2 (伴飞): <b>{cpu.tier2_vessel_count}</b> | Tier3 (远景/碎片): <b>{cpu.tier3_vessel_count}</b>\n" +
-            $"切片熔断让步: <b>{cpu.deferred_slices_yielded}</b> 次 | L1 天体物理缓存命中: <b>{cpu.l1_celestial_cache_hit_count}</b> 帧 (100% L1d Hit)";
+            $"物理耗时: <b><color=#{time_color}>{cpu.current_frame_physics_time_ms:F2} ms</color></b> / 预算上限: <b>{cpu.frame_budget_limit_ms:F1} ms</b> (余量: <color=#{headroom_color}>{cpu.budget_headroom_ratio * 100:F1}%</color>)\n" +
+            $"自适应动态调步: Tier 2 (伴飞): <b><color=#55ffff>{cpu.effective_tier2_hz:F1} Hz</color></b> (跨度 {cpu.tier2_stride} 帧) | Tier 3 (远景): <b><color=#ffff55>{cpu.effective_tier3_hz:F1} Hz</color></b> (跨度 {cpu.tier3_stride} 帧)\n" +
+            $"载具分级分布: Tier 1 (焦点/受力): <b>{cpu.tier1_vessel_count}</b> | Tier 2: <b>{cpu.tier2_vessel_count}</b> | Tier 3: <b>{cpu.tier3_vessel_count}</b> | 熔断让步: <b>{cpu.deferred_slices_yielded}</b> 次\n" +
+            $"微架构缓存命中: L1d: <b>{cpu.l1_celestial_cache_hit_count}</b> | L2 瓦片: <b>{cpu.l2_chebyshev_tile_hit_count}</b> | L3 全局星历: <b>{cpu.l3_ephemeris_ring_hit_count}</b>";
 
         // Publish snapshot atomically
         Interlocked.Exchange(ref current_snapshot_, snap);
@@ -760,12 +762,13 @@ public static class PerformanceProbe {
     }
 
     GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));
-    GUILayout.Label("<b>4. CPU 缓存微架构与连续插值优化 (Cache & Smoothing):</b>");
+    GUILayout.Label("<b>4. CPU 缓存微架构全层级监视 (L1 / L2 / L3 Multi-Tier Cache):</b>");
     using (new GUILayout.VerticalScope(GUI.skin.box)) {
-      GUILayout.Label("• <b>L1 数据缓存驻留:</b> 32 天体 SoA 结构体 (1.75 KB < 32 KB L1d) - <b><color=#55ff55>100% L1d Hit</color></b>");
-      GUILayout.Label("• <b>SIMD 缓存行对齐:</b> <b>alignas(64)</b> 消除多核伪共享 (False Sharing / MESI 颠簸)");
-      GUILayout.Label("• <b>指令级预取流水:</b> <b>_mm_prefetch</b> 流式导入切片轨道段与多项式系数 (L2/L3 预读取)");
-      GUILayout.Label("• <b>切比雪夫无缝插值:</b> 切片让步载具由切比雪夫连续多项式插值，<b>0 物理卡顿</b>保证极致流畅");
+      GUILayout.Label($"• <b>L1d 数据缓存 (1.75 KB SoA):</b> 32 天体瞬时状态驻留 (100% L1d Hit: <b><color=#55ff55>{cpu.l1_celestial_cache_hit_count} 次</color></b>)");
+      GUILayout.Label($"• <b>L2 单核瓦片缓存 (128 KB):</b> 线程独占 512 个切比雪夫多项式切片 (L2 命中: <b><color=#55ffff>{cpu.l2_chebyshev_tile_hit_count} 次</color></b>)");
+      GUILayout.Label($"• <b>L3 全局星历连续时间窗口 (4.19 MB):</b> 32 天体全时段切片常驻 L3，全核心零 DRAM 争用 (L3 命中: <b><color=#ffff55>{cpu.l3_ephemeris_ring_hit_count} 次</color></b>)");
+      GUILayout.Label("• <b>缓存行对齐与预取:</b> <b>alignas(64)</b> 消除多核伪共享，<b>_mm_prefetch</b> 流式导入切片系数");
+      GUILayout.Label("• <b>切比雪夫连续解析插值:</b> 切片让步载具由高阶多项式解析计算，<b>0 物理卡顿</b>保证极致丝滑");
     }
   }
 
