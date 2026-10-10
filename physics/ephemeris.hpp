@@ -22,6 +22,7 @@
 #include "integrators/ordinary_differential_equations.hpp"
 #include "physics/apsides.hpp"
 #include "physics/checkpointer.hpp"
+#include "physics/chebyshev_l2_tile_cache.hpp"
 #include "physics/clientele.hpp"
 #include "physics/continuous_trajectory.hpp"
 #include "physics/degrees_of_freedom.hpp"
@@ -51,6 +52,7 @@ using namespace principia::integrators::_integrators;
 using namespace principia::integrators::_ordinary_differential_equations;
 using namespace principia::physics::_apsides;
 using namespace principia::physics::_checkpointer;
+using namespace principia::physics::_chebyshev_l2_tile_cache;
 using namespace principia::physics::_clientele;
 using namespace principia::physics::_continuous_trajectory;
 using namespace principia::physics::_degrees_of_freedom;
@@ -514,6 +516,12 @@ class Ephemeris {
       Time const& current_step_size,
       typename NewtonianMotionEquation::State const& /*state*/,
       typename NewtonianMotionEquation::State::Error const& error);
+
+  // Fits a 16th-degree Chebyshev polynomial segment for body `b1` covering a 300s window around `t`.
+  ChebyshevTile256 GenerateChebyshevTileLocked(
+      std::size_t const b1,
+      Instant const& t) const
+      ABSL_SHARED_LOCKS_REQUIRED(lock_);
 
   // The bodies in the order in which they were given at construction.
   std::vector<not_null<MassiveBody const*>> unowned_bodies_;

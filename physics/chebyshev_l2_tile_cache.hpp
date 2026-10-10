@@ -81,6 +81,72 @@ struct alignas(64) ChebyshevTile256 {
   }
 };
 
+// Fast lookup table for Chebyshev-Gauss-Lobatto transform matrix:
+// M[k][j] = (2.0 / (N * c_k * c_j)) * cos(j * k * pi / N) for N = 16.
+class ChebyshevLobattoTransform16 final {
+ public:
+  static constexpr int kDegree = 16;
+
+  static ChebyshevLobattoTransform16 const& Instance() {
+    static ChebyshevLobattoTransform16 const instance;
+    return instance;
+  }
+
+  // Precalculated cosine nodes tau_j = cos(j * pi / 16) in [1.0, -1.0].
+  std::array<double, kDegree + 1> tau;
+  // DCT-I transform matrix of size 17x17.
+  std::array<std::array<double, kDegree + 1>, kDegree + 1> matrix;
+
+ private:
+  ChebyshevLobattoTransform16() {
+    constexpr double pi = 3.14159265358979323846;
+    for (int j = 0; j <= kDegree; ++j) {
+      tau[j] = std::cos(j * pi / kDegree);
+    }
+    for (int k = 0; k <= kDegree; ++k) {
+      double const c_k = (k == 0 || k == kDegree) ? 2.0 : 1.0;
+      for (int j = 0; j <= kDegree; ++j) {
+        double const c_j = (j == 0 || j == kDegree) ? 2.0 : 1.0;
+        matrix[k][j] =
+            (2.0 / (kDegree * c_k * c_j)) *
+            std::cos(j * k * pi / kDegree);
+      }
+    }
+  }
+};
+
+// Fits 17 sampled points (px, py, pz) at Gauss-Lobatto nodes into a ChebyshevTile256.
+inline ChebyshevTile256 FitChebyshevTile16(
+    double const t_min,
+    double const t_max,
+    std::uint32_t const body_or_vessel_id,
+    double const px[17],
+    double const py[17],
+    double const pz[17]) {
+  auto const& transform = ChebyshevLobattoTransform16::Instance();
+  ChebyshevTile256 tile{};
+  tile.t_min = t_min;
+  tile.t_max = t_max;
+  tile.degree = 16;
+  tile.body_or_vessel_id = body_or_vessel_id;
+
+  for (int k = 0; k <= 16; ++k) {
+    double cx = 0.0;
+    double cy = 0.0;
+    double cz = 0.0;
+    for (int j = 0; j <= 16; ++j) {
+      double const w = transform.matrix[k][j];
+      cx += w * px[j];
+      cy += w * py[j];
+      cz += w * pz[j];
+    }
+    tile.cx[k] = cx;
+    tile.cy[k] = cy;
+    tile.cz[k] = cz;
+  }
+  return tile;
+}
+
 // Core-private Chebyshev Tile Cache: auto-sized to 25% of L2 cache (128 KB - 512 KB).
 // Sits 100% inside modern CPU per-core private L2 cache.
 // Automatically spills/dumps evicted tiles to L3 cache upon overflow!
@@ -164,6 +230,8 @@ struct alignas(64) SymplecticIntegratorScratchpad {
 }  // namespace internal
 
 using internal::ChebyshevTile256;
+using internal::ChebyshevLobattoTransform16;
+using internal::FitChebyshevTile16;
 using internal::ChebyshevL2TileCache;
 using internal::SymplecticIntegratorScratchpad;
 

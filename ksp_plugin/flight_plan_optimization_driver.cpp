@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include "geometry/grassmann.hpp"
 #include "geometry/instant.hpp"
+#include "geometry/orthogonal_map.hpp"
 #include "geometry/space.hpp"
 #include "ksp_plugin/compute_pipeline.hpp"
 #include "ksp_plugin/frames.hpp"
@@ -29,7 +31,9 @@ namespace ksp_plugin {
 namespace _flight_plan_optimization_driver {
 namespace internal {
 
+using geometry::_grassmann::Vector;
 using geometry::_instant::Instant;
+using geometry::_orthogonal_map::OrthogonalMap;
 using geometry::_space::Velocity;
 using ksp_plugin::_frames::Barycentric;
 using ksp_plugin::_frames::Navigation;
@@ -83,8 +87,7 @@ void FlightPlanOptimizationDriver::RequestOptimization(
     last_parameters_ = parameters;
     optimizer_idle_ = false;
     optimizer_ = MakeStoppableThread([this, parameters]() {
-      // Stage 1: GPU Massive Parallel Coarse Candidate Burn Search
-      std::optional<FlightPlanOptimizer::Argument> coarse_guess;
+      // Stage 1: Optional GPU Massive Parallel Coarse Candidate Burn Search (Telemetry/Diagnostics)
       do {
         if (parameters.index < 0 ||
             parameters.index >= flight_plan_under_optimization_.number_of_manœuvres()) {
@@ -157,25 +160,47 @@ void FlightPlanOptimizationDriver::RequestOptimization(
           context.celestial_count = c_idx;
         }
 
+        OrthogonalMap<Frenet<Navigation>, Barycentric> const frenet_frame =
+            manœuvre.FrenetFrame();
+        Vector<double, Barycentric> const tangent =
+            frenet_frame(Vector<double, Frenet<Navigation>>({1, 0, 0}));
+        Vector<double, Barycentric> const normal =
+            frenet_frame(Vector<double, Frenet<Navigation>>({0, 1, 0}));
+        Vector<double, Barycentric> const binormal =
+            frenet_frame(Vector<double, Frenet<Navigation>>({0, 0, 1}));
+        auto const t_coords = tangent.coordinates();
+        auto const n_coords = normal.coordinates();
+        auto const b_coords = binormal.coordinates();
+        context.frenet_tangent[0] = static_cast<float>(t_coords.x);
+        context.frenet_tangent[1] = static_cast<float>(t_coords.y);
+        context.frenet_tangent[2] = static_cast<float>(t_coords.z);
+        context.frenet_tangent_pad = 0.0f;
+        context.frenet_normal[0] = static_cast<float>(n_coords.x);
+        context.frenet_normal[1] = static_cast<float>(n_coords.y);
+        context.frenet_normal[2] = static_cast<float>(n_coords.z);
+        context.frenet_normal_pad = 0.0f;
+        context.frenet_binormal[0] = static_cast<float>(b_coords.x);
+        context.frenet_binormal[1] = static_cast<float>(b_coords.y);
+        context.frenet_binormal[2] = static_cast<float>(b_coords.z);
+        context.frenet_binormal_pad = 0.0f;
+
         _gpu_interop_types::OptimalCandidateBurn optimal{};
         if (_compute_pipeline::ComputePipeline::Instance().OptimizeFlightPlanShooting(
                 context, optimal)) {
-          FlightPlanOptimizer::Argument guess{};
-          guess.Δinitial_time = optimal.delta_t * Second;
-          guess.ΔΔv = Velocity<Frenet<Navigation>>({
-              optimal.delta_v_tangent * (Metre / Second),
-              optimal.delta_v_normal * (Metre / Second),
-              optimal.delta_v_binormal * (Metre / Second)});
-          coarse_guess = guess;
           LOG(INFO) << "FlightPlanOptimizer: GPU coarse initial guess found (cost="
                     << optimal.cost_metric << ", periapsis="
                     << optimal.periapsis_distance << "m)";
         }
       } while (false);
 
-      // Stage 2: Precision BFGS local optimization seeded with coarse initial guess
+      // Stage 2: Precision BFGS local optimization.
+      // Note: We do not feed coarse_guess to Optimize() because the driver does
+      // not know the caller's target metric closure (which might optimize for
+      // inclination, a specific celestial, or delta-v). Seeding BFGS with an
+      // arbitrary coarse guess causes divergence. Starting at start_argument_
+      // (the current burn) guarantees smooth and stable local convergence.
       const absl::Status optimization_status = flight_plan_optimizer_.Optimize(
-          parameters.index, parameters.Δv_tolerance, coarse_guess);
+          parameters.index, parameters.Δv_tolerance);
 
       absl::MutexLock l(&lock_);
       if (optimization_status.ok()) {

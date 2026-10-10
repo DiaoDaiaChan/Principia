@@ -194,6 +194,21 @@ public struct ShootingContextGpu {
   public float span_delta_v_z;
   public float target_periapsis_altitude;
 
+  public float frenet_tangent_x;
+  public float frenet_tangent_y;
+  public float frenet_tangent_z;
+  public float frenet_tangent_pad;
+
+  public float frenet_normal_x;
+  public float frenet_normal_y;
+  public float frenet_normal_z;
+  public float frenet_normal_pad;
+
+  public float frenet_binormal_x;
+  public float frenet_binormal_y;
+  public float frenet_binormal_z;
+  public float frenet_binormal_pad;
+
   public uint target_celestial_index;
   public uint celestial_count;
   public uint step_count;

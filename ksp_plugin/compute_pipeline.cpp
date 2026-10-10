@@ -59,7 +59,7 @@ struct alignas(16) BatchIntegratorConfig {
 };
 static_assert(sizeof(BatchIntegratorConfig) == 16, "BatchIntegratorConfig must be 16 bytes");
 
-// Matches OptimizerConfig cbuffer in FlightPlanShootingOptimizer.compute (128 bytes)
+// Matches OptimizerConfig cbuffer in FlightPlanShootingOptimizer.compute (176 bytes)
 struct alignas(16) OptimizerConfigGpu {
   float base_burn_times[4];
   float base_delta_v[4];
@@ -72,8 +72,11 @@ struct alignas(16) OptimizerConfigGpu {
   std::uint32_t step_count;
   std::uint32_t target_celestial_index;
   std::uint32_t reduction_item_count;
+  float frenet_tangent[4];
+  float frenet_normal[4];
+  float frenet_binormal[4];
 };
-static_assert(sizeof(OptimizerConfigGpu) == 128, "OptimizerConfigGpu must be 128 bytes");
+static_assert(sizeof(OptimizerConfigGpu) == 176, "OptimizerConfigGpu must be 176 bytes");
 
 // Evaluates a 3D Chebyshev polynomial at tau in [-1, 1] using Clenshaw recurrence.
 inline void EvaluateChebyshevClenshaw(
@@ -834,6 +837,21 @@ bool ComputePipeline::OptimizeFlightPlanShootingGpu(
   cfg.target_celestial_index = context.target_celestial_index;
   cfg.reduction_item_count = kTotalCandidates;
 
+  cfg.frenet_tangent[0] = context.frenet_tangent[0];
+  cfg.frenet_tangent[1] = context.frenet_tangent[1];
+  cfg.frenet_tangent[2] = context.frenet_tangent[2];
+  cfg.frenet_tangent[3] = 0.0f;
+
+  cfg.frenet_normal[0] = context.frenet_normal[0];
+  cfg.frenet_normal[1] = context.frenet_normal[1];
+  cfg.frenet_normal[2] = context.frenet_normal[2];
+  cfg.frenet_normal[3] = 0.0f;
+
+  cfg.frenet_binormal[0] = context.frenet_binormal[0];
+  cfg.frenet_binormal[1] = context.frenet_binormal[1];
+  cfg.frenet_binormal[2] = context.frenet_binormal[2];
+  cfg.frenet_binormal[3] = 0.0f;
+
   d3d11_context_->UpdateSubresource(shooting_cb_, 0, nullptr, &cfg, 0, 0);
   d3d11_context_->UpdateSubresource(
       shooting_celestial_buf_, 0, nullptr, context.celestials, 0, 0);
@@ -892,6 +910,7 @@ bool ComputePipeline::OptimizeFlightPlanShootingCpu(
     ShootingContextGpu const& context,
     OptimalCandidateBurn& out_optimal) {
   if (context.celestial_count == 0) return false;
+  if (context.target_celestial_index >= context.celestial_count) return false;
 
   constexpr std::uint32_t dim_t = 8;
   constexpr std::uint32_t dim_vt = 8;
@@ -930,9 +949,27 @@ bool ComputePipeline::OptimizeFlightPlanShootingCpu(
           float const norm_vb = dim_vb > 1 ? (static_cast<float>(ivb) / (dim_vb - 1)) * 2.0f - 1.0f : 0.0f;
           float const dv_b = base_vb + norm_vb * span_vb;
 
-          // Propagate forward
+          // Propagate forward. Candidate burn parameters are in Frenet frame.
+          // Project into inertial Barycentric frame using Frenet unit basis vectors.
+          float dv_x = dv_t * context.frenet_tangent[0] +
+                       dv_n * context.frenet_normal[0] +
+                       dv_b * context.frenet_binormal[0];
+          float dv_y = dv_t * context.frenet_tangent[1] +
+                       dv_n * context.frenet_normal[1] +
+                       dv_b * context.frenet_binormal[1];
+          float dv_z = dv_t * context.frenet_tangent[2] +
+                       dv_n * context.frenet_normal[2] +
+                       dv_b * context.frenet_binormal[2];
+          if (context.frenet_tangent[0] == 0.0f &&
+              context.frenet_tangent[1] == 0.0f &&
+              context.frenet_tangent[2] == 0.0f) {
+            dv_x = dv_t;
+            dv_y = dv_n;
+            dv_z = dv_b;
+          }
+
           float pos[3] = {context.initial_pos[0], context.initial_pos[1], context.initial_pos[2]};
-          float vel[3] = {context.initial_vel[0] + dv_t, context.initial_vel[1] + dv_n, context.initial_vel[2] + dv_b};
+          float vel[3] = {context.initial_vel[0] + dv_x, context.initial_vel[1] + dv_y, context.initial_vel[2] + dv_z};
 
           float min_dist_sqr = 1e38f;
           float speed_at_min = 0.0f;

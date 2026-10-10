@@ -26,9 +26,10 @@ struct alignas(64) CelestialL1CacheBlock {
   }
 
   int count{0};
+  double t_sec{0.0};
   std::uint32_t hits{0};
   std::uint32_t evaluations{0};
-  std::uint32_t padding[13]{};  // Pads header to 64 bytes
+  std::uint32_t padding[11]{};  // Pads header to 64 bytes
 
   alignas(64) double x[kMaxBodies]{};
   alignas(64) double y[kMaxBodies]{};
@@ -37,26 +38,38 @@ struct alignas(64) CelestialL1CacheBlock {
   alignas(64) double vy[kMaxBodies]{};
   alignas(64) double vz[kMaxBodies]{};
   alignas(64) double mu[kMaxBodies]{};  // Gravitational parameter GM
+  alignas(64) double r_min_sqr[kMaxBodies]{};  // Collision radius squared
 
-  // Computes gravitational acceleration on a point (px, py, pz) from all cached bodies.
-  // Kept tight and branchless to remain strictly inside CPU L1 instruction/data caches.
-  void ComputeGravitationalAcceleration(
+  // Computes gravitational acceleration on a point (px, py, pz) from cached bodies.
+  // dt = (t - t_sec): linearly extrapolates celestial position using current velocity.
+  // start_body: allows skipping oblate bodies (e.g. index 0) which require J2 zonal harmonics.
+  // Returns true if collision is detected with any evaluated celestial body.
+  bool ComputeGravitationalAcceleration(
       double const px,
       double const py,
       double const pz,
+      double const dt,
       double& ax,
       double& ay,
-      double& az) const {
+      double& az,
+      int const start_body = 0) const {
     double total_ax = 0.0;
     double total_ay = 0.0;
     double total_az = 0.0;
+    bool collision = false;
 
     int const n = count;
-    for (int i = 0; i < n; ++i) {
-      double const dx = x[i] - px;
-      double const dy = y[i] - py;
-      double const dz = z[i] - pz;
+    for (int i = start_body; i < n; ++i) {
+      double const cx = x[i] + vx[i] * dt;
+      double const cy = y[i] + vy[i] * dt;
+      double const cz = z[i] + vz[i] * dt;
+      double const dx = cx - px;
+      double const dy = cy - py;
+      double const dz = cz - pz;
       double const r2 = dx * dx + dy * dy + dz * dz;
+      if (r_min_sqr[i] > 0.0 && r2 <= r_min_sqr[i]) {
+        collision = true;
+      }
       if (r2 > 1.0) {  // Avoid division by zero inside center of celestial
         double const inv_r = 1.0 / std::sqrt(r2);
         double const inv_r3 = inv_r * inv_r * inv_r;
@@ -70,6 +83,17 @@ struct alignas(64) CelestialL1CacheBlock {
     ax = total_ax;
     ay = total_ay;
     az = total_az;
+    return collision;
+  }
+
+  bool ComputeGravitationalAcceleration(
+      double const px,
+      double const py,
+      double const pz,
+      double& ax,
+      double& ay,
+      double& az) const {
+    return ComputeGravitationalAcceleration(px, py, pz, 0.0, ax, ay, az, 0);
   }
 };
 

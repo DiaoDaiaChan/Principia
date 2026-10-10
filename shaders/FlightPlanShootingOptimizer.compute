@@ -48,6 +48,9 @@ cbuffer OptimizerConfig : register(b0) {
     uint _StepCount;
     uint _TargetCelestialIndex;
     uint _ReductionItemCount;
+    float4 _FrenetTangent;          // xyz: tangent unit vector in Barycentric, w: 0
+    float4 _FrenetNormal;           // xyz: normal unit vector in Barycentric, w: 0
+    float4 _FrenetBinormal;         // xyz: binormal unit vector in Barycentric, w: 0
 };
 
 StructuredBuffer<CelestialBodyState> _CelestialBodies : register(t0);
@@ -104,9 +107,17 @@ void EvaluateTrajectoryBundle(uint3 id : SV_DispatchThreadID) {
                    params.delta_v_binormal * params.delta_v_binormal;
     float delta_v_mag = sqrt(dv_sqr);
 
-    // Initial state setup with candidate perturbation using Double-Single precision
+    // Initial state setup with candidate perturbation using Double-Single precision.
+    // Candidate burn parameters are in Frenet frame (tangent, normal, binormal).
+    // Project into inertial Barycentric Cartesian frame using Frenet unit basis vectors.
     ds_vec3 pos = ds_vec3_make(_InitialVesselPos.xyz);
-    float3 burn_dv = float3(params.delta_v_tangent, params.delta_v_normal, params.delta_v_binormal);
+    float3 burn_dv = params.delta_v_tangent * _FrenetTangent.xyz +
+                     params.delta_v_normal * _FrenetNormal.xyz +
+                     params.delta_v_binormal * _FrenetBinormal.xyz;
+    if (dot(_FrenetTangent.xyz, _FrenetTangent.xyz) < 0.1f) {
+        // Fallback to identity frame if basis vectors were not supplied
+        burn_dv = float3(params.delta_v_tangent, params.delta_v_normal, params.delta_v_binormal);
+    }
     ds_vec3 vel = ds_vec3_make(_InitialVesselVel.xyz + burn_dv);
 
     float min_periapsis_dist = 1e30f;
@@ -137,7 +148,7 @@ void EvaluateTrajectoryBundle(uint3 id : SV_DispatchThreadID) {
             }
 
             // Track distance to target celestial body
-            if (b == _TargetCelestialIndex) {
+            if (b == _TargetCelestialIndex && _TargetCelestialIndex < _CelestialCount) {
                 if (dist_f < min_periapsis_dist) {
                     min_periapsis_dist = dist_f;
                     ds_vec3 rel_vel = ds_vec3_sub(vel, ds_vec3_make(body.velocity));

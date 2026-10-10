@@ -365,7 +365,7 @@ class TimeSlicedScheduler {
   }
 
   CelestialL1CacheBlock& L1Cache() {
-    return l1_cache_;
+    return CelestialL1CacheBlock::Instance();
   }
 
   ChebyshevL2TileCache& ThreadLocalL2Cache() const {
@@ -401,7 +401,6 @@ class TimeSlicedScheduler {
   std::atomic<std::int32_t> l3_ring_hits_{0};
 
   DynamicCadenceGovernor governor_{};
-  CelestialL1CacheBlock l1_cache_{};
   std::array<std::atomic<std::int32_t>, 1024> vessel_skip_counts_{};
 };
 

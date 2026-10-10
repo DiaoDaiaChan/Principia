@@ -229,6 +229,45 @@ absl::Status Ephemeris<Frame>::last_severe_integration_status() const {
 }
 
 template<typename Frame>
+ChebyshevTile256 Ephemeris<Frame>::GenerateChebyshevTileLocked(
+    std::size_t const b1,
+    Instant const& t) const {
+  lock_.AssertReaderHeld();
+  auto const& trajectory = *trajectories_[b1];
+  Instant const t_min_traj = trajectory.t_min_locked();
+  Instant const t_max_traj = trajectory.t_max_locked();
+  double const t_sec = (t - Instant{}) / quantities::_si::Second;
+  constexpr double kTileDuration = 300.0;
+
+  double const t0 = std::floor(t_sec / kTileDuration) * kTileDuration;
+  Instant const seg_t_start = std::max(Instant{} + t0 * quantities::_si::Second, t_min_traj);
+  Instant const seg_t_end = std::min(Instant{} + (t0 + kTileDuration) * quantities::_si::Second, t_max_traj);
+
+  Time const seg_span = seg_t_end - seg_t_start;
+  Instant const seg_mid = seg_t_start + 0.5 * seg_span;
+
+  auto const& transform = ChebyshevLobattoTransform16::Instance();
+  double px[17];
+  double py[17];
+  double pz[17];
+
+  for (int j = 0; j <= 16; ++j) {
+    Instant const t_j = seg_mid + transform.tau[j] * (0.5 * seg_span);
+    Position<Frame> const p = trajectory.EvaluatePositionLocked(t_j);
+    Displacement<Frame> const d = p - Frame::origin;
+    px[j] = d.coordinates().x / quantities::_si::Metre;
+    py[j] = d.coordinates().y / quantities::_si::Metre;
+    pz[j] = d.coordinates().z / quantities::_si::Metre;
+  }
+
+  return FitChebyshevTile16(
+      (seg_t_start - Instant{}) / quantities::_si::Second,
+      (seg_t_end - Instant{}) / quantities::_si::Second,
+      static_cast<std::uint32_t>(b1),
+      px, py, pz);
+}
+
+template<typename Frame>
 Ephemeris<Frame>::BodiesToPositions Ephemeris<Frame>::EvaluateAllPositions(
     Instant const& t) const {
   absl::ReaderMutexLock l(&lock_);
@@ -254,7 +293,21 @@ Ephemeris<Frame>::BodiesToPositions Ephemeris<Frame>::EvaluateAllPositions(
                                                 cy * quantities::_si::Metre,
                                                 cz * quantities::_si::Metre});
     } else {
-      pos = trajectories_[i]->EvaluatePositionLocked(t);
+      auto const& traj = *trajectories_[i];
+      if (traj.t_min_locked() <= t && t <= traj.t_max_locked() &&
+          (traj.t_max_locked() - traj.t_min_locked()) >= 1.0 * quantities::_si::Second) {
+        ChebyshevTile256 const generated_tile = GenerateChebyshevTileLocked(i, t);
+        generated_tile.EvaluateClenshaw(t_sec, cx, cy, cz);
+        tl_l2_cache.InsertTile(generated_tile, [](ChebyshevTile256 const& evicted) {
+          EphemerisL3WindowRing::Instance().InsertSegment(evicted.body_or_vessel_id, evicted);
+        });
+        EphemerisL3WindowRing::Instance().InsertSegment(i, generated_tile);
+        pos = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                  cy * quantities::_si::Metre,
+                                                  cz * quantities::_si::Metre});
+      } else {
+        pos = traj.EvaluatePositionLocked(t);
+      }
     }
     all_positions.emplace(bodies_[i].get(), pos);
   }
@@ -1479,7 +1532,20 @@ Ephemeris<Frame>::ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies(
                                                     cy * quantities::_si::Metre,
                                                     cz * quantities::_si::Metre});
   } else {
-    position1 = trajectory1.EvaluatePositionLocked(t);
+    if (trajectory1.t_min_locked() <= t && t <= trajectory1.t_max_locked() &&
+        (trajectory1.t_max_locked() - trajectory1.t_min_locked()) >= 1.0 * quantities::_si::Second) {
+      ChebyshevTile256 const generated_tile = GenerateChebyshevTileLocked(b1, t);
+      generated_tile.EvaluateClenshaw(t_sec, cx, cy, cz);
+      tl_l2_cache.InsertTile(generated_tile, [](ChebyshevTile256 const& evicted) {
+        EphemerisL3WindowRing::Instance().InsertSegment(evicted.body_or_vessel_id, evicted);
+      });
+      EphemerisL3WindowRing::Instance().InsertSegment(b1, generated_tile);
+      position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                      cy * quantities::_si::Metre,
+                                                      cz * quantities::_si::Metre});
+    } else {
+      position1 = trajectory1.EvaluatePositionLocked(t);
+    }
   }
   Length const body1_collision_radius =
       min_radius_tolerance * body1.min_radius();
@@ -1531,7 +1597,40 @@ void Ephemeris<Frame>::ComputeGravitationalPotentialsOfMassiveBody(
   lock_.AssertReaderHeld();
   GravitationalParameter const& μ1 = body1.gravitational_parameter();
   auto const& trajectory1 = *trajectories_[b1];
-  Position<Frame> const position1 = trajectory1.EvaluatePositionLocked(t);
+  Position<Frame> position1;
+  double const t_sec = (t - Instant{}) / quantities::_si::Second;
+  double cx = 0.0;
+  double cy = 0.0;
+  double cz = 0.0;
+  thread_local ChebyshevL2TileCache tl_l2_cache(512);
+
+  auto const* const l2_tile = tl_l2_cache.FindTile(static_cast<std::uint32_t>(b1), t_sec);
+  if (l2_tile != nullptr) {
+    l2_tile->EvaluateClenshaw(t_sec, cx, cy, cz);
+    tl_l2_cache.RecordHit();
+    position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                    cy * quantities::_si::Metre,
+                                                    cz * quantities::_si::Metre});
+  } else if (EphemerisL3WindowRing::Instance().EvaluateCelestialPosition(b1, t_sec, cx, cy, cz)) {
+    position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                    cy * quantities::_si::Metre,
+                                                    cz * quantities::_si::Metre});
+  } else {
+    if (trajectory1.t_min_locked() <= t && t <= trajectory1.t_max_locked() &&
+        (trajectory1.t_max_locked() - trajectory1.t_min_locked()) >= 1.0 * quantities::_si::Second) {
+      ChebyshevTile256 const generated_tile = GenerateChebyshevTileLocked(b1, t);
+      generated_tile.EvaluateClenshaw(t_sec, cx, cy, cz);
+      tl_l2_cache.InsertTile(generated_tile, [](ChebyshevTile256 const& evicted) {
+        EphemerisL3WindowRing::Instance().InsertSegment(evicted.body_or_vessel_id, evicted);
+      });
+      EphemerisL3WindowRing::Instance().InsertSegment(b1, generated_tile);
+      position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                      cy * quantities::_si::Metre,
+                                                      cz * quantities::_si::Metre});
+    } else {
+      position1 = trajectory1.EvaluatePositionLocked(t);
+    }
+  }
 
   for (std::size_t b2 = 0; b2 < positions.size(); ++b2) {
     // A vector from the center of `b2` to the center of `b1`.
@@ -1623,22 +1722,37 @@ ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
 
   // Production L1d cache fast access for single massless body
   auto& l1_cache = CelestialL1CacheBlock::Instance();
-  if (positions.size() == 1 && l1_cache.count > 0) {
+  double const t_sec = (t - Instant{}) / quantities::_si::Second;
+  bool use_l1_spherical = false;
+  auto error = static_cast<std::underlying_type_t<absl::StatusCode>>(
+      absl::StatusCode::kOk);
+
+  if (positions.size() == 1 &&
+      l1_cache.count >= static_cast<int>(number_of_oblate_bodies_ + number_of_spherical_bodies_) &&
+      std::abs(t_sec - l1_cache.t_sec) < 1.0) {
     Displacement<Frame> const p_offset = positions[0] - Frame::origin;
     double const px = p_offset.coordinates().x / quantities::_si::Metre;
     double const py = p_offset.coordinates().y / quantities::_si::Metre;
     double const pz = p_offset.coordinates().z / quantities::_si::Metre;
+    double const dt = t_sec - l1_cache.t_sec;
     double ax = 0.0;
     double ay = 0.0;
     double az = 0.0;
-    l1_cache.ComputeGravitationalAcceleration(px, py, pz, ax, ay, az);
+    bool const collision = l1_cache.ComputeGravitationalAcceleration(
+        px, py, pz, dt, ax, ay, az, /*start_body=*/static_cast<int>(number_of_oblate_bodies_));
+    if (collision) {
+      error |= static_cast<std::underlying_type_t<absl::StatusCode>>(
+          absl::StatusCode::kOutOfRange);
+    }
+    accelerations[0] = Vector<Acceleration, Frame>(
+        {ax * (quantities::_si::Metre / (quantities::_si::Second * quantities::_si::Second)),
+         ay * (quantities::_si::Metre / (quantities::_si::Second * quantities::_si::Second)),
+         az * (quantities::_si::Metre / (quantities::_si::Second * quantities::_si::Second))});
     l1_cache.hits++;
+    use_l1_spherical = true;
   }
 
-  // TODO(phl): Use std::to_underlying when we have C++23.
-  auto error = static_cast<std::underlying_type_t<absl::StatusCode>>(
-      absl::StatusCode::kOk);
-
+  // Compute oblate bodies (e.g. Earth/Kerbin with J2 zonal harmonics)
   for (std::size_t b1 = 0; b1 < number_of_oblate_bodies_; ++b1) {
     MassiveBody const& body1 = *bodies_[b1];
     error |= ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies<
@@ -1648,17 +1762,21 @@ ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
                  positions,
                  accelerations);
   }
-  for (std::size_t b1 = number_of_oblate_bodies_;
-       b1 < number_of_oblate_bodies_ +
-            number_of_spherical_bodies_;
-       ++b1) {
-    MassiveBody const& body1 = *bodies_[b1];
-    error |= ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies<
-                 /*body1_is_oblate=*/false>(
-                 t,
-                 body1, b1,
-                 positions,
-                 accelerations);
+
+  // If spherical bodies were not computed via L1 cache, compute them normally
+  if (!use_l1_spherical) {
+    for (std::size_t b1 = number_of_oblate_bodies_;
+         b1 < number_of_oblate_bodies_ +
+              number_of_spherical_bodies_;
+         ++b1) {
+      MassiveBody const& body1 = *bodies_[b1];
+      error |= ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies<
+                   /*body1_is_oblate=*/false>(
+                   t,
+                   body1, b1,
+                   positions,
+                   accelerations);
+    }
   }
   return static_cast<absl::StatusCode>(error);
 }

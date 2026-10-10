@@ -88,6 +88,14 @@ struct alignas(16) ShootingContextGpu {
   float span_delta_t;
   float span_delta_v[3];
   float target_periapsis_altitude;
+  // Unit basis vectors of the Frenet frame (Tangent, Normal, Binormal) evaluated
+  // in the inertial Barycentric coordinate frame at burn initial time.
+  float frenet_tangent[3];
+  float frenet_tangent_pad;
+  float frenet_normal[3];
+  float frenet_normal_pad;
+  float frenet_binormal[3];
+  float frenet_binormal_pad;
   std::uint32_t target_celestial_index;
   std::uint32_t celestial_count;
   std::uint32_t step_count;

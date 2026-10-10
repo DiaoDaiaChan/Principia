@@ -829,9 +829,11 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
     l1_cache.mu[body_idx] = celestial->body()->gravitational_parameter() /
                             si::Unit<quantities::_named_quantities::GravitationalParameter>;
     radii[body_idx] = static_cast<float>(celestial->body()->min_radius() / Metre);
+    l1_cache.r_min_sqr[body_idx] = static_cast<double>(radii[body_idx]) * static_cast<double>(radii[body_idx]) * 0.81;
     ++body_idx;
   }
   l1_cache.count = body_idx;
+  l1_cache.t_sec = (current_time_ - Instant{}) / Second;
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL1Hit();
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL3Hit();
 
