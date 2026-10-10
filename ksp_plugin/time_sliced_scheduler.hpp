@@ -76,6 +76,11 @@ struct alignas(64) CpuModuleThreadingStatus {
   std::int32_t l2_to_l3_spill_count{0};
   std::int32_t l3_to_dram_spill_count{0};
   std::int32_t dram_hit_count{0};
+
+  // Pillar 2: Work-Stealing & Core Affinity Telemetry:
+  std::int32_t p_core_worker_count{0};
+  std::int32_t e_core_worker_count{0};
+  std::int64_t work_stolen_count{0};
 };
 
 // High-precision stopwatch guarding the physics frame budget.
@@ -278,7 +283,10 @@ class TimeSlicedScheduler {
       int const ephemeris_pacer_active,
       int const prognosticator_count,
       int const orbit_analyser_active,
-      int const optimizer_active) const {
+      int const optimizer_active,
+      int const p_core_workers = 0,
+      int const e_core_workers = 0,
+      std::int64_t const work_stolen = 0) const {
     CpuModuleThreadingStatus status{};
     status.hardware_concurrency = hardware_concurrency;
     status.vessel_pool_total_threads = pool_total_threads;
@@ -298,7 +306,8 @@ class TimeSlicedScheduler {
     status.tier3_vessel_count = tier3_vessels_.load(std::memory_order_relaxed);
     status.deferred_slices_yielded = yielded_slices_.load(std::memory_order_relaxed);
 
-    status.l1_celestial_cache_hit_count = l1_hits_.load(std::memory_order_relaxed);
+    status.l1_celestial_cache_hit_count = static_cast<std::int32_t>(CelestialL1CacheBlock::Instance().hits) +
+                                          l1_hits_.load(std::memory_order_relaxed);
     status.l2_chebyshev_tile_hit_count = l2_tile_hits_.load(std::memory_order_relaxed);
 
     // Auto-Adaptive Cadence Telemetry
@@ -320,6 +329,11 @@ class TimeSlicedScheduler {
     status.l2_to_l3_spill_count = static_cast<std::int32_t>(ThreadLocalL2Cache().spill_to_l3_count());
     status.l3_to_dram_spill_count = static_cast<std::int32_t>(EphemerisL3WindowRing::Instance().spill_to_dram_count());
     status.dram_hit_count = static_cast<std::int32_t>(EphemerisL3WindowRing::Instance().dram_hits());
+
+    // Pillar 2: Work-Stealing & Core Affinity Telemetry
+    status.p_core_worker_count = p_core_workers;
+    status.e_core_worker_count = e_core_workers;
+    status.work_stolen_count = work_stolen;
 
     return status;
   }

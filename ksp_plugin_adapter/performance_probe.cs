@@ -536,11 +536,14 @@ public static class PerformanceProbe {
         }
 
         var cpu = snap.cpu_threading_status;
+        string hybrid_str = cpu.e_core_worker_count > 0
+            ? $" [大小核亲和: <b><color=#55ffff>{cpu.p_core_worker_count} P-Core</color></b> / <b><color=#ffff55>{cpu.e_core_worker_count} E-Core</color></b> | 跨核工作窃取: <b>{cpu.work_stolen_count}</b> 次]"
+            : $" [标准对称调度 | 跨核工作窃取: <b>{cpu.work_stolen_count}</b> 次]";
         snap.cpu_threading_summary_str =
-            $"CPU 拓扑: <b>{cpu.hardware_concurrency} 逻辑并发核心</b> | 飞船线程池: <b>{cpu.vessel_pool_active_threads}/{cpu.vessel_pool_total_threads} 活跃</b> (队列等待: {cpu.vessel_pool_pending_tasks})";
+            $"CPU 拓扑: <b>{cpu.hardware_concurrency} 逻辑并发核心</b> | 飞船无锁工作窃取池: <b>{cpu.vessel_pool_active_threads}/{cpu.vessel_pool_total_threads} 活跃</b> (等待: {cpu.vessel_pool_pending_tasks}){hybrid_str}";
 
         snap.cpu_threading_details_str =
-            $"• <b>飞船并行积分池 (Vessel Pool):</b> <b>{cpu.vessel_pool_active_threads}/{cpu.vessel_pool_total_threads}</b> 工作线程正在执行 (总容量: {cpu.vessel_pool_total_threads} 线程)\n" +
+            $"• <b>飞船并行无锁工作窃取池 (Chase-Lev Work-Stealing Pool):</b> <b>{cpu.vessel_pool_active_threads}/{cpu.vessel_pool_total_threads}</b> 活跃 (P-Core: {cpu.p_core_worker_count}, E-Core: {cpu.e_core_worker_count}, 窃取: {cpu.work_stolen_count} 次)\n" +
             $"• <b>后台天体星历推进 (Ephemeris Pacer):</b> {(cpu.ephemeris_pacer_active != 0 ? "<color=#55ff55>● 正在推进 (Prolonging)</color>" : "<color=#888888>○ 就绪/休眠 (Idle)</color>")}\n" +
             $"• <b>单船未来轨迹预测 (Prognosticator):</b> <b>{cpu.prognosticator_active_count}</b> 个异步预测守护线程\n" +
             $"• <b>轨道长周期摄动分析 (Orbit Analyser):</b> {(cpu.orbit_analyser_active != 0 ? "<color=#55ff55>● 正在频域拟合 (Running)</color>" : "<color=#888888>○ 空闲 (Idle)</color>")}\n" +
@@ -709,15 +712,24 @@ public static class PerformanceProbe {
     using (new GUILayout.VerticalScope(GUI.skin.box)) {
       GUILayout.Label(snap.cpu_threading_summary_str);
 
-      // Thread pool active bar
+      // Thread pool active bar with P-Core & E-Core visual split
       Rect r = GUILayoutUtility.GetRect(100, 14);
       GUI.Box(r, "");
-      float active_ratio = cpu.vessel_pool_total_threads > 0
-          ? Mathf.Clamp01((float)cpu.vessel_pool_active_threads / cpu.vessel_pool_total_threads)
-          : 0.0f;
-      Rect fill = new Rect(r.x, r.y, r.width * active_ratio, r.height);
-      GUI.DrawTexture(fill, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0,
-                      new Color(0.2f, 0.8f, 1.0f), 0, 0);
+      if (cpu.vessel_pool_total_threads > 0) {
+        float p_ratio = (float)cpu.p_core_worker_count / cpu.vessel_pool_total_threads;
+        float e_ratio = (float)cpu.e_core_worker_count / cpu.vessel_pool_total_threads;
+        float active_ratio = Mathf.Clamp01((float)cpu.vessel_pool_active_threads / cpu.vessel_pool_total_threads);
+
+        if (cpu.e_core_worker_count > 0) {
+          Rect fill_p = new Rect(r.x, r.y, r.width * p_ratio * active_ratio, r.height);
+          GUI.DrawTexture(fill_p, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, new Color(0.2f, 0.8f, 1.0f), 0, 0);
+          Rect fill_e = new Rect(r.x + r.width * p_ratio * active_ratio, r.y, r.width * e_ratio * active_ratio, r.height);
+          GUI.DrawTexture(fill_e, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, new Color(1.0f, 0.85f, 0.2f), 0, 0);
+        } else {
+          Rect fill = new Rect(r.x, r.y, r.width * active_ratio, r.height);
+          GUI.DrawTexture(fill, Texture2D.whiteTexture, ScaleMode.StretchToFill, true, 0, new Color(0.2f, 0.8f, 1.0f), 0, 0);
+        }
+      }
     }
 
     GUILayout.Box("", GUILayout.Height(1), GUILayout.ExpandWidth(true));

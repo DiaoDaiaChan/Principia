@@ -895,21 +895,22 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
   std::vector<PileUpFuture> pile_up_futures;
   pile_up_futures.reserve(scheduled_critical.size() + scheduled_deferred.size());
 
+  // 1. Critical pile-ups step unconditionally on high-performance P-Cores
   for (auto* const pile_up : scheduled_critical) {
     pile_up_futures.emplace_back(
         pile_up,
-        vessel_thread_pool_.Add([this, pile_up]() {
+        vessel_thread_pool_.AddWithAffinity([this, pile_up]() {
           return pile_up->DeformAndAdvanceTime(current_time_);
-        }));
+        }, /*prefer_p_core=*/true));
   }
 
-  // 2. Scheduled non-critical slices execute next
+  // 2. Scheduled non-critical slices execute next on energy-efficient E-Cores
   for (auto* const pile_up : scheduled_deferred) {
     pile_up_futures.emplace_back(
         pile_up,
-        vessel_thread_pool_.Add([this, pile_up]() {
+        vessel_thread_pool_.AddWithAffinity([this, pile_up]() {
           return pile_up->DeformAndAdvanceTime(current_time_);
-        }));
+        }, /*prefer_p_core=*/false));
   }
 
   // Wait for the integrations to finish and figure out which vessels collided
@@ -967,7 +968,10 @@ Plugin::GetCpuModuleThreadingStatus() const {
       ephemeris_pacer_active,
       prognosticator_count,
       orbit_analyser_active,
-      optimizer_active);
+      optimizer_active,
+      vessel_thread_pool_.p_core_workers(),
+      vessel_thread_pool_.e_core_workers(),
+      vessel_thread_pool_.stolen_tasks());
 }
 
 not_null<std::unique_ptr<PileUpFuture>> Plugin::CatchUpVessel(
@@ -983,7 +987,7 @@ not_null<std::unique_ptr<PileUpFuture>> Plugin::CatchUpVessel(
 
   return make_not_null_unique<PileUpFuture>(
       pile_up,
-      vessel_thread_pool_.Add([this, pile_up, &vessel]() {
+      vessel_thread_pool_.AddWithAffinity([this, pile_up, &vessel]() {
         // Note that there can be contention in the following method if the
         // caller is catching-up two vessels belonging to the same pile-up in
         // parallel.
@@ -994,7 +998,7 @@ not_null<std::unique_ptr<PileUpFuture>> Plugin::CatchUpVessel(
         }
         vessel.AdvanceTime();
         return status;
-      }));
+      }, /*prefer_p_core=*/true));
 }
 
 void Plugin::WaitForVesselToCatchUp(PileUpFuture& pile_up_future,

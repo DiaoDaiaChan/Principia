@@ -60,21 +60,30 @@ Instance::Solve(Instant const& t_final) {
   // equations more readable.
   DoublePrecision<Instant>& t = current_state.time;
 
-  // Position increment.
-  std::vector<Displacement> Δq(dimension);
-  // Velocity increment.
-  std::vector<Velocity> Δv(dimension);
+  // Thread-local zero-heap scratchpad avoiding dynamic allocations on every Solve invocation.
+  thread_local std::vector<Displacement> scratch_Δq;
+  thread_local std::vector<Velocity> scratch_Δv;
+  thread_local std::vector<Position> scratch_q_stage;
+  thread_local std::vector<Acceleration> scratch_g;
+
+  if (scratch_Δq.size() != dimension) {
+    scratch_Δq.resize(dimension);
+    scratch_Δv.resize(dimension);
+    scratch_q_stage.resize(dimension);
+    scratch_g.resize(dimension);
+  }
+
+  std::vector<Displacement>& Δq = scratch_Δq;
+  std::vector<Velocity>& Δv = scratch_Δv;
+  std::vector<Position>& q_stage = scratch_q_stage;
+  std::vector<Acceleration>& g = scratch_g;
+
   // Current position.  This is a non-const reference whose purpose is to make
   // the equations more readable.
   std::vector<DoublePrecision<Position>>& q = current_state.positions;
   // Current velocity.  This is a non-const reference whose purpose is to make
   // the equations more readable.
   std::vector<DoublePrecision<Velocity>>& v = current_state.velocities;
-
-  // Current Runge-Kutta-Nyström stage.
-  std::vector<Position> q_stage(dimension);
-  // Accelerations at the current stage.
-  std::vector<Acceleration> g(dimension);
 
   // The first full stage of the step, i.e. the first stage where
   // exp(bᵢ h B) exp(aᵢ h A) must be entirely computed.

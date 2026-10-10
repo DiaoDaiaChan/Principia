@@ -20,6 +20,11 @@ namespace internal {
 struct alignas(64) CelestialL1CacheBlock {
   static constexpr int kMaxBodies = 32;
 
+  static CelestialL1CacheBlock& Instance() {
+    static CelestialL1CacheBlock instance;
+    return instance;
+  }
+
   int count{0};
   std::uint32_t hits{0};
   std::uint32_t evaluations{0};

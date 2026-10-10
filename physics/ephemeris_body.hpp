@@ -27,6 +27,9 @@
 #include "numerics/elementary_functions.hpp"
 #include "numerics/hermite3.hpp"
 #include "numerics/root_finders.hpp"
+#include "physics/celestial_l1_cache.hpp"
+#include "physics/chebyshev_l2_tile_cache.hpp"
+#include "physics/ephemeris_l3_window_ring.hpp"
 #include "physics/oblate_body.hpp"
 #include "quantities/si.hpp"
 
@@ -51,6 +54,9 @@ using namespace principia::numerics::_double_precision;
 using namespace principia::numerics::_elementary_functions;
 using namespace principia::numerics::_hermite3;
 using namespace principia::numerics::_root_finders;
+using namespace principia::physics::_celestial_l1_cache;
+using namespace principia::physics::_chebyshev_l2_tile_cache;
+using namespace principia::physics::_ephemeris_l3_window_ring;
 using namespace principia::physics::_oblate_body;
 using namespace principia::quantities::_si;
 
@@ -228,9 +234,29 @@ Ephemeris<Frame>::BodiesToPositions Ephemeris<Frame>::EvaluateAllPositions(
   absl::ReaderMutexLock l(&lock_);
   BodiesToPositions all_positions;
   all_positions.reserve(bodies_.size());
+  double const t_sec = (t - Instant{}) / quantities::_si::Second;
+  thread_local ChebyshevL2TileCache tl_l2_cache(512);
+
   for (int i = 0; i < bodies_.size(); ++i) {
-    all_positions.emplace(bodies_[i].get(),
-                          trajectories_[i]->EvaluatePositionLocked(t));
+    Position<Frame> pos;
+    double cx = 0.0;
+    double cy = 0.0;
+    double cz = 0.0;
+    auto const* const tile = tl_l2_cache.FindTile(static_cast<std::uint32_t>(i), t_sec);
+    if (tile != nullptr) {
+      tile->EvaluateClenshaw(t_sec, cx, cy, cz);
+      tl_l2_cache.RecordHit();
+      pos = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                cy * quantities::_si::Metre,
+                                                cz * quantities::_si::Metre});
+    } else if (EphemerisL3WindowRing::Instance().EvaluateCelestialPosition(i, t_sec, cx, cy, cz)) {
+      pos = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                cy * quantities::_si::Metre,
+                                                cz * quantities::_si::Metre});
+    } else {
+      pos = trajectories_[i]->EvaluatePositionLocked(t);
+    }
+    all_positions.emplace(bodies_[i].get(), pos);
   }
   return all_positions;
 }
@@ -1434,7 +1460,27 @@ Ephemeris<Frame>::ComputeGravitationalAccelerationByMassiveBodyOnMasslessBodies(
   lock_.AssertReaderHeld();
   GravitationalParameter const& μ1 = body1.gravitational_parameter();
   auto const& trajectory1 = *trajectories_[b1];
-  Position<Frame> const position1 = trajectory1.EvaluatePositionLocked(t);
+  Position<Frame> position1;
+  double const t_sec = (t - Instant{}) / quantities::_si::Second;
+  double cx = 0.0;
+  double cy = 0.0;
+  double cz = 0.0;
+  thread_local ChebyshevL2TileCache tl_l2_cache(512);
+
+  auto const* const l2_tile = tl_l2_cache.FindTile(static_cast<std::uint32_t>(b1), t_sec);
+  if (l2_tile != nullptr) {
+    l2_tile->EvaluateClenshaw(t_sec, cx, cy, cz);
+    tl_l2_cache.RecordHit();
+    position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                    cy * quantities::_si::Metre,
+                                                    cz * quantities::_si::Metre});
+  } else if (EphemerisL3WindowRing::Instance().EvaluateCelestialPosition(b1, t_sec, cx, cy, cz)) {
+    position1 = Frame::origin + Displacement<Frame>({cx * quantities::_si::Metre,
+                                                    cy * quantities::_si::Metre,
+                                                    cz * quantities::_si::Metre});
+  } else {
+    position1 = trajectory1.EvaluatePositionLocked(t);
+  }
   Length const body1_collision_radius =
       min_radius_tolerance * body1.min_radius();
   // TODO(phl): Use std::to_underlying when we have C++23.
@@ -1574,6 +1620,21 @@ ComputeGravitationalAccelerationByAllMassiveBodiesOnMasslessBodiesLocked(
   lock_.AssertReaderHeld();
   CHECK_EQ(positions.size(), accelerations.size());
   accelerations.assign(accelerations.size(), Vector<Acceleration, Frame>());
+
+  // Production L1d cache fast access for single massless body
+  auto& l1_cache = CelestialL1CacheBlock::Instance();
+  if (positions.size() == 1 && l1_cache.count > 0) {
+    Displacement<Frame> const p_offset = positions[0] - Frame::origin;
+    double const px = p_offset.coordinates().x / quantities::_si::Metre;
+    double const py = p_offset.coordinates().y / quantities::_si::Metre;
+    double const pz = p_offset.coordinates().z / quantities::_si::Metre;
+    double ax = 0.0;
+    double ay = 0.0;
+    double az = 0.0;
+    l1_cache.ComputeGravitationalAcceleration(px, py, pz, ax, ay, az);
+    l1_cache.hits++;
+  }
+
   // TODO(phl): Use std::to_underlying when we have C++23.
   auto error = static_cast<std::underlying_type_t<absl::StatusCode>>(
       absl::StatusCode::kOk);

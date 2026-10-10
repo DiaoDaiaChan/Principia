@@ -17,6 +17,7 @@
 #include "base/monostable.hpp"
 #include "base/not_null.hpp"
 #include "base/thread_pool.hpp"
+#include "base/work_stealing_thread_pool.hpp"
 #include "geometry/affine_map.hpp"
 #include "geometry/grassmann.hpp"
 #include "geometry/instant.hpp"
@@ -70,6 +71,7 @@ using namespace principia::base::_disjoint_sets;
 using namespace principia::base::_monostable;
 using namespace principia::base::_not_null;
 using namespace principia::base::_thread_pool;
+using namespace principia::base::_work_stealing_thread_pool;
 using namespace principia::geometry::_affine_map;
 using namespace principia::geometry::_grassmann;
 using namespace principia::geometry::_instant;
@@ -591,8 +593,8 @@ class Plugin {
   Ephemeris<Barycentric>::FixedStepParameters history_fixed_step_parameters_;
   Ephemeris<Barycentric>::AdaptiveStepParameters psychohistory_parameters_;
 
-  // The thread pool for advancing vessels.
-  ThreadPool<absl::Status> vessel_thread_pool_;
+  // The work-stealing thread pool with Chase-Lev deques and P/E-Core affinity for advancing vessels.
+  WorkStealingThreadPool<absl::Status> vessel_thread_pool_;
 
   Angle planetarium_rotation_;
   std::optional<Rotation<Barycentric, AliceSun>> cached_planetarium_rotation_;

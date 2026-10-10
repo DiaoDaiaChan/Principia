@@ -130,6 +130,7 @@ class alignas(64) ChebyshevL2TileCache {
     return nullptr;
   }
 
+  void RecordHit() { ++hits_; }
   std::uint64_t hits() const { return hits_; }
   std::uint64_t lookups() const { return lookups_; }
   std::uint64_t spill_to_l3_count() const { return spill_to_l3_count_; }

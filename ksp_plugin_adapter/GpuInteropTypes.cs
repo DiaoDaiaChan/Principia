@@ -153,6 +153,11 @@ public struct CpuModuleThreadingStatus {
   public int l2_to_l3_spill_count;
   public int l3_to_dram_spill_count;
   public int dram_hit_count;
+
+  // Pillar 2: Work-Stealing & Core Affinity Telemetry:
+  public int p_core_worker_count;
+  public int e_core_worker_count;
+  public long work_stolen_count;
 }
 
 }  // namespace ksp_plugin_adapter
