@@ -52,11 +52,13 @@ void IntegrateVesselsVerlet(uint3 id : SV_DispatchThreadID) {
             CelestialData body = _CelestialBodies[b];
             ds_vec3 r = ds_vec3_sub(body.position, pos);
             ds_real r2 = ds_vec3_length_sqr(r);
+            if (r2.hi <= 0.0f) continue;
             ds_real r_len = ds_sqrt(r2);
-            ds_real r3 = ds_mul(r2, r_len);
 
-            ds_real inv_r3 = ds_div(ds_make(1.0f), r3);
-            ds_real factor = ds_mul(body.gravitational_parameter, inv_r3);
+            // Numerically stable evaluation avoiding r^3 exponent overflow:
+            // a = (GM / r^2) * (r / |r|)
+            ds_real mu_over_r2 = ds_div(body.gravitational_parameter, r2);
+            ds_real factor = ds_div(mu_over_r2, r_len);
             ds_vec3 body_accel = ds_vec3_scale(r, factor);
             accel = ds_vec3_add(accel, body_accel);
         }
@@ -78,11 +80,11 @@ void IntegrateVesselsVerlet(uint3 id : SV_DispatchThreadID) {
             CelestialData body = _CelestialBodies[b2];
             ds_vec3 r = ds_vec3_sub(body.position, pos);
             ds_real r2 = ds_vec3_length_sqr(r);
+            if (r2.hi <= 0.0f) continue;
             ds_real r_len = ds_sqrt(r2);
-            ds_real r3 = ds_mul(r2, r_len);
 
-            ds_real inv_r3 = ds_div(ds_make(1.0f), r3);
-            ds_real factor = ds_mul(body.gravitational_parameter, inv_r3);
+            ds_real mu_over_r2 = ds_div(body.gravitational_parameter, r2);
+            ds_real factor = ds_div(mu_over_r2, r_len);
             ds_vec3 body_accel = ds_vec3_scale(r, factor);
             next_accel = ds_vec3_add(next_accel, body_accel);
         }

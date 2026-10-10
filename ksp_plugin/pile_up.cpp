@@ -119,6 +119,49 @@ absl::Status PileUp::DeformAndAdvanceTime(Instant const& t) {
   return status;
 }
 
+DegreesOfFreedom<Barycentric> PileUp::degrees_of_freedom() const {
+  absl::MutexLock l(lock_.get());
+  CHECK(!psychohistory_->empty());
+  return psychohistory_->back().degrees_of_freedom;
+}
+
+Instant PileUp::psychohistory_time() const {
+  absl::MutexLock l(lock_.get());
+  CHECK(!psychohistory_->empty());
+  return psychohistory_->back().time;
+}
+
+absl::Status PileUp::AdvanceWithDegreesOfFreedom(
+    Instant const& t,
+    DegreesOfFreedom<Barycentric> const& degrees_of_freedom) {
+  absl::MutexLock l(lock_.get());
+  if (psychohistory_->back().time >= t) {
+    return absl::OkStatus();
+  }
+
+  // Remove previous psychohistory fork.
+  trajectory_.DeleteSegments(psychohistory_);
+
+  // Advance authoritative history directly to `t`.
+  trajectory_.Append(t, degrees_of_freedom).IgnoreError();
+
+  // Create new psychohistory segment at `t`.
+  psychohistory_ = trajectory_.NewSegment();
+
+  // Reset fixed instance so that any subsequent CPU integration re-initializes cleanly.
+  fixed_instance_ = nullptr;
+
+  auto const it = trajectory_.find(t);
+  if (it != trajectory_.end()) {
+    AppendToPart<&Part::AppendToHistory>(it);
+    AppendToPart<&Part::AppendToPsychohistory>(it);
+  }
+
+  trajectory_.ForgetBefore(history_->back().time);
+  NudgeParts();
+  return absl::OkStatus();
+}
+
 void PileUp::RecomputeFromParts() {
   absl::MutexLock l(lock_.get());
   mass_ = Mass();

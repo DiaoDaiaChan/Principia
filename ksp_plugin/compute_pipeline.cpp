@@ -271,14 +271,61 @@ void ComputePipeline::InitializeShadersIfPossible() {
 #endif
 }
 
+bool ComputePipeline::IsReadyForCompute() {
+#if OS_WIN
+  return EnsureD3D11Initialized() && batch_orbit_shader_ != nullptr;
+#else
+  return false;
+#endif
+}
+
 void ComputePipeline::SetCelestialBodies(
     CelestialBodyGpuState const* celestials,
     int celestial_count) {
   if (celestials == nullptr || celestial_count <= 0) {
     cached_celestials_.clear();
+    cached_celestials_double_.clear();
     return;
   }
   cached_celestials_.assign(celestials, celestials + celestial_count);
+}
+
+void ComputePipeline::SetCelestialBodiesDouble(
+    double const* x,
+    double const* y,
+    double const* z,
+    double const* vx,
+    double const* vy,
+    double const* vz,
+    double const* mu,
+    float const* radius,
+    int count) {
+  if (x == nullptr || count <= 0) {
+    cached_celestials_double_.clear();
+    cached_celestials_.clear();
+    return;
+  }
+  cached_celestials_double_.resize(count);
+  cached_celestials_.resize(count);
+  for (int i = 0; i < count; ++i) {
+    cached_celestials_double_[i].x = x[i];
+    cached_celestials_double_[i].y = y[i];
+    cached_celestials_double_[i].z = z[i];
+    cached_celestials_double_[i].vx = vx[i];
+    cached_celestials_double_[i].vy = vy[i];
+    cached_celestials_double_[i].vz = vz[i];
+    cached_celestials_double_[i].mu = mu[i];
+    cached_celestials_double_[i].radius = radius != nullptr ? radius[i] : 0.0f;
+
+    cached_celestials_[i].position[0] = static_cast<float>(x[i]);
+    cached_celestials_[i].position[1] = static_cast<float>(y[i]);
+    cached_celestials_[i].position[2] = static_cast<float>(z[i]);
+    cached_celestials_[i].velocity[0] = static_cast<float>(vx[i]);
+    cached_celestials_[i].velocity[1] = static_cast<float>(vy[i]);
+    cached_celestials_[i].velocity[2] = static_cast<float>(vz[i]);
+    cached_celestials_[i].gravitational_parameter = static_cast<float>(mu[i]);
+    cached_celestials_[i].padding = 0.0f;
+  }
 }
 
 void ComputePipeline::AdvanceBatch(
@@ -292,11 +339,13 @@ void ComputePipeline::AdvanceBatch(
   bool const use_gpu = WorkloadBalancer::Instance().ShouldDispatchGpu(count);
 
 #if OS_WIN
+  int const current_cel_count = static_cast<int>(
+      !cached_celestials_double_.empty() ? cached_celestials_double_.size() : cached_celestials_.size());
   if (use_gpu && EnsureD3D11Initialized() && batch_orbit_shader_ != nullptr &&
-      !cached_celestials_.empty()) {
+      current_cel_count > 0) {
     // 1. Prepare Celestial buffer (StructuredBuffer<CelestialData> _CelestialBodies : register(t0))
     if (batch_orbit_celestial_buf_ == nullptr ||
-        cached_celestial_count_ != static_cast<int>(cached_celestials_.size())) {
+        cached_celestial_count_ != current_cel_count) {
       if (batch_orbit_celestial_srv_ != nullptr) {
         batch_orbit_celestial_srv_->Release();
         batch_orbit_celestial_srv_ = nullptr;
@@ -306,18 +355,31 @@ void ComputePipeline::AdvanceBatch(
         batch_orbit_celestial_buf_ = nullptr;
       }
 
-      std::vector<CelestialDataGpu> gpu_celestials(cached_celestials_.size());
-      for (std::size_t i = 0; i < cached_celestials_.size(); ++i) {
-        gpu_celestials[i].position.x = ToDoubleSingle(cached_celestials_[i].position[0]);
-        gpu_celestials[i].position.y = ToDoubleSingle(cached_celestials_[i].position[1]);
-        gpu_celestials[i].position.z = ToDoubleSingle(cached_celestials_[i].position[2]);
-        gpu_celestials[i].gravitational_parameter =
-            ToDoubleSingle(cached_celestials_[i].gravitational_parameter);
-        gpu_celestials[i].velocity.x = ToDoubleSingle(cached_celestials_[i].velocity[0]);
-        gpu_celestials[i].velocity.y = ToDoubleSingle(cached_celestials_[i].velocity[1]);
-        gpu_celestials[i].velocity.z = ToDoubleSingle(cached_celestials_[i].velocity[2]);
-        gpu_celestials[i].radius = 0.0f;
-        gpu_celestials[i].padding = 0.0f;
+      std::vector<CelestialDataGpu> gpu_celestials(current_cel_count);
+      for (std::size_t i = 0; i < static_cast<std::size_t>(current_cel_count); ++i) {
+        if (!cached_celestials_double_.empty()) {
+          gpu_celestials[i].position.x = ToDoubleSingle(cached_celestials_double_[i].x);
+          gpu_celestials[i].position.y = ToDoubleSingle(cached_celestials_double_[i].y);
+          gpu_celestials[i].position.z = ToDoubleSingle(cached_celestials_double_[i].z);
+          gpu_celestials[i].gravitational_parameter =
+              ToDoubleSingle(cached_celestials_double_[i].mu);
+          gpu_celestials[i].velocity.x = ToDoubleSingle(cached_celestials_double_[i].vx);
+          gpu_celestials[i].velocity.y = ToDoubleSingle(cached_celestials_double_[i].vy);
+          gpu_celestials[i].velocity.z = ToDoubleSingle(cached_celestials_double_[i].vz);
+          gpu_celestials[i].radius = cached_celestials_double_[i].radius;
+          gpu_celestials[i].padding = 0.0f;
+        } else {
+          gpu_celestials[i].position.x = ToDoubleSingle(cached_celestials_[i].position[0]);
+          gpu_celestials[i].position.y = ToDoubleSingle(cached_celestials_[i].position[1]);
+          gpu_celestials[i].position.z = ToDoubleSingle(cached_celestials_[i].position[2]);
+          gpu_celestials[i].gravitational_parameter =
+              ToDoubleSingle(cached_celestials_[i].gravitational_parameter);
+          gpu_celestials[i].velocity.x = ToDoubleSingle(cached_celestials_[i].velocity[0]);
+          gpu_celestials[i].velocity.y = ToDoubleSingle(cached_celestials_[i].velocity[1]);
+          gpu_celestials[i].velocity.z = ToDoubleSingle(cached_celestials_[i].velocity[2]);
+          gpu_celestials[i].radius = 0.0f;
+          gpu_celestials[i].padding = 0.0f;
+        }
       }
 
       D3D11_BUFFER_DESC desc{};
@@ -447,7 +509,8 @@ void ComputePipeline::AdvanceBatchCpu(
     int const count,
     double const time_step_seconds,
     int const sub_steps) {
-  if (states == nullptr || count <= 0 || cached_celestials_.empty()) return;
+  if (states == nullptr || count <= 0) return;
+  if (cached_celestials_double_.empty() && cached_celestials_.empty()) return;
 
   double const half_dt = time_step_seconds * 0.5;
 
@@ -462,17 +525,34 @@ void ComputePipeline::AdvanceBatchCpu(
     for (int step = 0; step < sub_steps; ++step) {
       // Step 1: Compute gravitational acceleration a(t)
       double ax = 0.0, ay = 0.0, az = 0.0;
-      for (auto const& c : cached_celestials_) {
-        double const rx = static_cast<double>(c.position[0]) - px;
-        double const ry = static_cast<double>(c.position[1]) - py;
-        double const rz = static_cast<double>(c.position[2]) - pz;
-        double const r2 = rx * rx + ry * ry + rz * rz + 1.0;
-        double const r = std::sqrt(r2);
-        double const r3 = r2 * r;
-        double const factor = static_cast<double>(c.gravitational_parameter) / r3;
-        ax += rx * factor;
-        ay += ry * factor;
-        az += rz * factor;
+      if (!cached_celestials_double_.empty()) {
+        for (auto const& c : cached_celestials_double_) {
+          double const rx = c.x - px;
+          double const ry = c.y - py;
+          double const rz = c.z - pz;
+          double const r2 = rx * rx + ry * ry + rz * rz;
+          if (r2 <= 0.0) continue;
+          double const r = std::sqrt(r2);
+          double const r3 = r2 * r;
+          double const factor = c.mu / r3;
+          ax += rx * factor;
+          ay += ry * factor;
+          az += rz * factor;
+        }
+      } else {
+        for (auto const& c : cached_celestials_) {
+          double const rx = static_cast<double>(c.position[0]) - px;
+          double const ry = static_cast<double>(c.position[1]) - py;
+          double const rz = static_cast<double>(c.position[2]) - pz;
+          double const r2 = rx * rx + ry * ry + rz * rz;
+          if (r2 <= 0.0) continue;
+          double const r = std::sqrt(r2);
+          double const r3 = r2 * r;
+          double const factor = static_cast<double>(c.gravitational_parameter) / r3;
+          ax += rx * factor;
+          ay += ry * factor;
+          az += rz * factor;
+        }
       }
 
       // Step 2: Velocity half-step
@@ -487,17 +567,34 @@ void ComputePipeline::AdvanceBatchCpu(
 
       // Step 4: Compute next gravitational acceleration a(t + dt)
       double ax2 = 0.0, ay2 = 0.0, az2 = 0.0;
-      for (auto const& c : cached_celestials_) {
-        double const rx = static_cast<double>(c.position[0]) - px;
-        double const ry = static_cast<double>(c.position[1]) - py;
-        double const rz = static_cast<double>(c.position[2]) - pz;
-        double const r2 = rx * rx + ry * ry + rz * rz + 1.0;
-        double const r = std::sqrt(r2);
-        double const r3 = r2 * r;
-        double const factor = static_cast<double>(c.gravitational_parameter) / r3;
-        ax2 += rx * factor;
-        ay2 += ry * factor;
-        az2 += rz * factor;
+      if (!cached_celestials_double_.empty()) {
+        for (auto const& c : cached_celestials_double_) {
+          double const rx = c.x - px;
+          double const ry = c.y - py;
+          double const rz = c.z - pz;
+          double const r2 = rx * rx + ry * ry + rz * rz;
+          if (r2 <= 0.0) continue;
+          double const r = std::sqrt(r2);
+          double const r3 = r2 * r;
+          double const factor = c.mu / r3;
+          ax2 += rx * factor;
+          ay2 += ry * factor;
+          az2 += rz * factor;
+        }
+      } else {
+        for (auto const& c : cached_celestials_) {
+          double const rx = static_cast<double>(c.position[0]) - px;
+          double const ry = static_cast<double>(c.position[1]) - py;
+          double const rz = static_cast<double>(c.position[2]) - pz;
+          double const r2 = rx * rx + ry * ry + rz * rz;
+          if (r2 <= 0.0) continue;
+          double const r = std::sqrt(r2);
+          double const r3 = r2 * r;
+          double const factor = static_cast<double>(c.gravitational_parameter) / r3;
+          ax2 += rx * factor;
+          ay2 += ry * factor;
+          az2 += rz * factor;
+        }
       }
 
       // Step 5: Velocity second half-step

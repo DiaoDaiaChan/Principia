@@ -326,7 +326,7 @@ class WorkloadBalancer final {
 
   // Returns true if a task should be dispatched to GPU given current dynamic balance.
   bool ShouldDispatchGpu(int const task_size) {
-    if (is_master_bypassed_.load(std::memory_order_relaxed) || task_size < 16) {
+    if (is_master_bypassed_.load(std::memory_order_relaxed) || task_size <= 4) {
       return false;
     }
     if (is_render_pressure_active_.load(std::memory_order_relaxed)) {

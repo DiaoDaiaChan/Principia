@@ -35,10 +35,12 @@
 #include "geometry/permutation.hpp"
 #include "geometry/space_transformations.hpp"
 #include "google/protobuf/repeated_field.h"
+#include "ksp_plugin/compute_pipeline.hpp"
 #include "ksp_plugin/equator_relevance_threshold.hpp"
 #include "ksp_plugin/integrators.hpp"
 #include "ksp_plugin/part.hpp"
 #include "ksp_plugin/part_subsets.hpp"  // 🧙 For Subset<Part>.
+#include "ksp_plugin/workload_balancer.hpp"
 #include "physics/barycentric_rotating_reference_frame.hpp"
 #include "physics/body_centred_body_direction_reference_frame.hpp"
 #include "physics/body_centred_non_rotating_reference_frame.hpp"
@@ -812,6 +814,7 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
   // Update L1 celestial cache block for 100% L1d cache hit rate across substeps.
   auto& l1_cache = _time_sliced_scheduler::TimeSlicedScheduler::Instance().L1Cache();
   int body_idx = 0;
+  float radii[physics::_celestial_l1_cache::CelestialL1CacheBlock::kMaxBodies];
   for (auto const& [index, celestial] : celestials_) {
     if (body_idx >= physics::_celestial_l1_cache::CelestialL1CacheBlock::kMaxBodies) break;
     auto const dof = celestial->current_degrees_of_freedom(current_time_);
@@ -825,11 +828,23 @@ void Plugin::AdvanceTime(Instant const& t, Angle const& planetarium_rotation) {
     l1_cache.vz[body_idx] = vel.coordinates().z / (Metre / Second);
     l1_cache.mu[body_idx] = celestial->body()->gravitational_parameter() /
                             si::Unit<quantities::_named_quantities::GravitationalParameter>;
+    radii[body_idx] = static_cast<float>(celestial->body()->min_radius() / Metre);
     ++body_idx;
   }
   l1_cache.count = body_idx;
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL1Hit();
   _time_sliced_scheduler::TimeSlicedScheduler::Instance().RecordL3Hit();
+
+  _compute_pipeline::ComputePipeline::Instance().SetCelestialBodiesDouble(
+      l1_cache.x,
+      l1_cache.y,
+      l1_cache.z,
+      l1_cache.vx,
+      l1_cache.vy,
+      l1_cache.vz,
+      l1_cache.mu,
+      radii,
+      body_idx);
 
   UpdatePlanetariumRotation();
   loaded_vessels_.clear();
@@ -891,11 +906,10 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
     }
   }
 
-  // 1. Critical pile-ups execute first in parallel
+  // 1. Critical pile-ups execute first on high-performance P-Cores
   std::vector<PileUpFuture> pile_up_futures;
   pile_up_futures.reserve(scheduled_critical.size() + scheduled_deferred.size());
 
-  // 1. Critical pile-ups step unconditionally on high-performance P-Cores
   for (auto* const pile_up : scheduled_critical) {
     pile_up_futures.emplace_back(
         pile_up,
@@ -904,8 +918,33 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
         }, /*prefer_p_core=*/true));
   }
 
-  // 2. Scheduled non-critical slices execute next on energy-efficient E-Cores
+  // 2. Dynamic workload balancing between CPU and GPU
+  int cpu_deferred_count = static_cast<int>(scheduled_deferred.size());
+  int gpu_deferred_count = 0;
+
+  bool const gpu_compute_ready = _compute_pipeline::ComputePipeline::Instance().IsReadyForCompute();
+  if (gpu_compute_ready && !scheduled_deferred.empty()) {
+    _workload_balancer::WorkloadBalancer::Instance().PartitionVesselBatch(
+        static_cast<int>(scheduled_deferred.size()),
+        &cpu_deferred_count,
+        &gpu_deferred_count);
+  }
+
+  std::vector<PileUp*> cpu_deferred;
+  std::vector<PileUp*> gpu_deferred;
+  cpu_deferred.reserve(cpu_deferred_count);
+  gpu_deferred.reserve(gpu_deferred_count);
+
   for (auto* const pile_up : scheduled_deferred) {
+    if (gpu_deferred.size() < static_cast<std::size_t>(gpu_deferred_count)) {
+      gpu_deferred.push_back(pile_up);
+    } else {
+      cpu_deferred.push_back(pile_up);
+    }
+  }
+
+  // 3. Scheduled non-critical CPU slices execute on energy-efficient E-Cores
+  for (auto* const pile_up : cpu_deferred) {
     pile_up_futures.emplace_back(
         pile_up,
         vessel_thread_pool_.AddWithAffinity([this, pile_up]() {
@@ -913,13 +952,92 @@ void Plugin::CatchUpLaggingVessels(VesselSet& collided_vessels) {
         }, /*prefer_p_core=*/false));
   }
 
-  // Wait for the integrations to finish and figure out which vessels collided
-  // with a celestial.
+  // 4. Concurrently execute GPU deferred batch via DirectCompute AdvanceBatch
+  std::vector<_gpu_interop_types::OrbitalState64> gpu_states;
+  if (!gpu_deferred.empty()) {
+    gpu_states.resize(gpu_deferred.size());
+    Time max_dt = 0 * Second;
+    for (std::size_t i = 0; i < gpu_deferred.size(); ++i) {
+      auto const dof = gpu_deferred[i]->degrees_of_freedom();
+      auto const pos = (dof.position() - Barycentric::origin).coordinates();
+      auto const vel = dof.velocity().coordinates();
+
+      gpu_states[i].position.x = _gpu_interop_types::ToDoubleSingle(pos.x / Metre);
+      gpu_states[i].position.y = _gpu_interop_types::ToDoubleSingle(pos.y / Metre);
+      gpu_states[i].position.z = _gpu_interop_types::ToDoubleSingle(pos.z / Metre);
+
+      gpu_states[i].velocity.x = _gpu_interop_types::ToDoubleSingle(vel.x / (Metre / Second));
+      gpu_states[i].velocity.y = _gpu_interop_types::ToDoubleSingle(vel.y / (Metre / Second));
+      gpu_states[i].velocity.z = _gpu_interop_types::ToDoubleSingle(vel.z / (Metre / Second));
+
+      Time const dt = current_time_ - gpu_deferred[i]->psychohistory_time();
+      if (dt > max_dt) {
+        max_dt = dt;
+      }
+    }
+
+    double const total_dt_seconds = max_dt / Second;
+    if (total_dt_seconds > 0.0) {
+      int const sub_steps = std::max(1, static_cast<int>(std::round(total_dt_seconds / 1.0)));
+      double const time_step_seconds = total_dt_seconds / sub_steps;
+
+      _compute_pipeline::ComputePipeline::Instance().AdvanceBatch(
+          gpu_states.data(),
+          static_cast<int>(gpu_states.size()),
+          time_step_seconds,
+          sub_steps);
+    }
+  }
+
+  // 5. Wait for CPU worker threads to complete and figure out collisions
   for (auto& pile_up_future : pile_up_futures) {
     WaitForVesselToCatchUp(pile_up_future, collided_vessels);
   }
 
-  // Update the vessels.
+  // 6. Unpack GPU results and advance GPU pile-ups
+  if (!gpu_deferred.empty()) {
+    auto const& l1_cache = _time_sliced_scheduler::TimeSlicedScheduler::Instance().L1Cache();
+    for (std::size_t i = 0; i < gpu_deferred.size(); ++i) {
+      auto const& s = gpu_states[i];
+      double const px = _gpu_interop_types::FromDoubleSingle(s.position.x);
+      double const py = _gpu_interop_types::FromDoubleSingle(s.position.y);
+      double const pz = _gpu_interop_types::FromDoubleSingle(s.position.z);
+      double const vx = _gpu_interop_types::FromDoubleSingle(s.velocity.x);
+      double const vy = _gpu_interop_types::FromDoubleSingle(s.velocity.y);
+      double const vz = _gpu_interop_types::FromDoubleSingle(s.velocity.z);
+
+      DegreesOfFreedom<Barycentric> const new_dof(
+          Barycentric::origin +
+              Displacement<Barycentric>({px * Metre, py * Metre, pz * Metre}),
+          Velocity<Barycentric>(
+              {vx * (Metre / Second), vy * (Metre / Second), vz * (Metre / Second)}));
+
+      gpu_deferred[i]->AdvanceWithDegreesOfFreedom(current_time_, new_dof).IgnoreError();
+
+      // Check collision against celestials
+      for (int b = 0; b < l1_cache.count; ++b) {
+        double const dx = px - l1_cache.x[b];
+        double const dy = py - l1_cache.y[b];
+        double const dz = pz - l1_cache.z[b];
+        double const dist2 = dx * dx + dy * dy + dz * dz;
+        auto const it = celestials_.find(b);
+        if (it != celestials_.end()) {
+          double const r_min = it->second->body()->min_radius() / Metre;
+          if (dist2 < r_min * r_min) {
+            for (not_null<Part*> const part : gpu_deferred[i]->parts()) {
+              auto const part_it = part_id_to_vessel_.find(part->part_id());
+              if (part_it != part_id_to_vessel_.end()) {
+                collided_vessels.insert(part_it->second);
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  // 7. Update the vessels.
   for (auto const& [_, vessel] : vessels_) {
     if (vessel->psychohistory()->back().time < current_time_) {
       if (collided_vessels.contains(vessel.get())) {
@@ -2150,6 +2268,13 @@ void Plugin::UnpackInactiveVesselsFromGpu(
     // Update each part's psychohistory with the GPU stepped degrees of freedom
     vessel->ForAllParts([this, &new_dof](Part& part) {
       part.AppendToPsychohistory(current_time_, new_dof);
+    });
+
+    // Keep the vessel's containing pile-up synchronized
+    vessel->ForSomePart([this, &new_dof](Part& first_part) {
+      if (first_part.is_piled_up()) {
+        first_part.containing_pile_up()->AdvanceWithDegreesOfFreedom(current_time_, new_dof).IgnoreError();
+      }
     });
 
     ++idx;

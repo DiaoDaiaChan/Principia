@@ -33,10 +33,25 @@ class ComputePipeline final {
   // Initialize with host Direct3D 11 device and context (if available).
   void InitializeD3D11(void* d3d11_device, void* d3d11_context);
 
+  // Returns true if DirectCompute GPU shaders and device are initialized and ready.
+  bool IsReadyForCompute();
+
   // Updates celestial bodies snapshot for the gravitational field.
   void SetCelestialBodies(
       CelestialBodyGpuState const* celestials,
       int celestial_count);
+
+  // Updates celestial bodies snapshot using full double-precision state vectors.
+  void SetCelestialBodiesDouble(
+      double const* x,
+      double const* y,
+      double const* z,
+      double const* vx,
+      double const* vy,
+      double const* vz,
+      double const* mu,
+      float const* radius,
+      int count);
 
   // Universal Primitive A: High-throughput symplectic numerical advance.
   // Advances an arbitrary batch of test particles (flight plan candidate burns,
@@ -93,6 +108,17 @@ class ComputePipeline final {
   void ReleaseD3D11Resources();
 
   std::vector<CelestialBodyGpuState> cached_celestials_;
+  struct CelestialDoubleData {
+    double x = 0;
+    double y = 0;
+    double z = 0;
+    double vx = 0;
+    double vy = 0;
+    double vz = 0;
+    double mu = 0;
+    float radius = 0;
+  };
+  std::vector<CelestialDoubleData> cached_celestials_double_;
 
 #if OS_WIN
   ID3D11Device* d3d11_device_ = nullptr;

@@ -122,6 +122,19 @@ class PileUp {
   // not concurrently with any other method of this class.
   absl::Status DeformAndAdvanceTime(Instant const& t);
 
+  // Returns the degrees of freedom of the pile-up's centre of mass at the back
+  // of its psychohistory.
+  DegreesOfFreedom<Barycentric> degrees_of_freedom() const;
+
+  // Returns the time of the latest point in the pile-up's psychohistory.
+  Instant psychohistory_time() const;
+
+  // Advances the pile-up's trajectory directly to `t` with the given degrees of
+  // freedom (e.g. computed concurrently by GPU DirectCompute).
+  absl::Status AdvanceWithDegreesOfFreedom(
+      Instant const& t,
+      DegreesOfFreedom<Barycentric> const& degrees_of_freedom);
+
   // Recomputes the state of motion of the pile-up based on that of its parts.
   void RecomputeFromParts();
 
