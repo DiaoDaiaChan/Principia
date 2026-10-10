@@ -521,8 +521,10 @@ FlightPlanOptimizer::FlightPlanOptimizer(
       metric_factory_(std::move(metric_factory)),
       progress_callback_(std::move(progress_callback)) {}
 
-absl::Status FlightPlanOptimizer::Optimize(int const index,
-                                           Speed const& Δv_tolerance) {
+absl::Status FlightPlanOptimizer::Optimize(
+    int const index,
+    Speed const& Δv_tolerance,
+    std::optional<Argument> const& initial_guess) {
   // We are going to repeatedly tweak the `flight_plan_`, no point in running
   // the orbit analysers.
   flight_plan_->EnableAnalysis(/*enabled=*/false);
@@ -535,9 +537,11 @@ absl::Status FlightPlanOptimizer::Optimize(int const index,
   NavigationManœuvre const manœuvre = flight_plan_->GetManœuvre(index);
   auto const metric = metric_factory_(this, manœuvre, index);
 
+  Argument const start_arg = initial_guess.value_or(start_argument_);
+
   auto const status_or_solution =
       BroydenFletcherGoldfarbShanno<double, HomogeneousArgument>(
-          Homogeneize(start_argument_),
+          Homogeneize(start_arg),
           std::bind(&Metric::Evaluate, metric.get(), _1),
           std::bind(&Metric::EvaluateGradient, metric.get(), _1),
           std::bind(&Metric::EvaluateGateauxDerivative, metric.get(), _1, _2),

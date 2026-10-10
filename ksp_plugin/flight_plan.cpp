@@ -270,6 +270,10 @@ FlightPlan::generalized_adaptive_step_parameters() const {
   return generalized_adaptive_step_parameters_;
 }
 
+not_null<Ephemeris<Barycentric>*> FlightPlan::ephemeris() const {
+  return ephemeris_;
+}
+
 int FlightPlan::number_of_segments() const {
   return segments_.size();
 }

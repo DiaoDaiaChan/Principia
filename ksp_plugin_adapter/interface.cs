@@ -493,10 +493,23 @@ internal static partial class Interface {
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void SetFrameBudgetMillisecondsDelegate(double ms);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool AdvanceInactiveVesselsBatchGpuDelegate(
+        IntPtr plugin, double time_step_seconds, int sub_steps);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool OptimizeFlightPlanShootingDelegate(
+        in ShootingContextGpu context, out OptimalCandidateBurn out_optimal);
+
     public GetCpuModuleThreadingStatusDelegate GetCpuModuleThreadingStatus =
         Loader.LoadOptionalFunction<GetCpuModuleThreadingStatusDelegate>("principia__GetCpuModuleThreadingStatus");
     public SetFrameBudgetMillisecondsDelegate SetFrameBudgetMilliseconds =
         Loader.LoadOptionalFunction<SetFrameBudgetMillisecondsDelegate>("principia__SetFrameBudgetMilliseconds");
+    public AdvanceInactiveVesselsBatchGpuDelegate AdvanceInactiveVesselsBatchGpu =
+        Loader.LoadOptionalFunction<AdvanceInactiveVesselsBatchGpuDelegate>("principia__AdvanceInactiveVesselsBatchGpu");
+    public OptimizeFlightPlanShootingDelegate OptimizeFlightPlanShooting =
+        Loader.LoadOptionalFunction<OptimizeFlightPlanShootingDelegate>("principia__OptimizeFlightPlanShooting");
   }
 
   internal static bool HasNativeEphemerisPacer() =>
@@ -652,6 +665,23 @@ internal static partial class Interface {
 
   internal static void SetFrameBudgetMilliseconds(double ms) {
     symbols_?.SetFrameBudgetMilliseconds?.Invoke(ms);
+  }
+
+  internal static bool AdvanceInactiveVesselsBatchGpu(
+      this IntPtr plugin, double time_step_seconds, int sub_steps) {
+    if (symbols_?.AdvanceInactiveVesselsBatchGpu != null) {
+      return symbols_.AdvanceInactiveVesselsBatchGpu(plugin, time_step_seconds, sub_steps);
+    }
+    return false;
+  }
+
+  internal static bool OptimizeFlightPlanShooting(
+      in ShootingContextGpu context, out OptimalCandidateBurn out_optimal) {
+    if (symbols_?.OptimizeFlightPlanShooting != null) {
+      return symbols_.OptimizeFlightPlanShooting(in context, out out_optimal);
+    }
+    out_optimal = default;
+    return false;
   }
 
   internal static void ApplyPartForcesBatch(

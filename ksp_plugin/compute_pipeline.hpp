@@ -21,7 +21,9 @@ namespace internal {
 
 using _gpu_interop_types::CelestialBodyGpuState;
 using _gpu_interop_types::ChebyshevSegmentData;
+using _gpu_interop_types::OptimalCandidateBurn;
 using _gpu_interop_types::OrbitalState64;
+using _gpu_interop_types::ShootingContextGpu;
 using _trajectory_renderer_interop::TrajectoryVertex;
 
 class ComputePipeline final {
@@ -55,6 +57,20 @@ class ComputePipeline final {
       TrajectoryVertex* out_vertices,
       int max_vertices);
 
+  // Universal Primitive C: Massively parallel flight plan candidate shooting.
+  // Evaluates thousands of candidate burns on GPU/CPU to extract global minimum.
+  bool OptimizeFlightPlanShooting(
+      ShootingContextGpu const& context,
+      OptimalCandidateBurn& out_optimal);
+
+  bool OptimizeFlightPlanShootingGpu(
+      ShootingContextGpu const& context,
+      OptimalCandidateBurn& out_optimal);
+
+  bool OptimizeFlightPlanShootingCpu(
+      ShootingContextGpu const& context,
+      OptimalCandidateBurn& out_optimal);
+
   // Fallback implementations accessible for benchmark verification.
   void AdvanceBatchCpu(
       OrbitalState64* states,
@@ -73,14 +89,44 @@ class ComputePipeline final {
   ~ComputePipeline();
 
   void InitializeShadersIfPossible();
+  bool EnsureD3D11Initialized();
+  void ReleaseD3D11Resources();
 
   std::vector<CelestialBodyGpuState> cached_celestials_;
 
 #if OS_WIN
   ID3D11Device* d3d11_device_ = nullptr;
   ID3D11DeviceContext* d3d11_context_ = nullptr;
+
   ID3D11ComputeShader* batch_orbit_shader_ = nullptr;
   ID3D11ComputeShader* trajectory_tessellator_shader_ = nullptr;
+  ID3D11ComputeShader* shooting_grid_shader_ = nullptr;
+  ID3D11ComputeShader* shooting_eval_shader_ = nullptr;
+  ID3D11ComputeShader* shooting_reduce_shader_ = nullptr;
+  ID3D11ComputeShader* shooting_reduce_final_shader_ = nullptr;
+
+  // Reusable Direct3D 11 buffers for batch orbit propagation
+  ID3D11Buffer* batch_orbit_cb_ = nullptr;
+  ID3D11Buffer* batch_orbit_celestial_buf_ = nullptr;
+  ID3D11ShaderResourceView* batch_orbit_celestial_srv_ = nullptr;
+  int cached_celestial_count_ = 0;
+
+  ID3D11Buffer* batch_orbit_states_buf_ = nullptr;
+  ID3D11UnorderedAccessView* batch_orbit_states_uav_ = nullptr;
+  ID3D11Buffer* batch_orbit_states_staging_ = nullptr;
+  int cached_vessel_count_ = 0;
+
+  // Reusable Direct3D 11 buffers for shooting optimization
+  ID3D11Buffer* shooting_cb_ = nullptr;
+  ID3D11Buffer* shooting_celestial_buf_ = nullptr;
+  ID3D11ShaderResourceView* shooting_celestial_srv_ = nullptr;
+  ID3D11Buffer* shooting_grid_buf_ = nullptr;
+  ID3D11UnorderedAccessView* shooting_grid_uav_ = nullptr;
+  ID3D11Buffer* shooting_eval_buf_ = nullptr;
+  ID3D11UnorderedAccessView* shooting_eval_uav_ = nullptr;
+  ID3D11Buffer* shooting_reduce_buf_ = nullptr;
+  ID3D11UnorderedAccessView* shooting_reduce_uav_ = nullptr;
+  ID3D11Buffer* shooting_reduce_staging_ = nullptr;
 #endif
 };
 

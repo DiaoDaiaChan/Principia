@@ -116,6 +116,7 @@ class FlightPlan {
   adaptive_step_parameters() const;
   virtual Ephemeris<Barycentric>::GeneralizedAdaptiveStepParameters const&
   generalized_adaptive_step_parameters() const;
+  virtual not_null<Ephemeris<Barycentric>*> ephemeris() const;
 
   // Returns the number of trajectories in this object.
   virtual int number_of_segments() const;

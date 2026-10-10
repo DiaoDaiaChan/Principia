@@ -128,8 +128,11 @@ class FlightPlanOptimizer {
   // step and for deciding when to stop, and must be small enough to not miss
   // interesting features of the trajectory, and large enough to avoid costly
   // startup steps.  Changes the flight plan passed at construction.
-  absl::Status Optimize(int index,
-                        Speed const& Δv_tolerance);
+  // Optionally seeded with `initial_guess` from GPU coarse shooting optimizer.
+  absl::Status Optimize(
+      int index,
+      Speed const& Δv_tolerance,
+      std::optional<Argument> const& initial_guess = std::nullopt);
 
  private:
   class LinearCombinationOfMetrics;

@@ -48,7 +48,10 @@ class MockFlightPlan : public FlightPlan {
                    adaptive_step_parameters,
                Ephemeris<Barycentric>::GeneralizedAdaptiveStepParameters const&
                    generalized_adaptive_step_parameters),
-              (override));
+  MOCK_METHOD(not_null<Ephemeris<Barycentric>*>,
+              ephemeris,
+              (),
+              (const, override));
 
   MOCK_METHOD(int, number_of_segments, (), (const, override));
 

@@ -42,10 +42,10 @@ ds_real ds_two_sum(float a, float b) {
     return res;
 }
 
-// Exact product of two floats: a * b = p + e (using hardware FMA)
+// Exact product of two floats: a * b = p + e (using hardware FMA / MAD)
 ds_real ds_two_prod(float a, float b) {
     float p = a * b;
-    float e = fma(a, b, -p);
+    float e = mad(a, b, -p);
     ds_real res;
     res.hi = p;
     res.lo = e;

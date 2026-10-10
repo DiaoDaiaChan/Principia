@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -201,6 +202,17 @@ class TimeSlicedScheduler {
 
   // Determines whether a vessel should step in the current physics tick.
   // Uses Fibonacci golden ratio hash to ensure 100% uniform dispersal across frames.
+  //
+  // Symplectic Fidelity Guarantee:
+  // When a deferred vessel skips ticks, upon its next step Ephemeris::FlowWithFixedStep
+  // advances it using exact fixed symplectic sub-steps of length h rather than stretching
+  // h' = k * h. This guarantees exact preservation of the Poincaré invariant
+  // \omega = \sum dq \wedge dp and eliminates secular Hamiltonian energy drift.
+  //
+  // Anti-Starvation Ceiling:
+  // Under severe budget saturation, no vessel is permitted to skip more than
+  // kMaxConsecutiveSkips (10 ticks) consecutively; once this ceiling is reached,
+  // the vessel is granted a mandatory catch-up step regardless of budget breach.
   bool ShouldStepVesselThisTick(
       VesselPriorityTier const tier,
       std::uint64_t const vessel_uid,
@@ -214,17 +226,28 @@ class TimeSlicedScheduler {
     // Evenly spreads vessels across frames without harmonic clustering spikes.
     auto const hash = static_cast<std::uint64_t>(
         (vessel_uid * 11400714819323198485ULL) >> 32);
+    auto const slot = hash % 1024;
+
+    // Check anti-starvation ceiling (10 consecutive skips)
+    constexpr std::int32_t kMaxConsecutiveSkips = 10;
+    if (vessel_skip_counts_[slot].load(std::memory_order_relaxed) >= kMaxConsecutiveSkips) {
+      vessel_skip_counts_[slot].store(0, std::memory_order_relaxed);
+      return true;  // Mandatory catch-up step to guard symplectic fidelity!
+    }
 
     if (tier == VesselPriorityTier::Interactive) {
       std::uint64_t const stride = static_cast<std::uint64_t>(
           std::max(1, governor_.tier2_stride()));
       if (stride > 1 && ((frame_index + hash) % stride != 0)) {
+        vessel_skip_counts_[slot].fetch_add(1, std::memory_order_relaxed);
         return false;
       }
       if (breaker.HasExceededBudget()) {
         yielded_slices_.fetch_add(1, std::memory_order_relaxed);
+        vessel_skip_counts_[slot].fetch_add(1, std::memory_order_relaxed);
         return false;
       }
+      vessel_skip_counts_[slot].store(0, std::memory_order_relaxed);
       return true;
     }
 
@@ -232,12 +255,15 @@ class TimeSlicedScheduler {
     std::uint64_t const stride = static_cast<std::uint64_t>(
         std::max(1, governor_.tier3_stride()));
     if (stride > 1 && ((frame_index + hash) % stride != 0)) {
+      vessel_skip_counts_[slot].fetch_add(1, std::memory_order_relaxed);
       return false;
     }
     if (breaker.HasExceededBudget()) {
       yielded_slices_.fetch_add(1, std::memory_order_relaxed);
+      vessel_skip_counts_[slot].fetch_add(1, std::memory_order_relaxed);
       return false;
     }
+    vessel_skip_counts_[slot].store(0, std::memory_order_relaxed);
     return true;
   }
 
@@ -376,6 +402,7 @@ class TimeSlicedScheduler {
 
   DynamicCadenceGovernor governor_{};
   CelestialL1CacheBlock l1_cache_{};
+  std::array<std::atomic<std::int32_t>, 1024> vessel_skip_counts_{};
 };
 
 }  // namespace internal

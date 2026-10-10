@@ -160,5 +160,60 @@ public struct CpuModuleThreadingStatus {
   public long work_stolen_count;
 }
 
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+public struct CelestialBodyGpuState {
+  public float pos_x;
+  public float pos_y;
+  public float pos_z;
+  public float gravitational_parameter;
+  public float vel_x;
+  public float vel_y;
+  public float vel_z;
+  public float padding;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 16)]
+public struct ShootingContextGpu {
+  public float initial_pos_x;
+  public float initial_pos_y;
+  public float initial_pos_z;
+  public float initial_time;
+
+  public float initial_vel_x;
+  public float initial_vel_y;
+  public float initial_vel_z;
+  public float step_size_seconds;
+
+  public float base_delta_v_x;
+  public float base_delta_v_y;
+  public float base_delta_v_z;
+  public float span_delta_t;
+
+  public float span_delta_v_x;
+  public float span_delta_v_y;
+  public float span_delta_v_z;
+  public float target_periapsis_altitude;
+
+  public uint target_celestial_index;
+  public uint celestial_count;
+  public uint step_count;
+  public uint candidate_count;
+
+  [MarshalAs(UnmanagedType.ByValArray, SizeConst = 128)]
+  public CelestialBodyGpuState[] celestials;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+public struct OptimalCandidateBurn {
+  public uint candidate_index;
+  public float delta_t;
+  public float delta_v_tangent;
+  public float delta_v_normal;
+  public float delta_v_binormal;
+  public float periapsis_distance;
+  public float cost_metric;
+  public uint flags;
+}
+
 }  // namespace ksp_plugin_adapter
 }  // namespace principia

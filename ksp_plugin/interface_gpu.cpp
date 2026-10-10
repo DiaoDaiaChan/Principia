@@ -19,11 +19,13 @@
 #include "geometry/instant.hpp"
 #include "geometry/space.hpp"
 #include "ksp_plugin/chebyshev_segment_export.hpp"
+#include "ksp_plugin/compute_pipeline.hpp"
 #include "ksp_plugin/dxgi_adapter_factory.hpp"
 #include "ksp_plugin/flight_plan.hpp"
 #include "ksp_plugin/frames.hpp"
 #include "ksp_plugin/gpu_interop_types.hpp"
 #include "ksp_plugin/hardware_profiler.hpp"
+#include "ksp_plugin/time_sliced_scheduler.hpp"
 #include "ksp_plugin/interface.hpp"
 #include "ksp_plugin/planetarium.hpp"
 #include "ksp_plugin/plugin.hpp"
@@ -544,6 +546,36 @@ PRINCIPIA_EXPORT void __cdecl principia__UnpackInactiveVesselsBatch(
     return;
   }
   plugin->UnpackInactiveVesselsFromGpu(in_states, count);
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__AdvanceInactiveVesselsBatchGpu(
+    Plugin* const plugin,
+    double const time_step_seconds,
+    int const sub_steps) {
+  if (plugin == nullptr || time_step_seconds <= 0.0 || sub_steps <= 0) {
+    return false;
+  }
+  constexpr int kMaxBatch = 4096;
+  std::vector<OrbitalState64> states(kMaxBatch);
+  int const count = plugin->PackInactiveVesselsForGpu(states.data(), kMaxBatch);
+  if (count <= 0) {
+    return false;
+  }
+  states.resize(count);
+  ksp_plugin::_compute_pipeline::ComputePipeline::Instance().AdvanceBatch(
+      states.data(), count, time_step_seconds, sub_steps);
+  plugin->UnpackInactiveVesselsFromGpu(states.data(), count);
+  return true;
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__OptimizeFlightPlanShooting(
+    ShootingContextGpu const* const context,
+    OptimalCandidateBurn* const out_optimal) {
+  if (context == nullptr || out_optimal == nullptr) {
+    return false;
+  }
+  return ksp_plugin::_compute_pipeline::ComputePipeline::Instance()
+      .OptimizeFlightPlanShooting(*context, *out_optimal);
 }
 
 //=============================================================================

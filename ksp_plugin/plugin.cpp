@@ -2118,7 +2118,42 @@ int Plugin::PackInactiveVesselsForGpu(
 void Plugin::UnpackInactiveVesselsFromGpu(
     _gpu_interop_types::OrbitalState64 const* const in_states,
     int const count) {
-  // Reserved for background vessels GPU time step updates.
+  if (in_states == nullptr || count <= 0) {
+    return;
+  }
+  int idx = 0;
+  for (auto const& [guid, vessel] : vessels_) {
+    if (idx >= count) {
+      break;
+    }
+    if (loaded_vessels_.contains(vessel.get())) {
+      continue;
+    }
+    if (vessel->psychohistory()->empty()) {
+      continue;
+    }
+
+    _gpu_interop_types::OrbitalState64 const& state = in_states[idx];
+    double const px = _gpu_interop_types::FromDoubleSingle(state.position.x);
+    double const py = _gpu_interop_types::FromDoubleSingle(state.position.y);
+    double const pz = _gpu_interop_types::FromDoubleSingle(state.position.z);
+    double const vx = _gpu_interop_types::FromDoubleSingle(state.velocity.x);
+    double const vy = _gpu_interop_types::FromDoubleSingle(state.velocity.y);
+    double const vz = _gpu_interop_types::FromDoubleSingle(state.velocity.z);
+
+    DegreesOfFreedom<Barycentric> const new_dof(
+        Barycentric::origin +
+            Displacement<Barycentric>({px * Metre, py * Metre, pz * Metre}),
+        Velocity<Barycentric>(
+            {vx * (Metre / Second), vy * (Metre / Second), vz * (Metre / Second)}));
+
+    // Update each part's psychohistory with the GPU stepped degrees of freedom
+    vessel->ForAllParts([this, &new_dof](Part& part) {
+      part.AppendToPsychohistory(current_time_, new_dof);
+    });
+
+    ++idx;
+  }
 }
 
 }  // namespace internal

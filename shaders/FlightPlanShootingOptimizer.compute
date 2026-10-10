@@ -183,7 +183,7 @@ void ParallelReduceOptimalBurn(
     if (global_idx < _ReductionItemCount) {
         s_shared_evals[tid] = _Evaluations[global_idx];
     } else {
-        CandidateBurnEvaluation inf_eval;
+        CandidateBurnEvaluation inf_eval = (CandidateBurnEvaluation)0;
         inf_eval.cost_metric = 1e38f;
         s_shared_evals[tid] = inf_eval;
     }
@@ -216,7 +216,7 @@ void ParallelReduceOptimalBurnFinal(
     if (tid < 64) {
         s_shared_evals[tid] = _ReducedResults[tid];
     } else {
-        CandidateBurnEvaluation inf_eval;
+        CandidateBurnEvaluation inf_eval = (CandidateBurnEvaluation)0;
         inf_eval.cost_metric = 1e38f;
         s_shared_evals[tid] = inf_eval;
     }
