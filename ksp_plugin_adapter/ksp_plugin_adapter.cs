@@ -998,6 +998,8 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
                            () => { hide_all_gui_ = false; });
     event_void_holder_.Add(GameEvents.onHideUI,
                            () => { hide_all_gui_ = true; });
+    event_void_holder_.Add(GameEvents.onGameAboutToQuicksave,
+                           SidecarStorage.NotifyAboutToQuicksave);
     event_void_holder_.Add(GameEvents.onGUIAdministrationFacilitySpawn,
                            () => { in_principia_scene_ = false; });
     event_void_holder_.Add(GameEvents.onGUIAdministrationFacilityDespawn,
@@ -1056,6 +1058,7 @@ public partial class PrincipiaPluginAdapter : ScenarioModule,
         string sidecar_file = SidecarStorage.SaveSidecar(
             plugin_,
             serialization_compression_,
+            /*save_stem_hint=*/null,
             out int chunks,
             out long total_bytes);
         node.AddValue(principia_sidecar_file, sidecar_file);

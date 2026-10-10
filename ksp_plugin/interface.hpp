@@ -283,6 +283,12 @@ void __cdecl principia__GetCpuModuleThreadingStatus(
 extern "C" PRINCIPIA_DLL
 void __cdecl principia__SetFrameBudgetMilliseconds(double ms);
 
+extern "C" PRINCIPIA_DLL
+bool __cdecl principia__SaveMasterEphemerisCache(char const* file_path);
+
+extern "C" PRINCIPIA_DLL
+bool __cdecl principia__LoadMasterEphemerisCache(char const* file_path);
+
 }  // namespace interface
 }  // namespace principia
 

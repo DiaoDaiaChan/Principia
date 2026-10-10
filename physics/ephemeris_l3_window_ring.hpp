@@ -3,8 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "absl/synchronization/mutex.h"
@@ -155,6 +159,125 @@ class alignas(64) EphemerisL3WindowRing {
 
   std::size_t TotalDramSegments() const {
     return dram_overflow_pool_.TotalDramSegments();
+  }
+
+#pragma pack(push, 1)
+  struct alignas(64) MasterEphemerisHeader {
+    char magic[16];                  // "PRINCEPH_MASTER\0"
+    std::uint32_t format_version;    // 1
+    std::uint32_t header_size;       // 64
+    std::uint32_t max_bodies;        // kMaxBodies (32)
+    std::uint32_t segments_per_body; // segments_per_body_ (e.g. 512)
+    std::uint64_t timestamp_utc;     // uint64 ms epoch
+    std::uint32_t total_segments;    // Total valid segments stored
+    std::uint8_t reserved[20];       // 64-byte alignment padding
+  };
+#pragma pack(pop)
+  static_assert(sizeof(MasterEphemerisHeader) == 64, "MasterEphemerisHeader must be 64 bytes");
+
+  // Persists the master ephemeris cache ring into a single co-located compound file.
+  bool SaveMasterEphemeris(std::string const& file_path) {
+    std::filesystem::path const target_path(file_path);
+    std::filesystem::path const temp_file_path = std::filesystem::path(target_path).concat(".tmp");
+    std::error_code ec;
+    if (target_path.has_parent_path()) {
+      std::filesystem::create_directories(target_path.parent_path(), ec);
+    }
+    std::filesystem::remove(temp_file_path, ec);
+
+    std::ofstream stream(temp_file_path, std::ios::binary | std::ios::trunc);
+    if (!stream.is_open()) {
+      return false;
+    }
+
+    MasterEphemerisHeader header{};
+    std::memcpy(header.magic, "PRINCEPH_MASTER\0", 16);
+    header.format_version = 1;
+    header.header_size = 64;
+    header.max_bodies = static_cast<std::uint32_t>(kMaxBodies);
+    header.segments_per_body = static_cast<std::uint32_t>(segments_per_body_);
+    header.timestamp_utc = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+
+    std::uint32_t total_segments = 0;
+    for (std::size_t b = 0; b < kMaxBodies; ++b) {
+      std::size_t const head = write_cursor_[b].load(std::memory_order_relaxed);
+      total_segments += static_cast<std::uint32_t>(std::min(head, segments_per_body_));
+    }
+    header.total_segments = total_segments;
+
+    stream.write(reinterpret_cast<char const*>(&header), sizeof(header));
+
+    for (std::size_t b = 0; b < kMaxBodies; ++b) {
+      std::size_t const head = write_cursor_[b].load(std::memory_order_relaxed);
+      std::uint32_t const count = static_cast<std::uint32_t>(std::min(head, segments_per_body_));
+      std::uint64_t const cursor_val = static_cast<std::uint64_t>(head);
+      stream.write(reinterpret_cast<char const*>(&cursor_val), sizeof(cursor_val));
+      stream.write(reinterpret_cast<char const*>(&count), sizeof(count));
+      if (count > 0) {
+        stream.write(reinterpret_cast<char const*>(ring_[b].data()),
+                     count * sizeof(ChebyshevTile256));
+      }
+    }
+
+    stream.flush();
+    bool const ok = stream.good();
+    stream.close();
+
+    if (!ok) {
+      std::filesystem::remove(temp_file_path, ec);
+      return false;
+    }
+
+    std::filesystem::rename(temp_file_path, target_path, ec);
+    if (ec) {
+      std::filesystem::remove(temp_file_path, ec);
+      return false;
+    }
+    return true;
+  }
+
+  // Rapidly restores the master ephemeris cache ring from disk with zero GC allocation.
+  bool LoadMasterEphemeris(std::string const& file_path) {
+    std::filesystem::path const target_path(file_path);
+    if (!std::filesystem::exists(target_path)) {
+      return false;
+    }
+
+    std::ifstream stream(target_path, std::ios::binary);
+    if (!stream.is_open()) {
+      return false;
+    }
+
+    MasterEphemerisHeader header{};
+    stream.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (!stream.good() || std::memcmp(header.magic, "PRINCEPH_MASTER", 15) != 0) {
+      return false;
+    }
+
+    std::size_t const bodies_to_read = std::min<std::size_t>(header.max_bodies, kMaxBodies);
+    for (std::size_t b = 0; b < bodies_to_read; ++b) {
+      std::uint64_t cursor_val = 0;
+      std::uint32_t count = 0;
+      stream.read(reinterpret_cast<char*>(&cursor_val), sizeof(cursor_val));
+      stream.read(reinterpret_cast<char*>(&count), sizeof(count));
+      std::size_t const valid_count = std::min<std::size_t>(count, segments_per_body_);
+      if (valid_count > 0) {
+        stream.read(reinterpret_cast<char*>(ring_[b].data()),
+                     valid_count * sizeof(ChebyshevTile256));
+      }
+      if (count > valid_count) {
+        stream.seekg((count - valid_count) * sizeof(ChebyshevTile256), std::ios::cur);
+      }
+      write_cursor_[b].store(static_cast<std::size_t>(cursor_val), std::memory_order_release);
+    }
+
+    l3_hits_.store(0, std::memory_order_relaxed);
+    dram_hits_.store(0, std::memory_order_relaxed);
+    spill_to_dram_count_.store(0, std::memory_order_relaxed);
+    lookups_.store(0, std::memory_order_relaxed);
+    return true;
   }
 
  private:

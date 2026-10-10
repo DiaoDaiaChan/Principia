@@ -36,6 +36,7 @@
 #include "physics/discrete_trajectory.hpp"
 #include "physics/discrete_trajectory_view.hpp"
 #include "physics/ephemeris.hpp"
+#include "physics/ephemeris_l3_window_ring.hpp"
 #include "quantities/quantities.hpp"
 #include "quantities/si.hpp"
 
@@ -602,6 +603,24 @@ PRINCIPIA_EXPORT void __cdecl principia__SetFrameBudgetMilliseconds(
     double const ms) {
   ksp_plugin::_time_sliced_scheduler::TimeSlicedScheduler::Instance()
       .SetFrameBudgetMilliseconds(ms);
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__SaveMasterEphemerisCache(
+    char const* const file_path) {
+  if (file_path == nullptr) {
+    return false;
+  }
+  return physics::_ephemeris_l3_window_ring::EphemerisL3WindowRing::Instance()
+      .SaveMasterEphemeris(file_path);
+}
+
+PRINCIPIA_EXPORT bool __cdecl principia__LoadMasterEphemerisCache(
+    char const* const file_path) {
+  if (file_path == nullptr) {
+    return false;
+  }
+  return physics::_ephemeris_l3_window_ring::EphemerisL3WindowRing::Instance()
+      .LoadMasterEphemeris(file_path);
 }
 
 }  // namespace interface

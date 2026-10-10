@@ -1124,8 +1124,29 @@ bool __cdecl principia__PluginSaveToFile(
     return false;
   }
 
-  constexpr char magic[16] = "PRINCIPIA_BIN";
-  stream.write(magic, sizeof(magic));
+#pragma pack(push, 1)
+  struct alignas(64) PrincipiaBinHeader {
+    char magic[16];                // "PRINCIPIA_BIN\0\0\0"
+    std::uint32_t format_version;  // 2
+    std::uint32_t header_size;     // 64
+    std::uint32_t section_count;   // 4 (Metadata, Trajectories, FlightPlans, EphemerisDelta)
+    std::uint32_t compression_type;// 1: Gipfeli, 0: None
+    std::uint64_t timestamp_utc;   // UTC ms epoch
+    std::uint8_t reserved[24];     // 64-byte cache-line alignment padding
+  };
+#pragma pack(pop)
+  static_assert(sizeof(PrincipiaBinHeader) == 64, "PrincipiaBinHeader must be 64 bytes");
+
+  PrincipiaBinHeader bin_header{};
+  std::memcpy(bin_header.magic, "PRINCIPIA_BIN\0\0\0", 16);
+  bin_header.format_version = 2;
+  bin_header.header_size = 64;
+  bin_header.section_count = 4;
+  bin_header.compression_type = (compressor != nullptr && std::strcmp(compressor, "gipfeli") == 0) ? 1 : 0;
+  bin_header.timestamp_utc = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  stream.write(reinterpret_cast<char const*>(&bin_header), sizeof(bin_header));
 
   PullSerializer serializer(
       chunk_size,
@@ -1192,6 +1213,22 @@ bool __cdecl principia__PluginLoadFromFile(
   if (std::memcmp(magic, "PRINCIPIA_BIN", 13) != 0) {
     LOG(ERROR) << "Invalid file header in " << file_path;
     return false;
+  }
+
+  // Handle both 64-byte compound header (format >= 2) and legacy 16-byte header:
+  std::uint32_t format_version = 1;
+  std::uint32_t header_size = 16;
+  if (stream.read(reinterpret_cast<char*>(&format_version), sizeof(format_version))) {
+    if (format_version >= 2) {
+      if (stream.read(reinterpret_cast<char*>(&header_size), sizeof(header_size))) {
+        if (header_size > 24) {
+          stream.seekg(header_size, std::ios::beg);
+        }
+      }
+    } else {
+      // Legacy format 1 with direct chunks following the 16-byte magic
+      stream.seekg(16, std::ios::beg);
+    }
   }
 
   auto deserializer = std::make_unique<PushDeserializer>(

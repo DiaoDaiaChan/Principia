@@ -501,6 +501,12 @@ internal static partial class Interface {
     [return: MarshalAs(UnmanagedType.I1)]
     public delegate bool OptimizeFlightPlanShootingDelegate(
         in ShootingContextGpu context, out OptimalCandidateBurn out_optimal);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool SaveMasterEphemerisCacheDelegate(string file_path);
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    [return: MarshalAs(UnmanagedType.I1)]
+    public delegate bool LoadMasterEphemerisCacheDelegate(string file_path);
 
     public GetCpuModuleThreadingStatusDelegate GetCpuModuleThreadingStatus =
         Loader.LoadOptionalFunction<GetCpuModuleThreadingStatusDelegate>("principia__GetCpuModuleThreadingStatus");
@@ -510,6 +516,10 @@ internal static partial class Interface {
         Loader.LoadOptionalFunction<AdvanceInactiveVesselsBatchGpuDelegate>("principia__AdvanceInactiveVesselsBatchGpu");
     public OptimizeFlightPlanShootingDelegate OptimizeFlightPlanShooting =
         Loader.LoadOptionalFunction<OptimizeFlightPlanShootingDelegate>("principia__OptimizeFlightPlanShooting");
+    public SaveMasterEphemerisCacheDelegate SaveMasterEphemerisCache =
+        Loader.LoadOptionalFunction<SaveMasterEphemerisCacheDelegate>("principia__SaveMasterEphemerisCache");
+    public LoadMasterEphemerisCacheDelegate LoadMasterEphemerisCache =
+        Loader.LoadOptionalFunction<LoadMasterEphemerisCacheDelegate>("principia__LoadMasterEphemerisCache");
   }
 
   internal static bool HasNativeEphemerisPacer() =>
@@ -710,6 +720,20 @@ internal static partial class Interface {
           file_path, compressor, out plugin_reader);
     }
     plugin_reader = IntPtr.Zero;
+    return false;
+  }
+
+  internal static bool SaveMasterEphemerisCache(string file_path) {
+    if (symbols_?.SaveMasterEphemerisCache != null) {
+      return symbols_.SaveMasterEphemerisCache(file_path);
+    }
+    return false;
+  }
+
+  internal static bool LoadMasterEphemerisCache(string file_path) {
+    if (symbols_?.LoadMasterEphemerisCache != null) {
+      return symbols_.LoadMasterEphemerisCache(file_path);
+    }
     return false;
   }
 
